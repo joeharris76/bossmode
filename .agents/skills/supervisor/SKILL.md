@@ -1,6 +1,6 @@
 ---
 name: supervisor
-description: Reconcile the continual-agent MVP registry, dispatch one bounded Codex subagent, record evidence, and propose gated learning. Use when managing, continuing, or checking MVP tasks.
+description: Reconcile the continual-agent MVP registry, dispatch one bounded Codex or Herdr worker, record correlated evidence, and propose gated learning. Use when managing, continuing, or checking MVP tasks.
 ---
 
 # Supervisor
@@ -12,9 +12,10 @@ different database.
 
 1. Run `uv run continual-agent init` idempotently.
 2. Run `uv run continual-agent supervisor tick` and parse its JSON.
-3. For every active registry task, inspect live Codex task state before sending, interrupting,
-   completing, or closing it. Treat a missing, foreign, or ambiguous thread as a blocker; do not
-   infer ownership from the stored ID.
+3. For every active registry task, reconcile its executor against live state before sending,
+   interrupting, completing, or closing it. Use live Codex task state for Codex subagents and
+   `herdr agent get/list` for Herdr workers. Treat missing, foreign, or ambiguous identity as a
+   blocker; stored IDs are indexes, not capabilities.
 4. Surface `needs_user` and `blocked` items before starting new work when they affect priority or
    safety. Ask only for the decision the system cannot safely make.
 
@@ -25,9 +26,33 @@ different database.
    or `reviewer` for independent evaluation.
 3. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
    required structured return fields.
-4. After a successful spawn, record it with `continual-agent run start`. If the registry rejects
-   dispatch, do not work around the state machine.
-5. Do not run parallel writers against the same paths.
+4. For a Codex subagent, spawn it and record the returned task with `continual-agent run start`.
+5. For a Herdr worker, reserve the run with `continual-agent run start` before creating any layout.
+   Derive a unique worker name from the run ID, create it through the official Herdr CLI, then call
+   `continual-agent herdr bind`. If binding fails after creation, reconcile the deterministic name;
+   do not create another worker or close by a stored pane ID.
+6. Use Herdr only when the task explicitly requests an external interactive agent. Do not add an
+   agent router or choose providers from historical scores in this spike.
+7. Do not run parallel writers against the same paths.
+
+## Herdr turns
+
+1. Use the official, release-matched Herdr commands. Do not invoke `herdr-orch`.
+2. Before prompting, require one unambiguous live worker matching the run binding and wait until it
+   is `idle` or `done`. `agent prompt --wait` is lifecycle-based and cannot identify a turn that
+   began while the worker was already busy.
+3. Register the logical prompt with `continual-agent turn start`. Use its returned `turn_id` and
+   `artifact_path` in the actual worker prompt. Require the worker to write one JSON object with
+   `turn_id`, `status`, `summary`, and `artifacts` to that exact path.
+4. Run `herdr agent prompt NAME TEXT --wait` and inspect `blocked`, stalled, unknown, and error
+   states separately. Never approve a trust or permission dialog without explicit user authority.
+5. Read the exact artifact path and require its `turn_id` to match. Terminal screen text is
+   diagnostic evidence only; never search it for an output path.
+6. Record the result with `continual-agent turn finish`. After a reviewer correction, start another
+   turn against the same live worker and native session.
+7. Re-run `herdr agent get` after the first session-bearing event and bind the structured native
+   session reference `{source, agent, kind, value}`. Refuse a different native reference for the
+   same run.
 
 ## Complete and evaluate
 
@@ -55,4 +80,4 @@ different database.
 ## Report
 
 Return only material state changes: dispatched work, completed and evaluated results, user decisions,
-new blockers, and promotion proposals. Include exact task, run, evaluation, and promotion IDs.
+new blockers, and promotion proposals. Include exact task, run, turn, evaluation, and promotion IDs.

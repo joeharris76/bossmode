@@ -12,6 +12,10 @@ context, recording outcomes, refining reusable workflows, and enforcing recurrin
 - A transactional SQLite task and thread registry.
 - Enforced task and promotion state machines.
 - Agent-run records with model, effort, token, retry, timing, and artifact fields.
+- Optional Herdr bindings that preserve the runtime name, native session reference, and observed
+  pane identity without making SQLite the lifecycle authority.
+- Correlated turn records with a generated output path, prompt digest, lifecycle evidence, and
+  terminal outcome.
 - Independent evaluations and structured feedback.
 - Conservative promotion proposals:
   - preference or observation -> memory
@@ -23,6 +27,7 @@ context, recording outcomes, refining reusable workflows, and enforcing recurrin
 
 It deliberately does **not** implement an LLM API wrapper, its own scheduler, or a generic agent
 backend. Codex already supplies the chat, goal, subagent, task, tool, and scheduled-task runtime.
+Herdr supplies external-agent process, pane, lifecycle, and native-session restoration.
 
 ## Quick start
 
@@ -47,6 +52,27 @@ Every command returns JSON. Use the returned task and run IDs in later commands:
 uv run continual-agent run start TASK_ID \
   --role researcher \
   --thread-id CODEX_THREAD_ID
+
+# For an explicitly requested external worker, reserve the run before creating the worker.
+uv run continual-agent run start TASK_ID --role claude
+
+uv run continual-agent herdr bind RUN_ID \
+  --herdr-session continual-agent \
+  --worker worker_1234abcd \
+  --kind claude \
+  --pane-id LIVE_PANE_ID \
+  --tab-id LIVE_TAB_ID \
+  --workspace-id LIVE_WORKSPACE_ID
+
+uv run continual-agent turn start RUN_ID \
+  --purpose task \
+  --prompt "Produce the requested report"
+
+# Put the returned turn_id and artifact_path in the Herdr prompt. After checking that exact JSON:
+uv run continual-agent turn finish TURN_ID \
+  --status succeeded \
+  --summary "Worker produced the correlated artifact" \
+  --lifecycle-evidence done
 
 uv run continual-agent run finish RUN_ID \
   --outcome succeeded \
@@ -88,6 +114,26 @@ uv run continual-agent supervisor tick
 The stored `owner_thread_id` is an index, not proof that an agent is still alive or owned by the
 current task. The supervisor must reconcile it with live Codex task state before sending,
 interrupting, or closing anything.
+
+The same rule applies to Herdr. A binding records a deterministic worker name, native session
+reference, and last observed pane identity. The supervisor must reconcile it with live Herdr state.
+It must never adopt or destroy a worker by stored name or pane ID alone.
+
+## Herdr experiment
+
+The Herdr path deliberately uses Herdr 0.8.2 directly. Install official integrations for the agents
+under test so `agent get/list` can expose `{source, agent, kind, value}` and Herdr can restore native
+sessions. Do not revive `herdr-orch`, add a YAML runner, scrape output paths from the screen, or add
+an MCP server for this spike.
+
+For each prompt, wait for the bound worker to settle, record a turn, and require the worker to write
+JSON to the exact generated `.continual/turns/<turn_id>.json` path. Screen reads are diagnostic only.
+This avoids claiming that Herdr's lifecycle wait is correlated to a particular prompt.
+
+The architecture decision and replacement trigger are recorded in
+[`docs/adr/0001-herdr-runtime-boundary.md`](docs/adr/0001-herdr-runtime-boundary.md).
+The end-to-end actor responsibilities, Codex path, Herdr prompt/result contract, and recovery rules
+are documented in [`docs/agent-workflow.md`](docs/agent-workflow.md).
 
 ## State model
 

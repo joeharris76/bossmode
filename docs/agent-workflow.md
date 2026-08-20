@@ -1,0 +1,197 @@
+# Agent interaction workflow
+
+This MVP is a control record, not an agent transport. The supervisor talks to agents through Codex
+or the official Herdr CLI and records the resulting task, run, turn, evaluation, and feedback state
+through `continual-agent`.
+
+```text
+user
+  -> supervisor (policy and sequencing)
+       -> registry CLI / SQLite (durable control record)
+       -> Codex task tools ---------> Codex subagent
+       -> official Herdr CLI -------> external interactive agent
+       -> independent reviewer ----> evaluation
+  <- material result, blocker, or approval request
+```
+
+There is no background MVP daemon and no generic executor interface. The registry never sends a
+prompt, creates a pane, grants permission, or decides that terminal text means success.
+
+## Responsibilities
+
+| Actor | Owns | Does not own |
+|---|---|---|
+| User | Goals, permission expansion, trust dialogs, and promotion approval | Runtime bookkeeping |
+| Supervisor | Reconciliation, one-at-a-time dispatch, prompt envelopes, evidence checks, and state transitions | Vendor session internals |
+| Registry | Durable task/run/turn IDs, state machines, prompt digests, artifact paths, evaluations, and feedback | Live agent identity or liveness |
+| Codex runtime | Codex subagent creation, messaging, waiting, and live task identity | MVP task state |
+| Herdr | External agent processes, panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
+| Worker | The bounded task and its declared artifacts | Self-approval or policy changes |
+| Reviewer | Independent checks against the task's success criteria | Rewriting a failed result unless separately authorized |
+
+Live Codex or Herdr state is authoritative for executor identity. Registry identities are durable
+indexes that must be reconciled before every prompt, interruption, continuation, or close.
+
+## Common task lifecycle
+
+1. The supervisor runs `uv run continual-agent init` and `supervisor tick`.
+2. It records the user request with `task add`, including success criteria and permission limits.
+3. It selects only the task returned in `dispatch` and starts one run.
+4. It delegates through either the Codex path or the Herdr path below.
+5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
+6. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
+   records that verdict with `evaluate`.
+7. Explicit corrections and preferences are recorded with `feedback`. Any resulting promotion is
+   only a proposal until the user approves it.
+
+## Codex subagent path
+
+1. Create a bounded Codex subagent with the task ID, goal, success criteria, allowed actions,
+   evidence, and required response fields.
+2. Record the live Codex task ID:
+
+   ```bash
+   uv run continual-agent run start TASK_ID \
+     --role researcher \
+     --thread-id CODEX_TASK_ID
+   ```
+
+3. Wait or continue through Codex's native task tools. Before every later message, reconcile the
+   stored ID against live Codex task state.
+4. Record the terminal result with `run finish`. Do not translate a subagent's self-reported success
+   into a passing evaluation.
+
+Codex tasks do not need `herdr bind` or turn records. Those records close a specific correlation
+gap in Herdr's interactive-agent transport.
+
+## Herdr worker path
+
+### 1. Reserve before creating runtime state
+
+Start the registry run first:
+
+```bash
+uv run continual-agent run start TASK_ID --role claude
+```
+
+Derive a deterministic lowercase worker name from the returned run ID, such as
+`worker_1234abcd`. Create a pane at an interactive shell in this repository, then start the agent
+with the release-matched official CLI:
+
+```bash
+herdr pane split PARENT_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr agent start worker_1234abcd --kind claude --pane NEW_PANE_ID
+```
+
+Do not start a second worker if either command returns an uncertain result. Reconcile the
+deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
+
+### 2. Bind only observed identity
+
+After confirming one matching live worker, record its observed Herdr location:
+
+```bash
+uv run continual-agent herdr bind RUN_ID \
+  --herdr-session continual-agent \
+  --worker worker_1234abcd \
+  --kind claude \
+  --pane-id LIVE_PANE_ID \
+  --tab-id LIVE_TAB_ID \
+  --workspace-id LIVE_WORKSPACE_ID
+```
+
+After `herdr agent get` reports a native session, reconcile the same binding with all four fields:
+
+```bash
+uv run continual-agent herdr bind RUN_ID \
+  --herdr-session continual-agent \
+  --worker worker_1234abcd \
+  --kind claude \
+  --session-source OBSERVED_SOURCE \
+  --session-agent OBSERVED_AGENT \
+  --session-ref-kind id \
+  --session-value OBSERVED_VALUE
+```
+
+The registry accepts newly observed pane metadata and the first native session reference. It
+rejects a different Herdr session, worker, agent kind, or native session tuple for that run. The
+same session and worker name cannot be bound to another run. The command records an observation;
+it does not independently prove the worker is live.
+
+### 3. Correlate every prompt
+
+First require the worker to be unambiguously `idle` or `done`. Register the logical prompt before
+sending it:
+
+```bash
+uv run continual-agent turn start RUN_ID \
+  --purpose task \
+  --prompt "Produce the requested report"
+```
+
+The returned `prompt_digest` hashes this logical prompt. The supervisor then adds an envelope that
+includes the returned `turn_id` and `artifact_path` and submits it through Herdr:
+
+```text
+Complete the bounded task below. Write exactly one JSON result to ARTIFACT_PATH.
+The JSON turn_id must equal TURN_ID. Do not claim success unless the declared artifacts exist.
+
+Logical task: Produce the requested report
+```
+
+```bash
+herdr agent prompt worker_1234abcd "ENVELOPED_PROMPT" --wait
+```
+
+The result file contract is:
+
+```json
+{
+  "turn_id": "turn_...",
+  "status": "succeeded",
+  "summary": "What changed and what was verified",
+  "artifacts": [{"path": "reports/result.md", "kind": "report"}]
+}
+```
+
+Allowed terminal statuses are `succeeded`, `blocked`, `failed`, and `unknown`. The supervisor reads
+only the exact generated result path, checks the `turn_id`, validates declared artifacts, and then
+records the result:
+
+```bash
+uv run continual-agent turn finish TURN_ID \
+  --status succeeded \
+  --summary "Worker result matched the turn and artifacts" \
+  --lifecycle-evidence done
+```
+
+Herdr's `--wait` observes lifecycle state, not a prompt ID. If the agent was already working, a
+different active turn could satisfy the wait. This is why the supervisor requires a settled worker
+before submission and treats the exact result file—not terminal text—as correlation evidence.
+
+### 4. Continue the same agent
+
+For a clarification or reviewer correction, reconcile the same live worker and native session,
+then create another turn with `--purpose clarification`, `correction`, or `review_follow_up`. Do not
+create a replacement worker merely because the pane moved or the server restarted; Herdr owns
+restoration, while the immutable native session tuple detects accidental substitution.
+
+## Reconciliation and failure rules
+
+- Missing, duplicate, foreign, or ambiguous live identity: stop and report `blocked`; do not adopt
+  or close anything.
+- Trust or permission dialog: ask the user. Neither the supervisor nor worker may approve it from a
+  general task permission.
+- Herdr reports `blocked`, `unknown`, stalled, or timeout: preserve that result. Do not flatten it
+  into failure or retry blindly.
+- Missing, malformed, or wrong-turn result file: finish the turn as `unknown` or `failed` with the
+  exact evidence; do not scrape a path from screen output.
+- Open turn: finish it with an explicit terminal status before finishing its run.
+- Worker result passes its own checks: finish the run as `succeeded`, then obtain an independent
+  evaluation before the task can become `succeeded`.
+- Stored pane ID differs but the unique worker and full native session match: update the observed
+  pane metadata through `herdr bind`; live Herdr state remains authoritative.
+
+The MVP intentionally has no command that closes a Herdr worker. Destructive lifecycle actions stay
+in the official runtime and require fresh live-identity reconciliation plus user authorization when
+the action could affect ambiguous or foreign work.
