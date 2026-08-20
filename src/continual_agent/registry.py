@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterable
@@ -22,6 +24,11 @@ TASK_STATES = {
 }
 
 TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed"}
+HERDR_BINDING_STATUSES = {"pending", "live", "blocked", "stale", "unknown"}
+TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
+TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
+HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
+SCHEMA_VERSION = 2
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -88,6 +95,42 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS herdr_bindings (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    herdr_session TEXT NOT NULL,
+    worker_name TEXT NOT NULL,
+    agent_kind TEXT NOT NULL,
+    session_source TEXT,
+    session_agent TEXT,
+    session_ref_kind TEXT CHECK (session_ref_kind IS NULL OR session_ref_kind IN ('id', 'path')),
+    session_value TEXT,
+    pane_id TEXT,
+    tab_id TEXT,
+    workspace_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'live', 'blocked', 'stale', 'unknown')),
+    bound_at TEXT NOT NULL,
+    reconciled_at TEXT NOT NULL,
+    UNIQUE (herdr_session, worker_name)
+);
+
+CREATE TABLE IF NOT EXISTS run_turns (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN (
+        'task', 'correction', 'clarification', 'review_follow_up'
+    )),
+    prompt_digest TEXT NOT NULL,
+    artifact_path TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'blocked', 'succeeded', 'failed', 'unknown')),
+    lifecycle_evidence TEXT,
+    summary TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    UNIQUE (run_id, ordinal),
+    UNIQUE (run_id, artifact_path)
+);
+
 CREATE TABLE IF NOT EXISTS evaluations (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -126,6 +169,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_state_priority
     ON tasks(state, priority DESC, created_at);
 CREATE INDEX IF NOT EXISTS idx_feedback_recurrence_key
     ON feedback(recurrence_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_run_turns_run_ordinal
+    ON run_turns(run_id, ordinal);
 """
 
 
@@ -159,7 +204,13 @@ class Registry:
             connection.executescript(SCHEMA)
             version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
             if version is None:
-                connection.execute("INSERT INTO schema_meta(version) VALUES (1)")
+                connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
+            elif version["version"] > SCHEMA_VERSION:
+                raise RegistryError(
+                    f"registry schema {version['version']} is newer than supported {SCHEMA_VERSION}"
+                )
+            elif version["version"] < SCHEMA_VERSION:
+                connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
 
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
@@ -377,10 +428,250 @@ class Registry:
         self.initialize()
         with closing(self._connect()) as connection:
             run = _row(connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone())
+            binding = _row(
+                connection.execute(
+                    "SELECT * FROM herdr_bindings WHERE run_id = ?", (run_id,)
+                ).fetchone()
+            )
+            turns = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM run_turns WHERE run_id = ? ORDER BY ordinal", (run_id,)
+                )
+            ]
         if run is None:
             raise RegistryError(f"run not found: {run_id}")
         run["artifacts"] = json.loads(run.pop("artifacts_json"))
+        if binding is not None:
+            binding["native_session"] = self._session_reference(binding)
+            for key in (
+                "session_source",
+                "session_agent",
+                "session_ref_kind",
+                "session_value",
+            ):
+                binding.pop(key)
+        run["herdr_binding"] = binding
+        run["turns"] = turns
         return run
+
+    def bind_herdr_run(
+        self,
+        run_id: str,
+        *,
+        herdr_session: str,
+        worker_name: str,
+        agent_kind: str,
+        status: str = "live",
+        session_source: str | None = None,
+        session_agent: str | None = None,
+        session_ref_kind: str | None = None,
+        session_value: str | None = None,
+        pane_id: str | None = None,
+        tab_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not herdr_session.strip():
+            raise RegistryError("Herdr session name is required")
+        if not re.fullmatch(HERDR_NAME_PATTERN, worker_name):
+            raise RegistryError(f"invalid Herdr worker name: {worker_name}")
+        if not agent_kind.strip():
+            raise RegistryError("Herdr agent kind is required")
+        if status not in HERDR_BINDING_STATUSES:
+            raise RegistryError(f"invalid Herdr binding status: {status}")
+        reference = (session_source, session_agent, session_ref_kind, session_value)
+        if any(reference) and not all(reference):
+            raise RegistryError(
+                "native session source, agent, kind, and value must be supplied together"
+            )
+        if session_ref_kind is not None and session_ref_kind not in {"id", "path"}:
+            raise RegistryError(f"invalid native session reference kind: {session_ref_kind}")
+
+        timestamp = _now()
+        with self._transaction() as connection:
+            run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["status"] != "running":
+                raise RegistryError(f"Herdr binding requires a running run; found {run['status']}")
+            existing = connection.execute(
+                "SELECT * FROM herdr_bindings WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            claimed = connection.execute(
+                """
+                SELECT run_id FROM herdr_bindings
+                WHERE herdr_session = ? AND worker_name = ?
+                """,
+                (herdr_session, worker_name),
+            ).fetchone()
+            if claimed is not None and claimed["run_id"] != run_id:
+                raise RegistryError(
+                    f"Herdr worker already bound to another run: {claimed['run_id']}"
+                )
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO herdr_bindings(
+                        run_id, herdr_session, worker_name, agent_kind,
+                        session_source, session_agent, session_ref_kind, session_value,
+                        pane_id, tab_id, workspace_id, status, bound_at, reconciled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        herdr_session,
+                        worker_name,
+                        agent_kind,
+                        session_source,
+                        session_agent,
+                        session_ref_kind,
+                        session_value,
+                        pane_id,
+                        tab_id,
+                        workspace_id,
+                        status,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            else:
+                stable = ("herdr_session", "worker_name", "agent_kind")
+                supplied = {
+                    "herdr_session": herdr_session,
+                    "worker_name": worker_name,
+                    "agent_kind": agent_kind,
+                }
+                for key in stable:
+                    if existing[key] != supplied[key]:
+                        raise RegistryError(f"refuse to replace Herdr binding {key}")
+                existing_reference = tuple(
+                    existing[key]
+                    for key in (
+                        "session_source",
+                        "session_agent",
+                        "session_ref_kind",
+                        "session_value",
+                    )
+                )
+                if any(reference) and any(existing_reference) and reference != existing_reference:
+                    raise RegistryError("refuse to replace native Herdr session reference")
+                connection.execute(
+                    """
+                    UPDATE herdr_bindings
+                    SET session_source = COALESCE(?, session_source),
+                        session_agent = COALESCE(?, session_agent),
+                        session_ref_kind = COALESCE(?, session_ref_kind),
+                        session_value = COALESCE(?, session_value),
+                        pane_id = COALESCE(?, pane_id),
+                        tab_id = COALESCE(?, tab_id),
+                        workspace_id = COALESCE(?, workspace_id),
+                        status = ?, reconciled_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (
+                        session_source,
+                        session_agent,
+                        session_ref_kind,
+                        session_value,
+                        pane_id,
+                        tab_id,
+                        workspace_id,
+                        status,
+                        timestamp,
+                        run_id,
+                    ),
+                )
+        binding = self.get_run(run_id)["herdr_binding"]
+        assert binding is not None
+        return binding
+
+    def start_turn(self, run_id: str, *, purpose: str, prompt: str) -> dict[str, Any]:
+        if purpose not in TURN_PURPOSES:
+            raise RegistryError(f"invalid turn purpose: {purpose}")
+        if not prompt.strip():
+            raise RegistryError("turn prompt is required")
+        turn_id = _id("turn")
+        artifact_path = f".continual/turns/{turn_id}.json"
+        timestamp = _now()
+        with self._transaction() as connection:
+            run = connection.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["status"] != "running":
+                raise RegistryError(f"turn requires a running run; found {run['status']}")
+            binding = connection.execute(
+                "SELECT status FROM herdr_bindings WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if binding is None:
+                raise RegistryError("turn requires a Herdr binding")
+            if binding["status"] != "live":
+                raise RegistryError(
+                    f"turn requires a live Herdr binding; found {binding['status']}"
+                )
+            ordinal = connection.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM run_turns WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO run_turns(
+                    id, run_id, ordinal, purpose, prompt_digest, artifact_path,
+                    status, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                """,
+                (
+                    turn_id,
+                    run_id,
+                    ordinal,
+                    purpose,
+                    hashlib.sha256(prompt.encode()).hexdigest(),
+                    artifact_path,
+                    timestamp,
+                ),
+            )
+        return self.get_turn(turn_id)
+
+    def finish_turn(
+        self,
+        turn_id: str,
+        *,
+        status: str,
+        summary: str,
+        lifecycle_evidence: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in TERMINAL_TURN_STATUSES:
+            raise RegistryError(f"invalid terminal turn status: {status}")
+        if not summary.strip():
+            raise RegistryError("turn summary is required")
+        with self._transaction() as connection:
+            turn = connection.execute("SELECT * FROM run_turns WHERE id = ?", (turn_id,)).fetchone()
+            if turn is None:
+                raise RegistryError(f"turn not found: {turn_id}")
+            if turn["status"] != "running":
+                raise RegistryError(f"turn already finished: {turn_id}")
+            connection.execute(
+                """
+                UPDATE run_turns
+                SET status = ?, summary = ?, lifecycle_evidence = ?, finished_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (status, summary, lifecycle_evidence, _now(), turn_id),
+            )
+        return self.get_turn(turn_id)
+
+    def get_turn(self, turn_id: str) -> dict[str, Any]:
+        return self._get_record("run_turns", turn_id)
+
+    @staticmethod
+    def _session_reference(binding: dict[str, Any]) -> dict[str, str] | None:
+        if not binding.get("session_value"):
+            return None
+        return {
+            "source": binding["session_source"],
+            "agent": binding["session_agent"],
+            "kind": binding["session_ref_kind"],
+            "value": binding["session_value"],
+        }
 
     def finish_run(
         self,
@@ -402,6 +693,12 @@ class Registry:
                 raise RegistryError(f"run not found: {run_id}")
             if run["status"] != "running":
                 raise RegistryError(f"run already finished: {run_id}")
+            open_turn = connection.execute(
+                "SELECT id FROM run_turns WHERE run_id = ? AND status = 'running' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if open_turn is not None:
+                raise RegistryError(f"run has an unfinished turn: {open_turn['id']}")
             task = connection.execute(
                 "SELECT * FROM tasks WHERE id = ?", (run["task_id"],)
             ).fetchone()
@@ -734,7 +1031,7 @@ class Registry:
         )
 
     def _get_record(self, table: str, record_id: str) -> dict[str, Any]:
-        if table not in {"evaluations", "feedback"}:
+        if table not in {"evaluations", "feedback", "run_turns"}:
             raise RegistryError(f"unsupported record table: {table}")
         self.initialize()
         with closing(self._connect()) as connection:

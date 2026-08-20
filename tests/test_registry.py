@@ -110,6 +110,168 @@ def test_failed_evaluation_fails_the_task(registry):
     assert registry.get_task(task["id"])["state"] == "failed"
 
 
+def test_herdr_binding_records_native_session_and_correlated_turns(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    binding = registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_1234",
+        agent_kind="claude",
+        session_source="herdr:claude",
+        session_agent="claude",
+        session_ref_kind="id",
+        session_value="claude-session-1",
+        pane_id="w1:p2",
+        tab_id="w1:t2",
+        workspace_id="w1",
+    )
+
+    first = registry.start_turn(run["id"], purpose="task", prompt="Produce the report")
+    registry.finish_turn(
+        first["id"],
+        status="succeeded",
+        summary="Report written",
+        lifecycle_evidence="done",
+    )
+    second = registry.start_turn(
+        run["id"], purpose="review_follow_up", prompt="Address the reviewer correction"
+    )
+
+    assert binding["native_session"] == {
+        "source": "herdr:claude",
+        "agent": "claude",
+        "kind": "id",
+        "value": "claude-session-1",
+    }
+    assert first["artifact_path"].endswith(f"{first['id']}.json")
+    assert first["prompt_digest"] != second["prompt_digest"]
+    assert second["ordinal"] == 2
+    assert [turn["status"] for turn in registry.get_run(run["id"])["turns"]] == [
+        "succeeded",
+        "running",
+    ]
+
+
+def test_herdr_binding_refuses_native_session_substitution(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="codex")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_5678",
+        agent_kind="codex",
+        session_source="herdr:codex",
+        session_agent="codex",
+        session_ref_kind="id",
+        session_value="codex-thread-1",
+    )
+
+    with pytest.raises(RegistryError, match="replace native Herdr session"):
+        registry.bind_herdr_run(
+            run["id"],
+            herdr_session="continual-agent",
+            worker_name="worker_5678",
+            agent_kind="codex",
+            session_source="foreign-source",
+            session_agent="codex",
+            session_ref_kind="id",
+            session_value="codex-thread-1",
+        )
+
+    with pytest.raises(RegistryError, match="replace native Herdr session"):
+        registry.bind_herdr_run(
+            run["id"],
+            herdr_session="continual-agent",
+            worker_name="worker_5678",
+            agent_kind="codex",
+            session_source="herdr:codex",
+            session_agent="codex",
+            session_ref_kind="id",
+            session_value="foreign-thread",
+        )
+
+
+def test_herdr_worker_cannot_be_bound_to_two_runs(registry):
+    first_task = create_task(registry)
+    first_run = registry.start_run(first_task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        first_run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_shared",
+        agent_kind="claude",
+    )
+    second_task = registry.create_task(
+        title="Second task",
+        goal="Try a conflicting binding",
+        success_criteria="The conflict is rejected",
+    )
+    second_run = registry.start_run(second_task["id"], agent_role="claude")
+
+    with pytest.raises(RegistryError, match="already bound to another run"):
+        registry.bind_herdr_run(
+            second_run["id"],
+            herdr_session="continual-agent",
+            worker_name="worker_shared",
+            agent_kind="claude",
+        )
+
+
+def test_turn_requires_live_herdr_binding(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+
+    with pytest.raises(RegistryError, match="requires a Herdr binding"):
+        registry.start_turn(run["id"], purpose="task", prompt="hello")
+
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_9012",
+        agent_kind="claude",
+        status="stale",
+    )
+    with pytest.raises(RegistryError, match="requires a live Herdr binding"):
+        registry.start_turn(run["id"], purpose="task", prompt="hello")
+
+
+def test_run_cannot_finish_with_open_turn(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_open",
+        agent_kind="claude",
+    )
+    turn = registry.start_turn(run["id"], purpose="task", prompt="hello")
+
+    with pytest.raises(RegistryError, match="unfinished turn"):
+        registry.finish_run(run["id"], outcome="succeeded", summary="too early")
+
+    registry.finish_turn(turn["id"], status="succeeded", summary="done")
+    finished = registry.finish_run(run["id"], outcome="succeeded", summary="complete")
+    assert finished["outcome"] == "succeeded"
+
+
+def test_initialize_upgrades_additive_schema_from_version_one(tmp_path):
+    database = tmp_path / "control.db"
+    registry = Registry(database)
+    registry.initialize()
+    with registry._connect() as connection:
+        connection.execute("UPDATE schema_meta SET version = 1")
+
+    registry.initialize()
+
+    with registry._connect() as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 2
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert {"herdr_bindings", "run_turns"} <= tables
+
+
 def test_preference_proposes_memory_without_applying_it(registry):
     task = create_task(registry)
     registry.add_feedback(

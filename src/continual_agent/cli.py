@@ -74,6 +74,46 @@ def _parser() -> argparse.ArgumentParser:
     run_finish.add_argument("--retries", type=int, default=0)
     run_finish.add_argument("--blocked-on")
 
+    herdr = subparsers.add_parser("herdr", help="Bind a run to an official Herdr session")
+    herdr_commands = herdr.add_subparsers(dest="herdr_command", required=True)
+    herdr_bind = herdr_commands.add_parser("bind")
+    herdr_bind.add_argument("run_id")
+    herdr_bind.add_argument("--herdr-session", required=True)
+    herdr_bind.add_argument("--worker", required=True)
+    herdr_bind.add_argument("--kind", required=True)
+    herdr_bind.add_argument(
+        "--status", choices=["pending", "live", "blocked", "stale", "unknown"], default="live"
+    )
+    herdr_bind.add_argument("--session-source")
+    herdr_bind.add_argument("--session-agent")
+    herdr_bind.add_argument("--session-ref-kind", choices=["id", "path"])
+    herdr_bind.add_argument("--session-value")
+    herdr_bind.add_argument("--pane-id")
+    herdr_bind.add_argument("--tab-id")
+    herdr_bind.add_argument("--workspace-id")
+
+    herdr_show = herdr_commands.add_parser("show")
+    herdr_show.add_argument("run_id")
+
+    turn = subparsers.add_parser("turn", help="Record a correlated Herdr prompt and result")
+    turn_commands = turn.add_subparsers(dest="turn_command", required=True)
+    turn_start = turn_commands.add_parser("start")
+    turn_start.add_argument("run_id")
+    turn_start.add_argument(
+        "--purpose",
+        choices=["task", "correction", "clarification", "review_follow_up"],
+        required=True,
+    )
+    turn_start.add_argument("--prompt", required=True)
+
+    turn_finish = turn_commands.add_parser("finish")
+    turn_finish.add_argument("turn_id")
+    turn_finish.add_argument(
+        "--status", choices=["blocked", "succeeded", "failed", "unknown"], required=True
+    )
+    turn_finish.add_argument("--summary", required=True)
+    turn_finish.add_argument("--lifecycle-evidence")
+
     evaluate = subparsers.add_parser("evaluate", help="Record an independent evaluation")
     evaluate.add_argument("task_id")
     evaluate.add_argument("--run-id")
@@ -173,6 +213,34 @@ def _run(args: argparse.Namespace) -> Any:
             duration_seconds=args.duration_seconds,
             retries=args.retries,
             blocked_on=args.blocked_on,
+        )
+
+    if args.command == "herdr":
+        if args.herdr_command == "show":
+            return registry.get_run(args.run_id)["herdr_binding"]
+        return registry.bind_herdr_run(
+            args.run_id,
+            herdr_session=args.herdr_session,
+            worker_name=args.worker,
+            agent_kind=args.kind,
+            status=args.status,
+            session_source=args.session_source,
+            session_agent=args.session_agent,
+            session_ref_kind=args.session_ref_kind,
+            session_value=args.session_value,
+            pane_id=args.pane_id,
+            tab_id=args.tab_id,
+            workspace_id=args.workspace_id,
+        )
+
+    if args.command == "turn":
+        if args.turn_command == "start":
+            return registry.start_turn(args.run_id, purpose=args.purpose, prompt=args.prompt)
+        return registry.finish_turn(
+            args.turn_id,
+            status=args.status,
+            summary=args.summary,
+            lifecycle_evidence=args.lifecycle_evidence,
         )
 
     if args.command == "evaluate":
