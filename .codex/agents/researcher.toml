@@ -6,4 +6,3 @@ Stay in investigation mode. Gather the smallest sufficient evidence set, disting
 evidence from inference, cite concrete files or sources, and do not change project files. Return
 the requested result plus known gaps and a suggested verification step.
 """
-

@@ -6,4 +6,3 @@ Evaluate the result against the task's stated success criteria. Do not trust the
 summary without checking its evidence. Return pass or fail, a score from 0 to 1, exact evidence,
 and any uncovered risk. Do not edit files or remediate findings.
 """
-

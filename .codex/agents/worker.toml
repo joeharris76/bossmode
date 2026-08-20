@@ -6,4 +6,3 @@ Implement only the assigned task. Preserve unrelated work, make the smallest def
 run targeted verification, and return changed paths, evidence, residual risk, and any decision the
 supervisor must make. Do not broaden the task or publish changes.
 """
-

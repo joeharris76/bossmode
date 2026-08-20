@@ -30,4 +30,3 @@
 - Use `uv run` for Python commands.
 - Run `uv run ruff check .`, `uv run ruff format --check .`, and `uv run pytest` before completion.
 - Keep the spike standard-library-only at runtime.
-
