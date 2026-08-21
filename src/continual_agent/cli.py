@@ -117,7 +117,7 @@ def _parser() -> argparse.ArgumentParser:
     turn_finish.add_argument(
         "--status", choices=["blocked", "succeeded", "failed", "unknown"], required=True
     )
-    turn_finish.add_argument("--summary", required=True)
+    turn_finish.add_argument("--summary")
     turn_finish.add_argument("--lifecycle-evidence")
 
     evaluate = subparsers.add_parser("evaluate", help="Record an independent evaluation")

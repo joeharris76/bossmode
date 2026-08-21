@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from continual_agent.cli import main
 
@@ -61,7 +62,8 @@ def test_cli_returns_structured_error(tmp_path, capsys):
     assert error == {"error": "task not found: missing"}
 
 
-def test_cli_records_herdr_binding_and_turn(tmp_path, capsys):
+def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     database = tmp_path / "control.db"
     assert (
         main(
@@ -158,3 +160,32 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys):
     assert main(["--db", str(database), "task", "show", task["id"]]) == 0
     shown_task = json.loads(capsys.readouterr().out)
     assert shown_task["runs"][0]["turns"][0]["id"] == turn["id"]
+
+    result_path = Path(turn["artifact_path"])
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps(
+            {
+                "turn_id": turn["id"],
+                "status": "succeeded",
+                "summary": "CLI result verified",
+                "artifacts": [],
+            }
+        )
+    )
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "turn",
+                "finish",
+                turn["id"],
+                "--status",
+                "succeeded",
+            ]
+        )
+        == 0
+    )
+    finished_turn = json.loads(capsys.readouterr().out)
+    assert finished_turn["result"]["summary"] == "CLI result verified"

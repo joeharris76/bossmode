@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from pathlib import Path
+
 import pytest
 
-from continual_agent.registry import Registry, RegistryError
+from continual_agent.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
 
 
 @pytest.fixture
@@ -16,6 +20,28 @@ def create_task(registry: Registry, *, title: str = "Test task", priority: int =
         goal=f"Complete {title}",
         success_criteria="Independent evidence passes",
         priority=priority,
+    )
+
+
+def write_turn_result(
+    turn: dict,
+    *,
+    turn_id: str | None = None,
+    status: str = "succeeded",
+    summary: str = "Result verified",
+    artifacts: list[dict] | None = None,
+) -> None:
+    path = Path(turn["artifact_path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "turn_id": turn_id or turn["id"],
+                "status": status,
+                "summary": summary,
+                "artifacts": artifacts or [],
+            }
+        )
     )
 
 
@@ -183,7 +209,8 @@ def test_evaluation_rejects_same_run_role(registry):
     assert registry.get_task(task["id"])["state"] == "evaluating"
 
 
-def test_herdr_binding_records_native_session_and_correlated_turns(registry):
+def test_herdr_binding_records_native_session_and_correlated_turns(registry, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     task = create_task(registry)
     run = registry.start_run(task["id"], agent_role="claude")
     binding = registry.bind_herdr_run(
@@ -201,6 +228,7 @@ def test_herdr_binding_records_native_session_and_correlated_turns(registry):
     )
 
     first = registry.start_turn(run["id"], purpose="task", prompt="Produce the report")
+    write_turn_result(first, summary="Report written")
     registry.finish_turn(
         first["id"],
         status="succeeded",
@@ -290,6 +318,39 @@ def test_herdr_worker_cannot_be_bound_to_two_runs(registry):
         )
 
 
+def test_finished_binding_releases_worker_name_for_a_later_run(registry):
+    task = create_task(registry)
+    first_run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        first_run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_reuse",
+        agent_kind="claude",
+        session_source="herdr:claude",
+        session_agent="claude",
+        session_ref_kind="id",
+        session_value="claude-session-1",
+    )
+    registry.finish_run(first_run["id"], outcome="failed", summary="Reviewer requested a retry")
+    assert registry.get_run(first_run["id"])["herdr_binding"]["status"] == "stale"
+
+    registry.transition_task(task["id"], "ready", actor="supervisor", reason="retry")
+    second_run = registry.start_run(task["id"], agent_role="claude")
+    second_binding = registry.bind_herdr_run(
+        second_run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_reuse",
+        agent_kind="claude",
+        session_source="herdr:claude",
+        session_agent="claude",
+        session_ref_kind="id",
+        session_value="claude-session-1",
+    )
+
+    assert second_binding["status"] == "live"
+    assert second_binding["native_session"]["value"] == "claude-session-1"
+
+
 def test_turn_requires_live_herdr_binding(registry):
     task = create_task(registry)
     run = registry.start_run(task["id"], agent_role="claude")
@@ -308,7 +369,45 @@ def test_turn_requires_live_herdr_binding(registry):
         registry.start_turn(run["id"], purpose="task", prompt="hello")
 
 
-def test_run_cannot_finish_with_open_turn(registry):
+def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_result",
+        agent_kind="claude",
+    )
+    turn = registry.start_turn(run["id"], purpose="task", prompt="hello")
+
+    with pytest.raises(RegistryError, match="already has an open turn"):
+        registry.start_turn(run["id"], purpose="correction", prompt="retry")
+    with pytest.raises(RegistryError, match="result is unavailable"):
+        registry.finish_turn(turn["id"], status="succeeded")
+
+    write_turn_result(turn, turn_id="foreign-turn")
+    with pytest.raises(RegistryError, match="ID does not match"):
+        registry.finish_turn(turn["id"], status="succeeded")
+
+    Path(turn["artifact_path"]).write_bytes(b"x" * (MAX_TURN_RESULT_BYTES + 1))
+    with pytest.raises(RegistryError, match="exceeds"):
+        registry.finish_turn(turn["id"], status="succeeded")
+
+    write_turn_result(
+        turn,
+        summary="Verified result",
+        artifacts=[{"path": "result.md", "kind": "report"}],
+    )
+    finished = registry.finish_turn(turn["id"], status="succeeded")
+
+    assert finished["summary"] == "Verified result"
+    assert finished["result"]["turn_id"] == turn["id"]
+    assert finished["result"]["artifacts"][0]["path"] == "result.md"
+
+
+def test_run_cannot_finish_with_open_turn(registry, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     task = create_task(registry)
     run = registry.start_run(task["id"], agent_role="claude")
     registry.bind_herdr_run(
@@ -322,27 +421,73 @@ def test_run_cannot_finish_with_open_turn(registry):
     with pytest.raises(RegistryError, match="unfinished turn"):
         registry.finish_run(run["id"], outcome="succeeded", summary="too early")
 
+    write_turn_result(turn, summary="done")
     registry.finish_turn(turn["id"], status="succeeded", summary="done")
     finished = registry.finish_run(run["id"], outcome="succeeded", summary="complete")
     assert finished["outcome"] == "succeeded"
 
 
-def test_initialize_upgrades_additive_schema_from_version_one(tmp_path):
+def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     database = tmp_path / "control.db"
+    version_one = Path(__file__).parent / "fixtures" / "schema_v1.sql"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(version_one.read_text())
+
     registry = Registry(database)
     registry.initialize()
-    with registry._connect() as connection:
-        connection.execute("UPDATE schema_meta SET version = 1")
-
-    registry.initialize()
 
     with registry._connect() as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 2
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
+        turn_columns = {row[1] for row in connection.execute("PRAGMA table_info(run_turns)")}
     assert {"herdr_bindings", "run_turns"} <= tables
+    assert "result_json" in turn_columns
+
+
+def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
+    database = tmp_path / "control.db"
+    version_one = Path(__file__).parent / "fixtures" / "schema_v1.sql"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(version_one.read_text())
+        Registry._migrate_v1_to_v2(connection)
+        connection.execute("UPDATE schema_meta SET version = 2")
+        connection.execute(
+            """
+            INSERT INTO tasks(
+                id, title, goal, success_criteria, state, permissions_json,
+                created_at, updated_at
+            ) VALUES ('task_old', 'Old', 'Migrate', 'Preserved', 'failed', '{}', 'now', 'now')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO runs(
+                id, task_id, agent_role, status, artifacts_json, retries,
+                started_at, finished_at
+            ) VALUES ('run_old', 'task_old', 'claude', 'finished', '[]', 0, 'now', 'now')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO herdr_bindings(
+                run_id, herdr_session, worker_name, agent_kind,
+                status, bound_at, reconciled_at
+            ) VALUES ('run_old', 'continual-agent', 'worker_old', 'claude', 'live', 'now', 'now')
+            """
+        )
+
+    registry = Registry(database)
+    registry.initialize()
+
+    migrated = registry.get_run("run_old")
+    assert migrated["herdr_binding"]["status"] == "stale"
+    with registry._connect() as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(herdr_bindings)")}
+    assert "idx_active_herdr_worker" in indexes
 
 
 def test_preference_proposes_memory_without_applying_it(registry):

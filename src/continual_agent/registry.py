@@ -29,7 +29,8 @@ HERDR_BINDING_STATUSES = {"pending", "live", "blocked", "stale", "unknown"}
 TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
 TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
-SCHEMA_VERSION = 2
+MAX_TURN_RESULT_BYTES = 1_048_576
+SCHEMA_VERSION = 3
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -110,8 +111,7 @@ CREATE TABLE IF NOT EXISTS herdr_bindings (
     workspace_id TEXT,
     status TEXT NOT NULL CHECK (status IN ('pending', 'live', 'blocked', 'stale', 'unknown')),
     bound_at TEXT NOT NULL,
-    reconciled_at TEXT NOT NULL,
-    UNIQUE (herdr_session, worker_name)
+    reconciled_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS run_turns (
@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS run_turns (
     status TEXT NOT NULL CHECK (status IN ('running', 'blocked', 'succeeded', 'failed', 'unknown')),
     lifecycle_evidence TEXT,
     summary TEXT,
+    result_json TEXT,
     started_at TEXT NOT NULL,
     finished_at TEXT,
     UNIQUE (run_id, ordinal),
@@ -172,6 +173,12 @@ CREATE INDEX IF NOT EXISTS idx_feedback_recurrence_key
     ON feedback(recurrence_key, created_at);
 CREATE INDEX IF NOT EXISTS idx_run_turns_run_ordinal
     ON run_turns(run_id, ordinal);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_herdr_worker
+    ON herdr_bindings(herdr_session, worker_name)
+    WHERE status <> 'stale';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_turn_per_run
+    ON run_turns(run_id)
+    WHERE status = 'running';
 """
 
 
@@ -202,16 +209,157 @@ class Registry:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
-            connection.executescript(SCHEMA)
+            schema_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            ).fetchone()
+            if schema_exists is None:
+                connection.executescript(SCHEMA)
+                connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
+                return
             version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
             if version is None:
-                connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
-            elif version["version"] > SCHEMA_VERSION:
+                raise RegistryError("registry schema version is missing")
+            current = version["version"]
+            if current > SCHEMA_VERSION:
                 raise RegistryError(
-                    f"registry schema {version['version']} is newer than supported {SCHEMA_VERSION}"
+                    f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
                 )
-            elif version["version"] < SCHEMA_VERSION:
-                connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
+            migrations = {
+                1: self._migrate_v1_to_v2,
+                2: self._migrate_v2_to_v3,
+            }
+            while current < SCHEMA_VERSION:
+                migration = migrations.get(current)
+                if migration is None:
+                    raise RegistryError(f"no registry migration from schema {current}")
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    migration(connection)
+                    current += 1
+                    connection.execute("UPDATE schema_meta SET version = ?", (current,))
+                    connection.commit()
+                except sqlite3.Error as error:
+                    connection.rollback()
+                    raise RegistryError(
+                        f"registry migration {current} -> {current + 1} failed: {error}"
+                    ) from error
+
+    @staticmethod
+    def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE herdr_bindings (
+                run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                herdr_session TEXT NOT NULL,
+                worker_name TEXT NOT NULL,
+                agent_kind TEXT NOT NULL,
+                session_source TEXT,
+                session_agent TEXT,
+                session_ref_kind TEXT CHECK (
+                    session_ref_kind IS NULL OR session_ref_kind IN ('id', 'path')
+                ),
+                session_value TEXT,
+                pane_id TEXT,
+                tab_id TEXT,
+                workspace_id TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN ('pending', 'live', 'blocked', 'stale', 'unknown')
+                ),
+                bound_at TEXT NOT NULL,
+                reconciled_at TEXT NOT NULL,
+                UNIQUE (herdr_session, worker_name)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE run_turns (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                purpose TEXT NOT NULL CHECK (purpose IN (
+                    'task', 'correction', 'clarification', 'review_follow_up'
+                )),
+                prompt_digest TEXT NOT NULL,
+                artifact_path TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('running', 'blocked', 'succeeded', 'failed', 'unknown')
+                ),
+                lifecycle_evidence TEXT,
+                summary TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                UNIQUE (run_id, ordinal),
+                UNIQUE (run_id, artifact_path)
+            )
+            """
+        )
+        connection.execute("CREATE INDEX idx_run_turns_run_ordinal ON run_turns(run_id, ordinal)")
+
+    @staticmethod
+    def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+        connection.execute("ALTER TABLE herdr_bindings RENAME TO herdr_bindings_v2")
+        connection.execute(
+            """
+            CREATE TABLE herdr_bindings (
+                run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                herdr_session TEXT NOT NULL,
+                worker_name TEXT NOT NULL,
+                agent_kind TEXT NOT NULL,
+                session_source TEXT,
+                session_agent TEXT,
+                session_ref_kind TEXT CHECK (
+                    session_ref_kind IS NULL OR session_ref_kind IN ('id', 'path')
+                ),
+                session_value TEXT,
+                pane_id TEXT,
+                tab_id TEXT,
+                workspace_id TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN ('pending', 'live', 'blocked', 'stale', 'unknown')
+                ),
+                bound_at TEXT NOT NULL,
+                reconciled_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO herdr_bindings(
+                run_id, herdr_session, worker_name, agent_kind,
+                session_source, session_agent, session_ref_kind, session_value,
+                pane_id, tab_id, workspace_id, status, bound_at, reconciled_at
+            )
+            SELECT
+                run_id, herdr_session, worker_name, agent_kind,
+                session_source, session_agent, session_ref_kind, session_value,
+                pane_id, tab_id, workspace_id, status, bound_at, reconciled_at
+            FROM herdr_bindings_v2
+            """
+        )
+        connection.execute("DROP TABLE herdr_bindings_v2")
+        connection.execute("ALTER TABLE run_turns ADD COLUMN result_json TEXT")
+        connection.execute(
+            """
+            UPDATE herdr_bindings
+            SET status = 'stale'
+            WHERE run_id IN (SELECT id FROM runs WHERE status = 'finished')
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX idx_active_herdr_worker
+            ON herdr_bindings(herdr_session, worker_name)
+            WHERE status <> 'stale'
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX idx_one_open_turn_per_run
+            ON run_turns(run_id)
+            WHERE status = 'running'
+            """
+        )
 
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
@@ -442,7 +590,7 @@ class Registry:
                 ).fetchone()
             )
             turns = [
-                dict(row)
+                self._hydrate_turn(dict(row))
                 for row in connection.execute(
                     "SELECT * FROM run_turns WHERE run_id = ? ORDER BY ordinal", (run_id,)
                 )
@@ -508,7 +656,7 @@ class Registry:
             claimed = connection.execute(
                 """
                 SELECT run_id FROM herdr_bindings
-                WHERE herdr_session = ? AND worker_name = ?
+                WHERE herdr_session = ? AND worker_name = ? AND status <> 'stale'
                 """,
                 (herdr_session, worker_name),
             ).fetchone()
@@ -616,6 +764,12 @@ class Registry:
                 raise RegistryError(
                     f"turn requires a live Herdr binding; found {binding['status']}"
                 )
+            open_turn = connection.execute(
+                "SELECT id FROM run_turns WHERE run_id = ? AND status = 'running' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if open_turn is not None:
+                raise RegistryError(f"run already has an open turn: {open_turn['id']}")
             ordinal = connection.execute(
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM run_turns WHERE run_id = ?",
                 (run_id,),
@@ -644,12 +798,12 @@ class Registry:
         turn_id: str,
         *,
         status: str,
-        summary: str,
+        summary: str | None = None,
         lifecycle_evidence: str | None = None,
     ) -> dict[str, Any]:
         if status not in TERMINAL_TURN_STATUSES:
             raise RegistryError(f"invalid terminal turn status: {status}")
-        if not summary.strip():
+        if status != "succeeded" and (summary is None or not summary.strip()):
             raise RegistryError("turn summary is required")
         with self._transaction() as connection:
             turn = connection.execute("SELECT * FROM run_turns WHERE id = ?", (turn_id,)).fetchone()
@@ -657,18 +811,82 @@ class Registry:
                 raise RegistryError(f"turn not found: {turn_id}")
             if turn["status"] != "running":
                 raise RegistryError(f"turn already finished: {turn_id}")
+            result = None
+            if status == "succeeded":
+                result = self._validated_turn_result(dict(turn), expected_summary=summary)
+                summary = result["summary"]
             connection.execute(
                 """
                 UPDATE run_turns
-                SET status = ?, summary = ?, lifecycle_evidence = ?, finished_at = ?
+                SET status = ?, summary = ?, lifecycle_evidence = ?,
+                    result_json = ?, finished_at = ?
                 WHERE id = ? AND status = 'running'
                 """,
-                (status, summary, lifecycle_evidence, _now(), turn_id),
+                (
+                    status,
+                    summary,
+                    lifecycle_evidence,
+                    _json(result) if result is not None else None,
+                    _now(),
+                    turn_id,
+                ),
             )
         return self.get_turn(turn_id)
 
     def get_turn(self, turn_id: str) -> dict[str, Any]:
-        return self._get_record("run_turns", turn_id)
+        return self._hydrate_turn(self._get_record("run_turns", turn_id))
+
+    @staticmethod
+    def _hydrate_turn(turn: dict[str, Any]) -> dict[str, Any]:
+        result_json = turn.pop("result_json", None)
+        turn["result"] = json.loads(result_json) if result_json is not None else None
+        return turn
+
+    @staticmethod
+    def _validated_turn_result(
+        turn: dict[str, Any], *, expected_summary: str | None
+    ) -> dict[str, Any]:
+        path = Path(turn["artifact_path"])
+        try:
+            with path.open("rb") as result_file:
+                raw = result_file.read(MAX_TURN_RESULT_BYTES + 1)
+        except OSError as error:
+            raise RegistryError(
+                f"turn result is unavailable at {path}: {error.strerror}"
+            ) from error
+        if len(raw) > MAX_TURN_RESULT_BYTES:
+            raise RegistryError(f"turn result exceeds {MAX_TURN_RESULT_BYTES} bytes: {path}")
+        try:
+            result = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RegistryError(f"turn result is not valid JSON: {path}") from error
+        if not isinstance(result, dict):
+            raise RegistryError("turn result must be a JSON object")
+        required = {"turn_id", "status", "summary", "artifacts"}
+        missing = sorted(required - result.keys())
+        if missing:
+            raise RegistryError(f"turn result is missing fields: {', '.join(missing)}")
+        if result["turn_id"] != turn["id"]:
+            raise RegistryError("turn result ID does not match the open turn")
+        if result["status"] != "succeeded":
+            raise RegistryError("successful turn result must have status succeeded")
+        if not isinstance(result["summary"], str) or not result["summary"].strip():
+            raise RegistryError("turn result summary must be a non-empty string")
+        if expected_summary is not None and expected_summary != result["summary"]:
+            raise RegistryError("turn result summary does not match --summary")
+        artifacts = result["artifacts"]
+        if not isinstance(artifacts, list) or any(
+            not isinstance(artifact, dict)
+            or not isinstance(artifact.get("path"), str)
+            or not artifact["path"].strip()
+            or not isinstance(artifact.get("kind"), str)
+            or not artifact["kind"].strip()
+            for artifact in artifacts
+        ):
+            raise RegistryError(
+                "turn result artifacts must contain non-empty path and kind strings"
+            )
+        return result
 
     @staticmethod
     def _session_reference(binding: dict[str, Any]) -> dict[str, str] | None:
@@ -731,6 +949,14 @@ class Registry:
                     timestamp,
                     run_id,
                 ),
+            )
+            connection.execute(
+                """
+                UPDATE herdr_bindings
+                SET status = 'stale', reconciled_at = ?
+                WHERE run_id = ?
+                """,
+                (timestamp, run_id),
             )
             task_outcome = "evaluating" if outcome == "succeeded" else outcome
             changed = connection.execute(
