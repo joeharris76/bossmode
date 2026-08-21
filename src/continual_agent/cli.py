@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -290,6 +291,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit(_run(args))
     except RegistryError as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
+        return 2
+    except sqlite3.Error as error:
+        print(json.dumps({"error": f"database error: {error}"}), file=sys.stderr)
         return 2
     return 0
 

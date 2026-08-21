@@ -20,8 +20,9 @@ The wrapper still models a session as a string and infers results from terminal 
 contents.
 
 Herdr does not correlate `agent prompt --wait` with an individual turn. The MVP closes that gap by
-recording a turn before prompting and requiring the worker to write a JSON result to an exact,
-turn-specific path. It does not infer success or an artifact path from terminal text.
+allowing one open turn, requiring the worker to write bounded JSON to an exact turn-specific path,
+and validating its ID and status before accepting success. It does not infer success or an artifact
+path from terminal text.
 
 ## Safety boundaries
 

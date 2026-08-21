@@ -12,11 +12,13 @@ different database.
 
 1. Run `uv run continual-agent init` idempotently.
 2. Run `uv run continual-agent supervisor tick` and parse its JSON.
-3. For every active registry task, reconcile its executor against live state before sending,
+3. Use the nested run, binding, and turn records in `active` and `needs_evaluation` to recover after
+   interruption. Use `run show` or `turn show` for one exact record.
+4. For every active registry task, reconcile its executor against live state before sending,
    interrupting, completing, or closing it. Use live Codex task state for Codex subagents and
    `herdr agent get/list` for Herdr workers. Treat missing, foreign, or ambiguous identity as a
    blocker; stored IDs are indexes, not capabilities.
-4. Surface `needs_user` and `blocked` items before starting new work when they affect priority or
+5. Surface `needs_user` and `blocked` items before starting new work when they affect priority or
    safety. Ask only for the decision the system cannot safely make.
 
 ## Dispatch
@@ -37,20 +39,21 @@ different database.
 
 ## Herdr turns
 
-1. Use the official, release-matched Herdr commands. Do not invoke `herdr-orch`.
-2. Before prompting, require one unambiguous live worker matching the run binding and wait until it
+Read `docs/agent-workflow.md` before the first external run. Its command sequence and result schema
+are canonical.
+
+1. Use the official, release-matched Herdr commands; never invoke `herdr-orch`.
+2. Require one unambiguous live worker matching the binding and wait until it
    is `idle` or `done`. `agent prompt --wait` is lifecycle-based and cannot identify a turn that
    began while the worker was already busy.
-3. Register the logical prompt with `continual-agent turn start`. Use its returned `turn_id` and
-   `artifact_path` in the actual worker prompt. Require the worker to write one JSON object with
-   `turn_id`, `status`, `summary`, and `artifacts` to that exact path.
+3. Call `turn start`, put its `turn_id` and `artifact_path` in the worker prompt, then prompt through
+   Herdr. Only one turn may remain open.
 4. Run `herdr agent prompt NAME TEXT --wait` and inspect `blocked`, stalled, unknown, and error
    states separately. Never approve a trust or permission dialog without explicit user authority.
-5. Read the exact artifact path and require its `turn_id` to match. Terminal screen text is
-   diagnostic evidence only; never search it for an output path.
-6. Record the result with `continual-agent turn finish`. After a reviewer correction, start another
-   turn against the same live worker and native session.
-7. Re-run `herdr agent get` after the first session-bearing event and bind the structured native
+5. Call `turn finish --status succeeded` only after the worker settles. It reads and validates the
+   exact result path; on rejection, preserve `failed` or `unknown` with explicit evidence. Never
+   infer success or a path from terminal text.
+6. Re-run `herdr agent get` after the first session-bearing event and bind the structured native
    session reference `{source, agent, kind, value}`. Refuse a different native reference for the
    same run.
 

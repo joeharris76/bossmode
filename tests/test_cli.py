@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from continual_agent.cli import main
@@ -60,6 +61,23 @@ def test_cli_returns_structured_error(tmp_path, capsys):
     assert exit_code == 2
     error = json.loads(capsys.readouterr().err)
     assert error == {"error": "task not found: missing"}
+
+
+def test_cli_returns_structured_error_when_database_is_locked(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert main(["--db", str(database), "init"]) == 0
+    capsys.readouterr()
+    lock = sqlite3.connect(database, isolation_level=None)
+    lock.execute("BEGIN IMMEDIATE")
+    try:
+        exit_code = main(["--db", str(database), "supervisor", "tick"])
+    finally:
+        lock.rollback()
+        lock.close()
+
+    assert exit_code == 2
+    error = json.loads(capsys.readouterr().err)
+    assert error == {"error": "database error: database is locked"}
 
 
 def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):

@@ -9,13 +9,12 @@ context, recording outcomes, refining reusable workflows, and enforcing recurrin
 
 ## What this spike implements
 
-- A transactional SQLite task and thread registry.
+- A transactional SQLite task and run registry.
 - Enforced task and promotion state machines.
 - Agent-run records with model, effort, token, retry, timing, and artifact fields.
 - Optional Herdr bindings that preserve the runtime name, native session reference, and observed
   pane identity without making SQLite the lifecycle authority.
-- Correlated turn records with a generated output path, prompt digest, lifecycle evidence, and
-  terminal outcome.
+- Correlated turn records that validate bounded, turn-specific JSON before accepting success.
 - Independent evaluations and structured feedback.
 - Conservative promotion proposals:
   - preference or observation -> memory
@@ -46,33 +45,13 @@ uv run continual-agent task add \
 uv run continual-agent supervisor tick
 ```
 
-Every command returns JSON. Use the returned task and run IDs in later commands:
+Application commands return JSON, including registry and database errors. Use the returned IDs in
+later commands:
 
 ```bash
 uv run continual-agent run start TASK_ID \
   --role researcher \
   --thread-id CODEX_THREAD_ID
-
-# For an explicitly requested external worker, reserve the run before creating the worker.
-uv run continual-agent run start TASK_ID --role claude
-
-uv run continual-agent herdr bind RUN_ID \
-  --herdr-session continual-agent \
-  --worker worker_1234abcd \
-  --kind claude \
-  --pane-id LIVE_PANE_ID \
-  --tab-id LIVE_TAB_ID \
-  --workspace-id LIVE_WORKSPACE_ID
-
-uv run continual-agent turn start RUN_ID \
-  --purpose task \
-  --prompt "Produce the requested report"
-
-# Put the returned turn_id and artifact_path in the Herdr prompt. After checking that exact JSON:
-uv run continual-agent turn finish TURN_ID \
-  --status succeeded \
-  --summary "Worker produced the correlated artifact" \
-  --lifecycle-evidence done
 
 uv run continual-agent run finish RUN_ID \
   --outcome succeeded \
@@ -94,13 +73,16 @@ uv run continual-agent feedback TASK_ID \
 uv run continual-agent supervisor tick
 ```
 
+The external-agent sequence and exact result contract are documented once in
+[`docs/agent-workflow.md`](docs/agent-workflow.md).
+
 ## Run it as a Codex experiment
 
 1. Open this directory as a Codex project.
 2. Start a long-running goal in one pinned task:
 
    ```text
-   /goal Use $supervisor to manage the MVP registry. Dispatch at most one writing agent at a
+   /goal Use $supervisor to manage the MVP registry. Dispatch at most one agent at a
    time, require an independent evaluation before calling work learned, and never apply a
    promotion without my explicit approval.
    ```
@@ -126,9 +108,9 @@ under test so `agent get/list` can expose `{source, agent, kind, value}` and Her
 sessions. Do not revive `herdr-orch`, add a YAML runner, scrape output paths from the screen, or add
 an MCP server for this spike.
 
-For each prompt, wait for the bound worker to settle, record a turn, and require the worker to write
-JSON to the exact generated `.continual/turns/<turn_id>.json` path. Screen reads are diagnostic only.
-This avoids claiming that Herdr's lifecycle wait is correlated to a particular prompt.
+The supervisor dispatches one active run at a time, and each Herdr run permits one open turn. A
+successful turn reads at most 1 MiB from the exact generated `.continual/turns/<turn_id>.json` path
+and validates its ID, status, summary, and artifact manifest. Screen reads remain diagnostic only.
 
 The architecture decision and replacement trigger are recorded in
 [`docs/adr/0001-herdr-runtime-boundary.md`](docs/adr/0001-herdr-runtime-boundary.md).
@@ -141,11 +123,12 @@ are documented in [`docs/agent-workflow.md`](docs/agent-workflow.md).
 backlog -> ready -> running -> evaluating -> succeeded -> archived
                    |              \-> failed -> ready
                    |-> blocked -> ready
-                   \-> waiting_user -> ready/running
+                   \-> waiting_user -> ready
 ```
 
 Task transitions and dispatch use conditional SQLite updates inside `BEGIN IMMEDIATE`
-transactions. Concurrent supervisors therefore fail instead of silently overwriting state.
+transactions. Only run operations may enter or leave `running`; concurrent supervisors therefore
+fail instead of silently overwriting state. Existing schema versions migrate explicitly.
 
 Promotions have a separate approval path:
 
@@ -157,7 +140,8 @@ proposed -> accepted -> applied
 Successful execution enters `evaluating`; only a recorded passing evaluation enters `succeeded`.
 
 `propose` never edits memories, skills, `AGENTS.md`, or enforcement code. Applying an accepted
-proposal remains an explicit, reviewable user-authorized change.
+proposal remains an explicit, reviewable user-authorized change. The proposal thresholds are
+experimental heuristics to evaluate, not learned model behavior.
 
 ## Verification
 

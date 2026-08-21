@@ -36,7 +36,8 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 
 1. The supervisor runs `uv run continual-agent init` and `supervisor tick`.
 2. It records the user request with `task add`, including success criteria and permission limits.
-3. It selects only the task returned in `dispatch` and starts one run.
+3. It selects only the task returned in `dispatch` and starts one run. Dispatch remains empty while
+   another task is running or awaiting evaluation.
 4. It delegates through either the Codex path or the Herdr path below.
 5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
 6. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
@@ -115,13 +116,13 @@ uv run continual-agent herdr bind RUN_ID \
 
 The registry accepts newly observed pane metadata and the first native session reference. It
 rejects a different Herdr session, worker, agent kind, or native session tuple for that run. The
-same session and worker name cannot be bound to another run. The command records an observation;
-it does not independently prove the worker is live.
+same session and worker name cannot be bound to another active run. The command records an
+observation; it does not independently prove the worker is live.
 
 ### 3. Correlate every prompt
 
 First require the worker to be unambiguously `idle` or `done`. Register the logical prompt before
-sending it:
+sending it. A run may have only one open turn:
 
 ```bash
 uv run continual-agent turn start RUN_ID \
@@ -154,16 +155,19 @@ The result file contract is:
 }
 ```
 
-Allowed terminal statuses are `succeeded`, `blocked`, `failed`, and `unknown`. The supervisor reads
-only the exact generated result path, checks the `turn_id`, validates declared artifacts, and then
-records the result:
+Allowed terminal statuses are `succeeded`, `blocked`, `failed`, and `unknown`. For success,
+`turn finish` reads at most 1 MiB from the exact generated path, validates the JSON object, requires
+the matching `turn_id` and `succeeded` status, and stores the validated result:
 
 ```bash
 uv run continual-agent turn finish TURN_ID \
   --status succeeded \
-  --summary "Worker result matched the turn and artifacts" \
   --lifecycle-evidence done
 ```
+
+The supervisor then checks that each declared artifact exists and satisfies the task before
+finishing the run. For a missing or invalid result, record `failed` or `unknown` with an explicit
+`--summary`; successful finish fails closed instead of trusting a supervisor assertion.
 
 Herdr's `--wait` observes lifecycle state, not a prompt ID. If the agent was already working, a
 different active turn could satisfy the wait. This is why the supervisor requires a settled worker
@@ -171,10 +175,18 @@ before submission and treats the exact result file—not terminal text—as corr
 
 ### 4. Continue the same agent
 
-For a clarification or reviewer correction, reconcile the same live worker and native session,
-then create another turn with `--purpose clarification`, `correction`, or `review_follow_up`. Do not
-create a replacement worker merely because the pane moved or the server restarted; Herdr owns
-restoration, while the immutable native session tuple detects accidental substitution.
+For a clarification before run completion, reconcile the same worker and start another turn with
+`--purpose clarification`, `correction`, or `review_follow_up`. If evaluation requires a later run,
+transition the task back to `ready`, start a new run, and bind the same live worker and native
+session. Finished-run bindings become `stale`, so they retain history without reserving the live
+worker name. Do not replace a worker merely because its pane moved or the server restarted.
+
+## Recover after interruption
+
+Run `supervisor tick`. Its `active` and `needs_evaluation` entries contain nested runs, Herdr
+bindings, turns, output paths, and validated results. Use `continual-agent run show RUN_ID` or
+`continual-agent turn show TURN_ID` when you need one exact record, then reconcile that stored
+identity against live Codex or Herdr state before continuing.
 
 ## Reconciliation and failure rules
 
@@ -184,8 +196,8 @@ restoration, while the immutable native session tuple detects accidental substit
   general task permission.
 - Herdr reports `blocked`, `unknown`, stalled, or timeout: preserve that result. Do not flatten it
   into failure or retry blindly.
-- Missing, malformed, or wrong-turn result file: finish the turn as `unknown` or `failed` with the
-  exact evidence; do not scrape a path from screen output.
+- Missing, oversized, malformed, or wrong-turn result file: successful finish is rejected; finish
+  the turn as `unknown` or `failed` with the exact evidence instead.
 - Open turn: finish it with an explicit terminal status before finishing its run.
 - Worker result passes its own checks: finish the run as `succeeded`, then obtain an independent
   evaluation before the task can become `succeeded`.
