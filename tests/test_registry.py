@@ -73,6 +73,50 @@ def test_invalid_lifecycle_transition_fails_closed(registry):
     assert registry.get_task(task["id"])["state"] == "ready"
 
 
+def test_task_creation_rejects_terminal_and_runtime_owned_states(registry):
+    for state in ("running", "evaluating", "succeeded", "failed", "archived"):
+        with pytest.raises(RegistryError, match="invalid initial task state"):
+            registry.create_task(
+                title=state,
+                goal="Do not bypass lifecycle gates",
+                success_criteria="Creation is rejected",
+                state=state,
+            )
+
+
+def test_only_run_operations_may_enter_or_leave_running(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="worker")
+
+    with pytest.raises(RegistryError, match="running -> blocked"):
+        registry.transition_task(
+            task["id"],
+            "blocked",
+            actor="supervisor",
+            reason="manual shortcut",
+        )
+
+    assert registry.get_run(run["id"])["status"] == "running"
+    registry.finish_run(run["id"], outcome="waiting_user", summary="Need a decision")
+    with pytest.raises(RegistryError, match="waiting_user -> running"):
+        registry.transition_task(
+            task["id"],
+            "running",
+            actor="supervisor",
+            reason="manual resume",
+        )
+
+
+def test_start_run_rejects_an_existing_open_run_in_inconsistent_state(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="worker")
+    with registry._connect() as connection:
+        connection.execute("UPDATE tasks SET state = 'ready' WHERE id = ?", (task["id"],))
+
+    with pytest.raises(RegistryError, match=f"running run: {run['id']}"):
+        registry.start_run(task["id"], agent_role="worker")
+
+
 def test_supervisor_selects_highest_priority_ready_task(registry):
     low = create_task(registry, title="Low", priority=1)
     high = create_task(registry, title="High", priority=10)
@@ -81,6 +125,18 @@ def test_supervisor_selects_highest_priority_ready_task(registry):
 
     assert tick["dispatch"]["id"] == high["id"]
     assert tick["dispatch"]["id"] != low["id"]
+
+
+def test_supervisor_is_single_flight_and_returns_recovery_details(registry):
+    active_task = create_task(registry, title="Active", priority=1)
+    active_run = registry.start_run(active_task["id"], agent_role="worker")
+    create_task(registry, title="Ready", priority=10)
+
+    tick = registry.supervisor_tick()
+
+    assert tick["dispatch"] is None
+    assert tick["active"][0]["runs"][0]["id"] == active_run["id"]
+    assert tick["active"][0]["runs"][0]["turns"] == []
 
 
 def test_supervisor_exposes_tasks_needing_evaluation(registry):
@@ -108,6 +164,23 @@ def test_failed_evaluation_fails_the_task(registry):
     )
 
     assert registry.get_task(task["id"])["state"] == "failed"
+
+
+def test_evaluation_rejects_same_run_role(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="reviewer")
+    registry.finish_run(run["id"], outcome="succeeded", summary="Execution completed")
+
+    with pytest.raises(RegistryError, match="must be independent"):
+        registry.add_evaluation(
+            task["id"],
+            run_id=run["id"],
+            evaluator="reviewer",
+            passed=True,
+            evidence="self report",
+        )
+
+    assert registry.get_task(task["id"])["state"] == "evaluating"
 
 
 def test_herdr_binding_records_native_session_and_correlated_turns(registry):

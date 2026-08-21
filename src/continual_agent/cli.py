@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from continual_agent.registry import TASK_STATES, Registry, RegistryError
+from continual_agent.registry import CREATE_TASK_STATES, TASK_STATES, Registry, RegistryError
 
 DEFAULT_DB = Path(".continual/control.db")
 
@@ -33,7 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     task_add.add_argument("--title", required=True)
     task_add.add_argument("--goal", required=True)
     task_add.add_argument("--success-criteria", required=True)
-    task_add.add_argument("--state", choices=sorted(TASK_STATES), default="ready")
+    task_add.add_argument("--state", choices=sorted(CREATE_TASK_STATES), default="ready")
     task_add.add_argument("--priority", type=int, default=0)
     task_add.add_argument("--permissions-json", default="{}")
     task_add.add_argument("--next-action")
@@ -61,6 +61,9 @@ def _parser() -> argparse.ArgumentParser:
     run_start.add_argument("--thread-id")
     run_start.add_argument("--model")
     run_start.add_argument("--reasoning-effort")
+
+    run_show = run_commands.add_parser("show")
+    run_show.add_argument("run_id")
 
     run_finish = run_commands.add_parser("finish")
     run_finish.add_argument("run_id")
@@ -105,6 +108,9 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     turn_start.add_argument("--prompt", required=True)
+
+    turn_show = turn_commands.add_parser("show")
+    turn_show.add_argument("turn_id")
 
     turn_finish = turn_commands.add_parser("finish")
     turn_finish.add_argument("turn_id")
@@ -204,6 +210,8 @@ def _run(args: argparse.Namespace) -> Any:
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
             )
+        if args.run_command == "show":
+            return registry.get_run(args.run_id)
         return registry.finish_run(
             args.run_id,
             outcome=args.outcome,
@@ -236,6 +244,8 @@ def _run(args: argparse.Namespace) -> Any:
     if args.command == "turn":
         if args.turn_command == "start":
             return registry.start_turn(args.run_id, purpose=args.purpose, prompt=args.prompt)
+        if args.turn_command == "show":
+            return registry.get_turn(args.turn_id)
         return registry.finish_turn(
             args.turn_id,
             status=args.status,

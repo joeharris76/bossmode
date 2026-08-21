@@ -145,3 +145,16 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys):
     turn = json.loads(capsys.readouterr().out)
     assert turn["status"] == "running"
     assert turn["artifact_path"].startswith(".continual/turns/turn_")
+
+    assert main(["--db", str(database), "run", "show", run["id"]]) == 0
+    shown_run = json.loads(capsys.readouterr().out)
+    assert shown_run["turns"][0]["id"] == turn["id"]
+    assert shown_run["herdr_binding"]["worker_name"] == "worker_1234"
+
+    assert main(["--db", str(database), "turn", "show", turn["id"]]) == 0
+    shown_turn = json.loads(capsys.readouterr().out)
+    assert shown_turn["artifact_path"] == turn["artifact_path"]
+
+    assert main(["--db", str(database), "task", "show", task["id"]]) == 0
+    shown_task = json.loads(capsys.readouterr().out)
+    assert shown_task["runs"][0]["turns"][0]["id"] == turn["id"]

@@ -22,6 +22,7 @@ TASK_STATES = {
     "failed",
     "archived",
 }
+CREATE_TASK_STATES = {"backlog", "ready"}
 
 TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed"}
 HERDR_BINDING_STATUSES = {"pending", "live", "blocked", "stale", "unknown"}
@@ -32,10 +33,10 @@ SCHEMA_VERSION = 2
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
-    "ready": {"running", "blocked", "archived"},
-    "running": {"waiting_user", "blocked", "evaluating", "failed"},
+    "ready": {"blocked", "archived"},
+    "running": set(),
     "evaluating": {"ready", "blocked", "archived"},
-    "waiting_user": {"ready", "running", "blocked", "archived"},
+    "waiting_user": {"ready", "blocked", "archived"},
     "blocked": {"ready", "archived"},
     "succeeded": {"archived"},
     "failed": {"ready", "archived"},
@@ -245,8 +246,8 @@ class Registry:
         permissions: dict[str, Any] | None = None,
         next_action: str | None = None,
     ) -> dict[str, Any]:
-        if state not in TASK_STATES:
-            raise RegistryError(f"unknown task state: {state}")
+        if state not in CREATE_TASK_STATES:
+            raise RegistryError(f"invalid initial task state: {state}")
         task_id = _id("task")
         timestamp = _now()
         with self._transaction() as connection:
@@ -295,10 +296,10 @@ class Registry:
                     "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
                 )
             ]
-            task["runs"] = [
-                dict(row)
+            run_ids = [
+                row["id"]
                 for row in connection.execute(
-                    "SELECT * FROM runs WHERE task_id = ? ORDER BY started_at", (task_id,)
+                    "SELECT id FROM runs WHERE task_id = ? ORDER BY started_at", (task_id,)
                 )
             ]
             task["evaluations"] = [
@@ -313,7 +314,8 @@ class Registry:
                     "SELECT * FROM feedback WHERE task_id = ? ORDER BY created_at", (task_id,)
                 )
             ]
-            return task
+        task["runs"] = [self.get_run(run_id) for run_id in run_ids]
+        return task
 
     def list_tasks(self, states: Iterable[str] | None = None) -> list[dict[str, Any]]:
         self.initialize()
@@ -392,6 +394,12 @@ class Registry:
                 raise RegistryError(f"task not found: {task_id}")
             if task["state"] != "ready":
                 raise RegistryError(f"task must be ready to start a run; found {task['state']}")
+            open_run = connection.execute(
+                "SELECT id FROM runs WHERE task_id = ? AND status = 'running' LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if open_run is not None:
+                raise RegistryError(f"task already has a running run: {open_run['id']}")
             timestamp = _now()
             changed = connection.execute(
                 """
@@ -769,12 +777,14 @@ class Registry:
                 raise RegistryError(f"task not found: {task_id}")
             if run_id is not None:
                 run = connection.execute(
-                    "SELECT task_id FROM runs WHERE id = ?", (run_id,)
+                    "SELECT task_id, agent_role FROM runs WHERE id = ?", (run_id,)
                 ).fetchone()
                 if run is None:
                     raise RegistryError(f"run not found: {run_id}")
                 if run["task_id"] != task_id:
                     raise RegistryError("evaluation run does not belong to task")
+                if run["agent_role"] == evaluator:
+                    raise RegistryError("evaluation must be independent from the run agent role")
             timestamp = _now()
             connection.execute(
                 """
@@ -968,10 +978,10 @@ class Registry:
         ready = self.list_tasks(["ready"])
         needs_user = self.list_tasks(["waiting_user"])
         blocked = self.list_tasks(["blocked"])
-        active = self.list_tasks(["running"])
-        needs_evaluation = self.list_tasks(["evaluating"])
+        active = [self.get_task(task["id"]) for task in self.list_tasks(["running"])]
+        needs_evaluation = [self.get_task(task["id"]) for task in self.list_tasks(["evaluating"])]
         return {
-            "dispatch": ready[0] if ready else None,
+            "dispatch": ready[0] if ready and not active and not needs_evaluation else None,
             "active": active,
             "needs_evaluation": needs_evaluation,
             "needs_user": needs_user,
