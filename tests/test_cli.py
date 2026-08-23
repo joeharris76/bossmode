@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from continual_agent.cli import main
 
 
@@ -207,3 +209,67 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
     )
     finished_turn = json.loads(capsys.readouterr().out)
     assert finished_turn["result"]["summary"] == "CLI result verified"
+    assert finished_turn["prompt"] == "Write the requested artifact"
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "finish",
+                run["id"],
+                "--outcome",
+                "succeeded",
+                "--summary",
+                "Run succeeded",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "evaluate",
+                task["id"],
+                "--run-id",
+                run["id"],
+                "--evaluator",
+                "reviewer",
+                "--passed",
+                "--evidence",
+                "CLI evaluation passed",
+            ]
+        )
+        == 0
+    )
+    evaluation = json.loads(capsys.readouterr().out)
+    assert evaluation["passed"] == 1
+    assert evaluation["run_id"] == run["id"]
+
+
+def test_cli_herdr_bind_rejects_stale_status(tmp_path):
+    database = tmp_path / "control.db"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--db",
+                str(database),
+                "herdr",
+                "bind",
+                "run-123",
+                "--herdr-session",
+                "session",
+                "--worker",
+                "worker1",
+                "--kind",
+                "claude",
+                "--status",
+                "stale",
+            ]
+        )
+    assert exc_info.value.code == 2

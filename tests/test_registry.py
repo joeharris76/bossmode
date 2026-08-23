@@ -358,12 +358,21 @@ def test_turn_requires_live_herdr_binding(registry):
     with pytest.raises(RegistryError, match="requires a Herdr binding"):
         registry.start_turn(run["id"], purpose="task", prompt="hello")
 
+    with pytest.raises(RegistryError, match="cannot manually set binding status to stale"):
+        registry.bind_herdr_run(
+            run["id"],
+            herdr_session="continual-agent",
+            worker_name="worker_9012",
+            agent_kind="claude",
+            status="stale",
+        )
+
     registry.bind_herdr_run(
         run["id"],
         herdr_session="continual-agent",
         worker_name="worker_9012",
         agent_kind="claude",
-        status="stale",
+        status="blocked",
     )
     with pytest.raises(RegistryError, match="requires a live Herdr binding"):
         registry.start_turn(run["id"], purpose="task", prompt="hello")
@@ -380,6 +389,7 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
         agent_kind="claude",
     )
     turn = registry.start_turn(run["id"], purpose="task", prompt="hello")
+    assert turn["prompt"] == "hello"
 
     with pytest.raises(RegistryError, match="already has an open turn"):
         registry.start_turn(run["id"], purpose="correction", prompt="retry")
@@ -394,6 +404,11 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
     with pytest.raises(RegistryError, match="exceeds"):
         registry.finish_turn(turn["id"], status="succeeded")
 
+    bad_payload = f'```json\n{{"turn_id": "{turn["id"]}", "status": "succeeded"}}\n```'
+    Path(turn["artifact_path"]).write_text(bad_payload)
+    with pytest.raises(RegistryError, match="markdown code fence"):
+        registry.finish_turn(turn["id"], status="succeeded")
+
     write_turn_result(
         turn,
         summary="Verified result",
@@ -402,6 +417,7 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
     finished = registry.finish_turn(turn["id"], status="succeeded")
 
     assert finished["summary"] == "Verified result"
+    assert finished["prompt"] == "hello"
     assert finished["result"]["turn_id"] == turn["id"]
     assert finished["result"]["artifacts"][0]["path"] == "result.md"
 
@@ -427,6 +443,91 @@ def test_run_cannot_finish_with_open_turn(registry, tmp_path, monkeypatch):
     assert finished["outcome"] == "succeeded"
 
 
+def test_finish_run_with_turns_requires_at_least_one_succeeded_turn(
+    registry, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name="worker_failed_turn",
+        agent_kind="claude",
+    )
+    turn = registry.start_turn(run["id"], purpose="task", prompt="do work")
+    registry.finish_turn(turn["id"], status="failed", summary="Worker crashed")
+
+    with pytest.raises(RegistryError, match="requires at least one succeeded turn"):
+        registry.finish_run(run["id"], outcome="succeeded", summary="claimed success anyway")
+
+    finished = registry.finish_run(run["id"], outcome="failed", summary="acknowledged failure")
+    assert finished["outcome"] == "failed"
+
+
+def test_evaluation_requires_evaluating_state_and_latest_run(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="worker")
+
+    with pytest.raises(RegistryError, match="must be in evaluating state"):
+        registry.add_evaluation(
+            task["id"],
+            run_id=run["id"],
+            evaluator="reviewer",
+            passed=True,
+            evidence="premature eval",
+        )
+
+    registry.finish_run(run["id"], outcome="succeeded", summary="done")
+    assert registry.get_task(task["id"])["state"] == "evaluating"
+
+    with pytest.raises(RegistryError, match="must be independent"):
+        registry.add_evaluation(
+            task["id"],
+            run_id=run["id"],
+            evaluator="worker",
+            passed=True,
+            evidence="self eval",
+        )
+
+    evaluation = registry.add_evaluation(
+        task["id"],
+        run_id=run["id"],
+        evaluator="reviewer",
+        passed=True,
+        evidence="verified by test",
+    )
+    assert evaluation["passed"] == 1
+    assert registry.get_task(task["id"])["state"] == "succeeded"
+
+
+def test_transition_task_preserves_next_action_and_clears_blocked_on(registry):
+    task = registry.create_task(
+        title="Action task",
+        goal="Check state preservation",
+        success_criteria="State preserved",
+        next_action="inspect logs",
+    )
+    blocked = registry.transition_task(
+        task["id"],
+        "blocked",
+        actor="supervisor",
+        reason="waiting on key",
+        blocked_on="API key",
+    )
+    assert blocked["next_action"] == "inspect logs"
+    assert blocked["blocked_on"] == "API key"
+
+    ready = registry.transition_task(
+        task["id"],
+        "ready",
+        actor="supervisor",
+        reason="key acquired",
+    )
+    assert ready["next_action"] == "inspect logs"
+    assert ready["blocked_on"] is None
+
+
 def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     database = tmp_path / "control.db"
     version_one = Path(__file__).parent / "fixtures" / "schema_v1.sql"
@@ -437,7 +538,7 @@ def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     registry.initialize()
 
     with registry._connect() as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -445,6 +546,7 @@ def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
         turn_columns = {row[1] for row in connection.execute("PRAGMA table_info(run_turns)")}
     assert {"herdr_bindings", "run_turns"} <= tables
     assert "result_json" in turn_columns
+    assert "prompt" in turn_columns
 
 
 def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
@@ -485,7 +587,7 @@ def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
     migrated = registry.get_run("run_old")
     assert migrated["herdr_binding"]["status"] == "stale"
     with registry._connect() as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(herdr_bindings)")}
     assert "idx_active_herdr_worker" in indexes
 
@@ -548,6 +650,60 @@ def test_repeated_failure_proposes_deterministic_control(registry):
 
     assert created[0]["target_layer"] == "control"
     assert "deterministic" in created[0]["rationale"]
+
+
+def test_promotion_counts_matching_feedback_kind_only(registry):
+    task = create_task(registry)
+    registry.add_feedback(
+        task["id"],
+        kind="failure",
+        recurrence_key="lifecycle.archive-guard",
+        content="First failure",
+    )
+    registry.add_feedback(
+        task["id"],
+        kind="preference",
+        recurrence_key="lifecycle.archive-guard",
+        content="Irrelevant preference under same key",
+    )
+    registry.add_feedback(
+        task["id"],
+        kind="failure",
+        recurrence_key="lifecycle.archive-guard",
+        content="Second failure",
+    )
+
+    created = registry.propose_promotions()
+    assert len(created) == 1
+    assert created[0]["target_layer"] == "control"
+    assert "Repeated failure appeared 2 times" in created[0]["rationale"]
+    assert len(created[0]["evidence"]["feedback_ids"]) == 2
+
+
+def test_rejected_promotion_can_be_reproposed(registry):
+    task = create_task(registry)
+    for content in ("Failure 1", "Failure 2"):
+        registry.add_feedback(
+            task["id"],
+            kind="failure",
+            recurrence_key="lifecycle.retry",
+            content=content,
+        )
+    promotion = registry.propose_promotions()[0]
+    registry.set_promotion_status(promotion["id"], "rejected")
+
+    # Adding new feedback under the same key allows re-proposing
+    registry.add_feedback(
+        task["id"],
+        kind="failure",
+        recurrence_key="lifecycle.retry",
+        content="Failure 3",
+    )
+    reproposed = registry.propose_promotions()
+    assert len(reproposed) == 1
+    assert reproposed[0]["id"] == promotion["id"]
+    assert reproposed[0]["status"] == "proposed"
+    assert "Repeated failure appeared 3 times" in reproposed[0]["rationale"]
 
 
 def test_promotion_status_requires_explicit_order(registry):

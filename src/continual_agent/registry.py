@@ -30,7 +30,7 @@ TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
 TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS run_turns (
     purpose TEXT NOT NULL CHECK (purpose IN (
         'task', 'correction', 'clarification', 'review_follow_up'
     )),
+    prompt TEXT NOT NULL,
     prompt_digest TEXT NOT NULL,
     artifact_path TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('running', 'blocked', 'succeeded', 'failed', 'unknown')),
@@ -227,21 +228,23 @@ class Registry:
             migrations = {
                 1: self._migrate_v1_to_v2,
                 2: self._migrate_v2_to_v3,
+                3: self._migrate_v3_to_v4,
             }
             while current < SCHEMA_VERSION:
                 migration = migrations.get(current)
                 if migration is None:
                     raise RegistryError(f"no registry migration from schema {current}")
+                target = current + 1
                 try:
                     connection.execute("BEGIN IMMEDIATE")
                     migration(connection)
-                    current += 1
-                    connection.execute("UPDATE schema_meta SET version = ?", (current,))
+                    connection.execute("UPDATE schema_meta SET version = ?", (target,))
                     connection.commit()
+                    current = target
                 except sqlite3.Error as error:
                     connection.rollback()
                     raise RegistryError(
-                        f"registry migration {current} -> {current + 1} failed: {error}"
+                        f"registry migration {current} -> {target} failed: {error}"
                     ) from error
 
     @staticmethod
@@ -361,6 +364,10 @@ class Registry:
             """
         )
 
+    @staticmethod
+    def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+        connection.execute("ALTER TABLE run_turns ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -432,41 +439,48 @@ class Registry:
     def get_task(self, task_id: str) -> dict[str, Any]:
         self.initialize()
         with closing(self._connect()) as connection:
-            task = _row(
-                connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            return self._get_task_impl(connection, task_id)
+
+    def _get_task_impl(self, connection: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+        task = _row(connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+        if task is None:
+            raise RegistryError(f"task not found: {task_id}")
+        task["permissions"] = json.loads(task.pop("permissions_json"))
+        task["events"] = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
             )
-            if task is None:
-                raise RegistryError(f"task not found: {task_id}")
-            task["permissions"] = json.loads(task.pop("permissions_json"))
-            task["events"] = [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
-                )
-            ]
-            run_ids = [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM runs WHERE task_id = ? ORDER BY started_at", (task_id,)
-                )
-            ]
-            task["evaluations"] = [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM evaluations WHERE task_id = ? ORDER BY created_at", (task_id,)
-                )
-            ]
-            task["feedback"] = [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM feedback WHERE task_id = ? ORDER BY created_at", (task_id,)
-                )
-            ]
-        task["runs"] = [self.get_run(run_id) for run_id in run_ids]
+        ]
+        run_ids = [
+            row["id"]
+            for row in connection.execute(
+                "SELECT id FROM runs WHERE task_id = ? ORDER BY started_at", (task_id,)
+            )
+        ]
+        task["evaluations"] = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT * FROM evaluations WHERE task_id = ? ORDER BY created_at", (task_id,)
+            )
+        ]
+        task["feedback"] = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT * FROM feedback WHERE task_id = ? ORDER BY created_at", (task_id,)
+            )
+        ]
+        task["runs"] = [self._get_run_impl(connection, run_id) for run_id in run_ids]
         return task
 
     def list_tasks(self, states: Iterable[str] | None = None) -> list[dict[str, Any]]:
         self.initialize()
+        with closing(self._connect()) as connection:
+            return self._list_tasks_impl(connection, states)
+
+    def _list_tasks_impl(
+        self, connection: sqlite3.Connection, states: Iterable[str] | None = None
+    ) -> list[dict[str, Any]]:
         selected = list(states or [])
         for state in selected:
             if state not in TASK_STATES:
@@ -478,8 +492,7 @@ class Registry:
             query += f" WHERE state IN ({placeholders})"
             parameters.extend(selected)
         query += " ORDER BY priority DESC, created_at, id"
-        with closing(self._connect()) as connection:
-            rows = [dict(row) for row in connection.execute(query, parameters)]
+        rows = [dict(row) for row in connection.execute(query, parameters)]
         for task in rows:
             task["permissions"] = json.loads(task.pop("permissions_json"))
         return rows
@@ -504,13 +517,18 @@ class Registry:
             from_state = task["state"]
             if to_state not in ALLOWED_TRANSITIONS[from_state]:
                 raise RegistryError(f"invalid task transition: {from_state} -> {to_state}")
+            if to_state == "ready" and blocked_on is None:
+                new_blocked_on = None
+            else:
+                new_blocked_on = blocked_on if blocked_on is not None else task["blocked_on"]
+            new_next_action = next_action if next_action is not None else task["next_action"]
             changed = connection.execute(
                 """
                 UPDATE tasks
                 SET state = ?, next_action = ?, blocked_on = ?, updated_at = ?
                 WHERE id = ? AND state = ?
                 """,
-                (to_state, next_action, blocked_on, _now(), task_id, from_state),
+                (to_state, new_next_action, new_blocked_on, _now(), task_id, from_state),
             ).rowcount
             if changed != 1:
                 raise RegistryError(f"concurrent task transition detected: {task_id}")
@@ -583,18 +601,21 @@ class Registry:
     def get_run(self, run_id: str) -> dict[str, Any]:
         self.initialize()
         with closing(self._connect()) as connection:
-            run = _row(connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone())
-            binding = _row(
-                connection.execute(
-                    "SELECT * FROM herdr_bindings WHERE run_id = ?", (run_id,)
-                ).fetchone()
+            return self._get_run_impl(connection, run_id)
+
+    def _get_run_impl(self, connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+        run = _row(connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone())
+        binding = _row(
+            connection.execute(
+                "SELECT * FROM herdr_bindings WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        )
+        turns = [
+            self._hydrate_turn(dict(row))
+            for row in connection.execute(
+                "SELECT * FROM run_turns WHERE run_id = ? ORDER BY ordinal", (run_id,)
             )
-            turns = [
-                self._hydrate_turn(dict(row))
-                for row in connection.execute(
-                    "SELECT * FROM run_turns WHERE run_id = ? ORDER BY ordinal", (run_id,)
-                )
-            ]
+        ]
         if run is None:
             raise RegistryError(f"run not found: {run_id}")
         run["artifacts"] = json.loads(run.pop("artifacts_json"))
@@ -633,6 +654,11 @@ class Registry:
             raise RegistryError(f"invalid Herdr worker name: {worker_name}")
         if not agent_kind.strip():
             raise RegistryError("Herdr agent kind is required")
+        if status == "stale":
+            raise RegistryError(
+                "cannot manually set binding status to stale; "
+                "stale is set automatically when a run finishes"
+            )
         if status not in HERDR_BINDING_STATUSES:
             raise RegistryError(f"invalid Herdr binding status: {status}")
         reference = (session_source, session_agent, session_ref_kind, session_value)
@@ -777,15 +803,16 @@ class Registry:
             connection.execute(
                 """
                 INSERT INTO run_turns(
-                    id, run_id, ordinal, purpose, prompt_digest, artifact_path,
+                    id, run_id, ordinal, purpose, prompt, prompt_digest, artifact_path,
                     status, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
                 """,
                 (
                     turn_id,
                     run_id,
                     ordinal,
                     purpose,
+                    prompt,
                     hashlib.sha256(prompt.encode()).hexdigest(),
                     artifact_path,
                     timestamp,
@@ -859,6 +886,11 @@ class Registry:
         try:
             result = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            stripped = raw.lstrip()
+            if stripped.startswith(b"```"):
+                raise RegistryError(
+                    f"turn result contains markdown code fence instead of raw JSON: {path}"
+                ) from error
             raise RegistryError(f"turn result is not valid JSON: {path}") from error
         if not isinstance(result, dict):
             raise RegistryError("turn result must be a JSON object")
@@ -925,6 +957,14 @@ class Registry:
             ).fetchone()
             if open_turn is not None:
                 raise RegistryError(f"run has an unfinished turn: {open_turn['id']}")
+            if outcome == "succeeded":
+                turns = connection.execute(
+                    "SELECT status FROM run_turns WHERE run_id = ?", (run_id,)
+                ).fetchall()
+                if turns and not any(turn["status"] == "succeeded" for turn in turns):
+                    raise RegistryError(
+                        "successful run with turns requires at least one succeeded turn"
+                    )
             task = connection.execute(
                 "SELECT * FROM tasks WHERE id = ?", (run["task_id"],)
             ).fetchone()
@@ -985,32 +1025,52 @@ class Registry:
         self,
         task_id: str,
         *,
+        run_id: str,
         evaluator: str,
         passed: bool,
         evidence: str,
-        run_id: str | None = None,
         score: float | None = None,
         notes: str | None = None,
     ) -> dict[str, Any]:
+        if not run_id:
+            raise RegistryError("evaluation requires a run_id")
         if score is not None and not 0 <= score <= 1:
             raise RegistryError("evaluation score must be between 0 and 1")
+        if not evidence.strip():
+            raise RegistryError("evaluation evidence is required")
         evaluation_id = _id("eval")
         with self._transaction() as connection:
-            if (
-                connection.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone()
-                is None
-            ):
+            task = connection.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if task is None:
                 raise RegistryError(f"task not found: {task_id}")
-            if run_id is not None:
-                run = connection.execute(
-                    "SELECT task_id, agent_role FROM runs WHERE id = ?", (run_id,)
-                ).fetchone()
-                if run is None:
-                    raise RegistryError(f"run not found: {run_id}")
-                if run["task_id"] != task_id:
-                    raise RegistryError("evaluation run does not belong to task")
-                if run["agent_role"] == evaluator:
-                    raise RegistryError("evaluation must be independent from the run agent role")
+            if task["state"] != "evaluating":
+                raise RegistryError(
+                    "task must be in evaluating state to record an evaluation; "
+                    f"found {task['state']}"
+                )
+            run = connection.execute(
+                "SELECT task_id, agent_role, status, outcome FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["task_id"] != task_id:
+                raise RegistryError("evaluation run does not belong to task")
+            if run["status"] != "finished":
+                raise RegistryError(f"evaluation requires a finished run; found {run['status']}")
+            latest_eval_run = connection.execute(
+                """
+                SELECT id FROM runs
+                WHERE task_id = ? AND outcome = 'succeeded'
+                ORDER BY finished_at DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+            if latest_eval_run is not None and latest_eval_run["id"] != run_id:
+                raise RegistryError(
+                    f"evaluation must target the evaluating run: {latest_eval_run['id']}"
+                )
+            if run["agent_role"] == evaluator:
+                raise RegistryError("evaluation must be independent from the run agent role")
             timestamp = _now()
             connection.execute(
                 """
@@ -1030,29 +1090,27 @@ class Registry:
                     timestamp,
                 ),
             )
-            task = connection.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
-            if task is not None and task["state"] == "evaluating":
-                evaluated_state = "succeeded" if passed else "failed"
-                changed = connection.execute(
-                    """
-                    UPDATE tasks
-                    SET state = ?, updated_at = ?
-                    WHERE id = ? AND state = 'evaluating'
-                    """,
-                    (evaluated_state, timestamp, task_id),
-                ).rowcount
-                if changed != 1:
-                    raise RegistryError(f"concurrent task evaluation detected: {task_id}")
-                self._record_event(
-                    connection,
-                    task_id=task_id,
-                    event_type="evaluated",
-                    actor=evaluator,
-                    from_state="evaluating",
-                    to_state=evaluated_state,
-                    reason="evaluation passed" if passed else "evaluation failed",
-                    evidence=evidence,
-                )
+            evaluated_state = "succeeded" if passed else "failed"
+            changed = connection.execute(
+                """
+                UPDATE tasks
+                SET state = ?, updated_at = ?
+                WHERE id = ? AND state = 'evaluating'
+                """,
+                (evaluated_state, timestamp, task_id),
+            ).rowcount
+            if changed != 1:
+                raise RegistryError(f"concurrent task evaluation detected: {task_id}")
+            self._record_event(
+                connection,
+                task_id=task_id,
+                event_type="evaluated",
+                actor=evaluator,
+                from_state="evaluating",
+                to_state=evaluated_state,
+                reason="evaluation passed" if passed else "evaluation failed",
+                evidence=evidence,
+            )
         return self._get_record("evaluations", evaluation_id)
 
     def add_feedback(
@@ -1113,12 +1171,24 @@ class Registry:
                 if target is None:
                     continue
                 existing = connection.execute(
-                    "SELECT 1 FROM promotions WHERE recurrence_key = ? AND target_layer = ?",
+                    """
+                    SELECT id, status FROM promotions
+                    WHERE recurrence_key = ? AND target_layer = ?
+                    """,
                     (key, target),
                 ).fetchone()
-                if existing is not None:
+                if existing is not None and existing["status"] in (
+                    "proposed",
+                    "accepted",
+                    "applied",
+                ):
                     continue
-                task_ids = sorted({item["task_id"] for item in feedback})
+                relevant_feedback = [
+                    item for item in feedback if self._is_relevant_feedback(target, item["kind"])
+                ]
+                task_ids = sorted({item["task_id"] for item in relevant_feedback})
+                if not task_ids:
+                    continue
                 placeholders = ",".join("?" for _ in task_ids)
                 evaluations = [
                     dict(row)
@@ -1129,23 +1199,42 @@ class Registry:
                 ]
                 if target == "skill" and not any(item["passed"] for item in evaluations):
                     continue
-                promotion_id = _id("promotion")
                 timestamp = _now()
                 evidence = {
-                    "feedback_ids": [item["id"] for item in feedback],
+                    "feedback_ids": [item["id"] for item in relevant_feedback],
                     "evaluation_ids": [item["id"] for item in evaluations],
                     "task_ids": task_ids,
                 }
-                rationale = self._promotion_rationale(target, feedback, evaluations)
-                connection.execute(
-                    """
-                    INSERT INTO promotions(
-                        id, recurrence_key, target_layer, status, rationale,
-                        evidence_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?)
-                    """,
-                    (promotion_id, key, target, rationale, _json(evidence), timestamp, timestamp),
-                )
+                rationale = self._promotion_rationale(target, relevant_feedback, evaluations)
+                if existing is not None and existing["status"] == "rejected":
+                    promotion_id = existing["id"]
+                    connection.execute(
+                        """
+                        UPDATE promotions
+                        SET status = 'proposed', rationale = ?, evidence_json = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (rationale, _json(evidence), timestamp, promotion_id),
+                    )
+                else:
+                    promotion_id = _id("promotion")
+                    connection.execute(
+                        """
+                        INSERT INTO promotions(
+                            id, recurrence_key, target_layer, status, rationale,
+                            evidence_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?)
+                        """,
+                        (
+                            promotion_id,
+                            key,
+                            target,
+                            rationale,
+                            _json(evidence),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
                 created.append(
                     {
                         "id": promotion_id,
@@ -1162,14 +1251,19 @@ class Registry:
 
     def list_promotions(self, status: str | None = None) -> list[dict[str, Any]]:
         self.initialize()
+        with closing(self._connect()) as connection:
+            return self._list_promotions_impl(connection, status)
+
+    def _list_promotions_impl(
+        self, connection: sqlite3.Connection, status: str | None = None
+    ) -> list[dict[str, Any]]:
         query = "SELECT * FROM promotions"
         parameters: list[Any] = []
         if status is not None:
             query += " WHERE status = ?"
             parameters.append(status)
         query += " ORDER BY created_at, id"
-        with closing(self._connect()) as connection:
-            rows = [dict(row) for row in connection.execute(query, parameters)]
+        rows = [dict(row) for row in connection.execute(query, parameters)]
         for promotion in rows:
             promotion["evidence"] = json.loads(promotion.pop("evidence_json"))
         return rows
@@ -1200,21 +1294,37 @@ class Registry:
         return self._get_promotion(promotion_id)
 
     def supervisor_tick(self) -> dict[str, Any]:
+        self.initialize()
         created = self.propose_promotions()
-        ready = self.list_tasks(["ready"])
-        needs_user = self.list_tasks(["waiting_user"])
-        blocked = self.list_tasks(["blocked"])
-        active = [self.get_task(task["id"]) for task in self.list_tasks(["running"])]
-        needs_evaluation = [self.get_task(task["id"]) for task in self.list_tasks(["evaluating"])]
-        return {
-            "dispatch": ready[0] if ready and not active and not needs_evaluation else None,
-            "active": active,
-            "needs_evaluation": needs_evaluation,
-            "needs_user": needs_user,
-            "blocked": blocked,
-            "new_promotion_proposals": created,
-            "promotion_proposals": self.list_promotions("proposed"),
-        }
+        with closing(self._connect()) as connection:
+            ready = self._list_tasks_impl(connection, ["ready"])
+            needs_user = self._list_tasks_impl(connection, ["waiting_user"])
+            blocked = self._list_tasks_impl(connection, ["blocked"])
+            active = [
+                self._get_task_impl(connection, task["id"])
+                for task in self._list_tasks_impl(connection, ["running"])
+            ]
+            needs_evaluation = [
+                self._get_task_impl(connection, task["id"])
+                for task in self._list_tasks_impl(connection, ["evaluating"])
+            ]
+            return {
+                "dispatch": ready[0] if ready and not active and not needs_evaluation else None,
+                "active": active,
+                "needs_evaluation": needs_evaluation,
+                "needs_user": needs_user,
+                "blocked": blocked,
+                "new_promotion_proposals": created,
+                "promotion_proposals": self._list_promotions_impl(connection, "proposed"),
+            }
+
+    @staticmethod
+    def _is_relevant_feedback(target: str, kind: str) -> bool:
+        if target == "control":
+            return kind == "failure"
+        if target == "skill":
+            return kind == "correction"
+        return kind in ("preference", "observation")
 
     @staticmethod
     def _promotion_target(feedback: list[dict[str, Any]]) -> str | None:

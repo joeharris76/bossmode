@@ -86,7 +86,7 @@ def _parser() -> argparse.ArgumentParser:
     herdr_bind.add_argument("--worker", required=True)
     herdr_bind.add_argument("--kind", required=True)
     herdr_bind.add_argument(
-        "--status", choices=["pending", "live", "blocked", "stale", "unknown"], default="live"
+        "--status", choices=["pending", "live", "blocked", "unknown"], default="live"
     )
     herdr_bind.add_argument("--session-source")
     herdr_bind.add_argument("--session-agent")
@@ -123,7 +123,7 @@ def _parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser("evaluate", help="Record an independent evaluation")
     evaluate.add_argument("task_id")
-    evaluate.add_argument("--run-id")
+    evaluate.add_argument("--run-id", required=True)
     evaluate.add_argument("--evaluator", required=True)
     result = evaluate.add_mutually_exclusive_group(required=True)
     result.add_argument("--passed", action="store_true")
@@ -143,8 +143,7 @@ def _parser() -> argparse.ArgumentParser:
 
     promotion = subparsers.add_parser("promotion", help="Inspect and gate proposed learning")
     promotion_commands = promotion.add_subparsers(dest="promotion_command", required=True)
-    promotion_propose = promotion_commands.add_parser("propose")
-    promotion_propose.set_defaults(promotion_command="propose")
+    promotion_commands.add_parser("propose")
     promotion_list = promotion_commands.add_parser("list")
     promotion_list.add_argument("--status", choices=["proposed", "accepted", "rejected", "applied"])
     promotion_set = promotion_commands.add_parser("set")
