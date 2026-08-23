@@ -273,3 +273,78 @@ def test_cli_herdr_bind_rejects_stale_status(tmp_path):
             ]
         )
     assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize("kind", ["pi", "codex", "claude", "agy", "grok", "muse"])
+def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
+    monkeypatch.chdir(tmp_path)
+    database = tmp_path / "control.db"
+    assert main(["--db", str(database), "init"]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "add",
+                "--title",
+                f"Task for {kind}",
+                "--goal",
+                "Verify agent kind support",
+                "--success-criteria",
+                "Run completes successfully",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "start",
+                task["id"],
+                "--role",
+                kind,
+                "--model",
+                f"{kind}-base",
+            ]
+        )
+        == 0
+    )
+    run = json.loads(capsys.readouterr().out)
+    assert run["agent_role"] == kind
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "herdr",
+                "bind",
+                run["id"],
+                "--herdr-session",
+                "continual-agent",
+                "--worker",
+                f"worker_{kind}",
+                "--kind",
+                kind,
+                "--session-source",
+                f"herdr:{kind}",
+                "--session-agent",
+                kind,
+                "--session-ref-kind",
+                "id",
+                "--session-value",
+                f"{kind}-123",
+            ]
+        )
+        == 0
+    )
+    binding = json.loads(capsys.readouterr().out)
+    assert binding["agent_kind"] == kind

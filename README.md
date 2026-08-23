@@ -22,11 +22,14 @@ context, recording outcomes, refining reusable workflows, and enforcing recurrin
   - repeated failure -> deterministic control
 - A `supervisor tick` that returns the next ready task, active work, user decisions, blockers,
   and proposed learning.
-- Codex project instructions, a supervisor skill, and researcher/worker/reviewer agent roles.
+- Project instructions, a supervisor skill, and flexible researcher/worker/reviewer agent roles.
+- Multi-agent compatibility: any agent (AGY, Codex, Claude, Pi, Grok, Muse) can coordinate sessions,
+  and any supported kind can execute bounded subagent or Herdr worker runs.
 
 It deliberately does **not** implement an LLM API wrapper, its own scheduler, or a generic agent
-backend. Codex already supplies the chat, goal, subagent, task, tool, and scheduled-task runtime.
-Herdr supplies external-agent process, pane, lifecycle, and native-session restoration.
+backend. Native host environments (Antigravity/AGY, Codex) supply chat, goal, subagent, task, tool,
+and scheduled-task capabilities. Herdr supplies external-agent process, pane, lifecycle, and
+native-session restoration across agent kinds (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`).
 
 ## Quick start
 

@@ -1,16 +1,17 @@
 # Agent interaction workflow
 
-This MVP is a control record, not an agent transport. The supervisor talks to agents through Codex
-or the official Herdr CLI and records the resulting task, run, turn, evaluation, and feedback state
-through `continual-agent`.
+This MVP is a control record, not an agent transport. Any agent (such as Antigravity/AGY,
+Codex, Claude, Pi, Grok, or Muse) can act as the session coordinator/supervisor, talking to
+agents through native runtime task tools or the official Herdr CLI, and recording the resulting
+task, run, turn, evaluation, and feedback state through `continual-agent`.
 
 ```text
 user
-  -> supervisor (policy and sequencing)
+  -> supervisor (any coordinator: AGY, Codex, Claude, Pi, Grok, Muse)
        -> registry CLI / SQLite (durable control record)
-       -> Codex task tools ---------> Codex subagent
-       -> official Herdr CLI -------> external interactive agent
-       -> independent reviewer ----> evaluation
+       -> native subagent tools ------> native subagent (e.g. Codex, AGY)
+       -> official Herdr CLI ---------> external agent (pi, codex, claude, agy, grok, muse)
+       -> independent reviewer -------> evaluation
   <- material result, blocker, or approval request
 ```
 
@@ -22,14 +23,14 @@ prompt, creates a pane, grants permission, or decides that terminal text means s
 | Actor | Owns | Does not own |
 |---|---|---|
 | User | Goals, permission expansion, trust dialogs, and promotion approval | Runtime bookkeeping |
-| Supervisor | Reconciliation, one-at-a-time dispatch, prompt envelopes, evidence checks, and state transitions | Vendor session internals |
+| Supervisor (Any Agent) | Reconciliation, one-at-a-time dispatch, prompt envelopes, evidence checks, and state transitions | Vendor session internals |
 | Registry | Durable task/run/turn IDs, state machines, prompt digests, artifact paths, evaluations, and feedback | Live agent identity or liveness |
-| Codex runtime | Codex subagent creation, messaging, waiting, and live task identity | MVP task state |
-| Herdr | External agent processes, panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
+| Native runtime | Native subagent creation, messaging, waiting, and live task identity | MVP task state |
+| Herdr | External agent processes (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`), panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
 | Worker | The bounded task and its declared artifacts | Self-approval or policy changes |
 | Reviewer | Independent checks against the task's success criteria | Rewriting a failed result unless separately authorized |
 
-Live Codex or Herdr state is authoritative for executor identity. Registry identities are durable
+Live native runtime or Herdr state is authoritative for executor identity. Registry identities are durable
 indexes that must be reconciled before every prompt, interruption, continuation, or close.
 
 ## Common task lifecycle
@@ -45,25 +46,25 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 7. Explicit corrections and preferences are recorded with `feedback`. Any resulting promotion is
    only a proposal until the user approves it.
 
-## Codex subagent path
+## Native subagent path (Codex, AGY, etc.)
 
-1. Create a bounded Codex subagent with the task ID, goal, success criteria, allowed actions,
-   evidence, and required response fields.
-2. Record the live Codex task ID:
+1. Create a bounded native subagent (via Codex task tools, AGY `invoke_subagent`, etc.) with the
+   task ID, goal, success criteria, allowed actions, evidence, and required response fields.
+2. Record the live thread or subagent task ID:
 
    ```bash
    uv run continual-agent run start TASK_ID \
      --role researcher \
-     --thread-id CODEX_TASK_ID
+     --thread-id NATIVE_THREAD_OR_TASK_ID
    ```
 
-3. Wait or continue through Codex's native task tools. Before every later message, reconcile the
-   stored ID against live Codex task state.
+3. Wait or continue through the runtime's native subagent tools. Before every later message, reconcile
+   the stored ID against live runtime state.
 4. Record the terminal result with `run finish`. Do not translate a subagent's self-reported success
    into a passing evaluation.
 
-Codex tasks do not need `herdr bind` or turn records. Those records close a specific correlation
-gap in Herdr's interactive-agent transport.
+Native subagent tasks do not need `herdr bind` or turn records. Those records close a specific
+correlation gap in Herdr's interactive-agent transport.
 
 ## Herdr worker path
 

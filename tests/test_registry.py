@@ -722,3 +722,105 @@ def test_promotion_status_requires_explicit_order(registry):
     accepted = registry.set_promotion_status(promotion["id"], "accepted")
     assert accepted["status"] == "accepted"
     assert registry.set_promotion_status(promotion["id"], "applied")["status"] == "applied"
+
+
+@pytest.mark.parametrize(
+    "agent_kind,session_source",
+    [
+        ("pi", "herdr:pi"),
+        ("codex", "herdr:codex"),
+        ("claude", "herdr:claude"),
+        ("agy", "herdr:agy"),
+        ("grok", "herdr:grok"),
+        ("muse", "herdr:muse"),
+    ],
+)
+def test_all_supported_agents_can_bind_and_execute_turns(
+    registry, tmp_path, monkeypatch, agent_kind, session_source
+):
+    monkeypatch.chdir(tmp_path)
+    task = create_task(registry, title=f"Task for {agent_kind}")
+    run = registry.start_run(task["id"], agent_role=agent_kind, model=f"{agent_kind}-model")
+    binding = registry.bind_herdr_run(
+        run["id"],
+        herdr_session="continual-agent",
+        worker_name=f"worker_{agent_kind}",
+        agent_kind=agent_kind,
+        session_source=session_source,
+        session_agent=agent_kind,
+        session_ref_kind="id",
+        session_value=f"{agent_kind}-sess-100",
+    )
+    assert binding["agent_kind"] == agent_kind
+    assert binding["native_session"]["source"] == session_source
+
+    turn = registry.start_turn(run["id"], purpose="task", prompt=f"Execute for {agent_kind}")
+    write_turn_result(
+        turn,
+        summary=f"Completed by {agent_kind}",
+        artifacts=[{"path": f"out_{agent_kind}.md", "kind": "report"}],
+    )
+    finished_turn = registry.finish_turn(
+        turn["id"],
+        status="succeeded",
+        summary=f"Completed by {agent_kind}",
+        lifecycle_evidence="done",
+    )
+    assert finished_turn["status"] == "succeeded"
+
+    finished_run = registry.finish_run(
+        run["id"],
+        outcome="succeeded",
+        summary=f"Run finished for {agent_kind}",
+        artifacts=[{"path": f"out_{agent_kind}.md", "kind": "report"}],
+    )
+    assert finished_run["status"] == "finished"
+
+
+@pytest.mark.parametrize(
+    "coordinator_role,worker_role,reviewer_role",
+    [
+        ("agy", "claude", "codex"),
+        ("codex", "pi", "grok"),
+        ("claude", "muse", "agy"),
+        ("pi", "agy", "muse"),
+        ("grok", "codex", "claude"),
+        ("muse", "grok", "pi"),
+    ],
+)
+def test_any_agent_can_coordinate_and_review(
+    registry, coordinator_role, worker_role, reviewer_role
+):
+    task = registry.create_task(
+        title=f"Coordinated by {coordinator_role}",
+        goal="Demonstrate coordinator flexibility",
+        success_criteria="Evaluated by independent reviewer",
+        state="backlog",
+    )
+    registry.transition_task(
+        task["id"],
+        "ready",
+        actor=coordinator_role,
+        reason=f"Prepared by {coordinator_role} supervisor",
+    )
+
+    tick = registry.supervisor_tick()
+    assert tick["dispatch"]["id"] == task["id"]
+
+    run = registry.start_run(task["id"], agent_role=worker_role)
+    registry.finish_run(
+        run["id"],
+        outcome="succeeded",
+        summary=f"Worker {worker_role} completed task",
+    )
+
+    evaluation = registry.add_evaluation(
+        task["id"],
+        run_id=run["id"],
+        evaluator=reviewer_role,
+        passed=True,
+        score=0.95,
+        evidence=f"Checked by {reviewer_role}",
+    )
+    assert evaluation["passed"] == 1
+    assert registry.get_task(task["id"])["state"] == "succeeded"
