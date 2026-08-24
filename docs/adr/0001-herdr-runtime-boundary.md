@@ -6,7 +6,7 @@ Status: accepted for the MVP spike
 
 Use Herdr 0.8.2 directly for external-agent processes, panes, lifecycle state, native session
 references, detach/reattach, and server-restart restoration. Keep task, run, turn, review,
-evaluation, feedback, and promotion state in the continual-agent SQLite registry.
+evaluation, feedback, and promotion state in the bossmode SQLite registry.
 
 Archive `herdr-orch` as prior art. Do not copy its state store, recipe runner, launched-kind support,
 screen artifact extraction, or pane-destruction commands into this project.

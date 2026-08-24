@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Automated end-to-end UAT evaluation loop for continual-agent-mvp.
+"""Automated end-to-end UAT evaluation loop for bossmode.
 
 Exercises the full lifecycle across:
 1. Scenario 1: Happy Path End-to-End Task Execution & Independent Evaluation Pass
 2. Scenario 2: Evaluator Rejection, Feedback Ingestion & Multi-Turn Remediation
-3. Scenario 3: Continual Learning & Feedback Promotion Ladder with User Gating
+3. Scenario 3: Feedback Promotion Ladder with User Gating
 4. Scenario 4: Adversarial Traps, Rejection Safeguards & Fault Injection
 5. Scenario 5: Single-Flight Scheduling & Atomic Snapshot Read Consistency
 """
@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from continual_agent.cli import main as cli_main
-from continual_agent.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
+from bossmode.cli import main as cli_main
+from bossmode.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
 
 
 @dataclass
@@ -75,7 +75,7 @@ class UATHarness:
         self.workspace = workspace_dir
         self.orig_cwd = Path.cwd()
         os.chdir(self.workspace)
-        self.db_path = self.workspace / ".continual" / "control.db"
+        self.db_path = self.workspace / ".bossmode" / "control.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.registry = Registry(self.db_path)
         self.report = UATReport()
@@ -100,7 +100,7 @@ class UATHarness:
 
     def run_all(self) -> bool:
         print("\n==================================================")
-        print(" CONTINUAL AGENT MVP: AUTOMATED UAT EVALUATION")
+        print(" BOSSMODE MVP: AUTOMATED UAT EVALUATION")
         print("==================================================")
         print(f"Workspace: {self.workspace}")
         print(f"Control DB: {self.db_path}\n")
@@ -108,7 +108,7 @@ class UATHarness:
         try:
             self.scenario_1_happy_path()
             self.scenario_2_rejection_and_remediation()
-            self.scenario_3_continual_learning_promotions()
+            self.scenario_3_feedback_promotions()
             self.scenario_4_adversarial_safeguards()
             self.scenario_5_scheduling_and_snapshot_reads()
         except Exception as exc:
@@ -181,7 +181,7 @@ class UATHarness:
 
             binding = self.registry.bind_herdr_run(
                 run["id"],
-                herdr_session="continual-session",
+                herdr_session="bossmode-session",
                 worker_name="worker_api_gen",
                 agent_kind="claude",
                 status="live",
@@ -315,7 +315,7 @@ class UATHarness:
             run_1 = self.registry.start_run(task["id"], agent_role="worker_claude")
             self.registry.bind_herdr_run(
                 run_1["id"],
-                herdr_session="continual-session",
+                herdr_session="bossmode-session",
                 worker_name="worker_ratelimit",
                 agent_kind="claude",
             )
@@ -405,7 +405,7 @@ class UATHarness:
             run_2 = self.registry.start_run(task["id"], agent_role="worker_claude")
             self.registry.bind_herdr_run(
                 run_2["id"],
-                herdr_session="continual-session",
+                herdr_session="bossmode-session",
                 worker_name="worker_ratelimit",
                 agent_kind="claude",
             )
@@ -460,8 +460,8 @@ class UATHarness:
             scenario, "2.6 Evaluator passes Run 2 -> task succeeded", step_evaluator_passes_run_2
         )
 
-    def scenario_3_continual_learning_promotions(self) -> None:
-        scenario = "Scenario 3: Continual Learning & Feedback Promotion Ladder"
+    def scenario_3_feedback_promotions(self) -> None:
+        scenario = "Scenario 3: Feedback Promotion Ladder"
         print(f"\n--- {scenario} ---")
 
         task: dict[str, Any] = {}
@@ -892,7 +892,7 @@ class UATHarness:
 
 
 def main() -> int:
-    temp_dir = tempfile.mkdtemp(prefix="continual_agent_uat_")
+    temp_dir = tempfile.mkdtemp(prefix="bossmode_uat_")
     harness = None
     try:
         harness = UATHarness(Path(temp_dir))

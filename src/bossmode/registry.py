@@ -773,7 +773,7 @@ class Registry:
         if not prompt.strip():
             raise RegistryError("turn prompt is required")
         turn_id = _id("turn")
-        artifact_path = f".continual/turns/{turn_id}.json"
+        artifact_path = f".bossmode/turns/{turn_id}.json"
         timestamp = _now()
         with self._transaction() as connection:
             run = connection.execute("SELECT status FROM runs WHERE id = ?", (run_id,)).fetchone()

@@ -3,7 +3,7 @@
 This MVP is a control record, not an agent transport. Any agent (such as Antigravity/AGY,
 Codex, Claude, Pi, Grok, or Muse) can act as the session coordinator/supervisor, talking to
 agents through native runtime task tools or the official Herdr CLI, and recording the resulting
-task, run, turn, evaluation, and feedback state through `continual-agent`.
+task, run, turn, evaluation, and feedback state through `bossmode`.
 
 ```text
 user
@@ -35,11 +35,12 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 
 ## Common task lifecycle
 
-1. The supervisor runs `uv run continual-agent init` and `supervisor tick`.
+1. The supervisor runs `uv run bossmode init` and `supervisor tick`.
 2. It records the user request with `task add`, including success criteria and permission limits.
 3. It selects only the task returned in `dispatch` and starts one run. Dispatch remains empty while
    another task is running or awaiting evaluation.
-4. It delegates through either the Codex path or the Herdr path below.
+4. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
+   path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) below.
 5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
 6. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
    records that verdict with `evaluate`.
@@ -53,7 +54,7 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 2. Record the live thread or subagent task ID:
 
    ```bash
-   uv run continual-agent run start TASK_ID \
+   uv run bossmode run start TASK_ID \
      --role researcher \
      --thread-id NATIVE_THREAD_OR_TASK_ID
    ```
@@ -73,7 +74,7 @@ correlation gap in Herdr's interactive-agent transport.
 Start the registry run first:
 
 ```bash
-uv run continual-agent run start TASK_ID --role claude
+uv run bossmode run start TASK_ID --role claude
 ```
 
 Derive a deterministic lowercase worker name from the returned run ID, such as
@@ -93,8 +94,8 @@ deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`
 After confirming one matching live worker, record its observed Herdr location:
 
 ```bash
-uv run continual-agent herdr bind RUN_ID \
-  --herdr-session continual-agent \
+uv run bossmode herdr bind RUN_ID \
+  --herdr-session bossmode \
   --worker worker_1234abcd \
   --kind claude \
   --pane-id LIVE_PANE_ID \
@@ -105,8 +106,8 @@ uv run continual-agent herdr bind RUN_ID \
 After `herdr agent get` reports a native session, reconcile the same binding with all four fields:
 
 ```bash
-uv run continual-agent herdr bind RUN_ID \
-  --herdr-session continual-agent \
+uv run bossmode herdr bind RUN_ID \
+  --herdr-session bossmode \
   --worker worker_1234abcd \
   --kind claude \
   --session-source OBSERVED_SOURCE \
@@ -126,7 +127,7 @@ First require the worker to be unambiguously `idle` or `done`. Register the logi
 sending it. A run may have only one open turn:
 
 ```bash
-uv run continual-agent turn start RUN_ID \
+uv run bossmode turn start RUN_ID \
   --purpose task \
   --prompt "Produce the requested report"
 ```
@@ -161,7 +162,7 @@ Allowed terminal statuses are `succeeded`, `blocked`, `failed`, and `unknown`. F
 the matching `turn_id` and `succeeded` status, and stores the validated result:
 
 ```bash
-uv run continual-agent turn finish TURN_ID \
+uv run bossmode turn finish TURN_ID \
   --status succeeded \
   --lifecycle-evidence done
 ```
@@ -185,9 +186,9 @@ worker name. Do not replace a worker merely because its pane moved or the server
 ## Recover after interruption
 
 Run `supervisor tick`. Its `active` and `needs_evaluation` entries contain nested runs, Herdr
-bindings, turns, output paths, and validated results. Use `continual-agent run show RUN_ID` or
-`continual-agent turn show TURN_ID` when you need one exact record, then reconcile that stored
-identity against live Codex or Herdr state before continuing.
+bindings, turns, output paths, and validated results. Use `bossmode run show RUN_ID` or
+`bossmode turn show TURN_ID` when you need one exact record, then reconcile that stored
+identity against live native runtime (AGY, Codex) or Herdr state before continuing.
 
 ## Reconciliation and failure rules
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from continual_agent.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
+from bossmode.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
 
 
 @pytest.fixture
@@ -215,7 +215,7 @@ def test_herdr_binding_records_native_session_and_correlated_turns(registry, tmp
     run = registry.start_run(task["id"], agent_role="claude")
     binding = registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_1234",
         agent_kind="claude",
         session_source="herdr:claude",
@@ -259,7 +259,7 @@ def test_herdr_binding_refuses_native_session_substitution(registry):
     run = registry.start_run(task["id"], agent_role="codex")
     registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_5678",
         agent_kind="codex",
         session_source="herdr:codex",
@@ -271,7 +271,7 @@ def test_herdr_binding_refuses_native_session_substitution(registry):
     with pytest.raises(RegistryError, match="replace native Herdr session"):
         registry.bind_herdr_run(
             run["id"],
-            herdr_session="continual-agent",
+            herdr_session="bossmode",
             worker_name="worker_5678",
             agent_kind="codex",
             session_source="foreign-source",
@@ -283,7 +283,7 @@ def test_herdr_binding_refuses_native_session_substitution(registry):
     with pytest.raises(RegistryError, match="replace native Herdr session"):
         registry.bind_herdr_run(
             run["id"],
-            herdr_session="continual-agent",
+            herdr_session="bossmode",
             worker_name="worker_5678",
             agent_kind="codex",
             session_source="herdr:codex",
@@ -298,7 +298,7 @@ def test_herdr_worker_cannot_be_bound_to_two_runs(registry):
     first_run = registry.start_run(first_task["id"], agent_role="claude")
     registry.bind_herdr_run(
         first_run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_shared",
         agent_kind="claude",
     )
@@ -312,7 +312,7 @@ def test_herdr_worker_cannot_be_bound_to_two_runs(registry):
     with pytest.raises(RegistryError, match="already bound to another run"):
         registry.bind_herdr_run(
             second_run["id"],
-            herdr_session="continual-agent",
+            herdr_session="bossmode",
             worker_name="worker_shared",
             agent_kind="claude",
         )
@@ -323,7 +323,7 @@ def test_finished_binding_releases_worker_name_for_a_later_run(registry):
     first_run = registry.start_run(task["id"], agent_role="claude")
     registry.bind_herdr_run(
         first_run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_reuse",
         agent_kind="claude",
         session_source="herdr:claude",
@@ -338,7 +338,7 @@ def test_finished_binding_releases_worker_name_for_a_later_run(registry):
     second_run = registry.start_run(task["id"], agent_role="claude")
     second_binding = registry.bind_herdr_run(
         second_run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_reuse",
         agent_kind="claude",
         session_source="herdr:claude",
@@ -361,7 +361,7 @@ def test_turn_requires_live_herdr_binding(registry):
     with pytest.raises(RegistryError, match="cannot manually set binding status to stale"):
         registry.bind_herdr_run(
             run["id"],
-            herdr_session="continual-agent",
+            herdr_session="bossmode",
             worker_name="worker_9012",
             agent_kind="claude",
             status="stale",
@@ -369,7 +369,7 @@ def test_turn_requires_live_herdr_binding(registry):
 
     registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_9012",
         agent_kind="claude",
         status="blocked",
@@ -384,7 +384,7 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
     run = registry.start_run(task["id"], agent_role="claude")
     registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_result",
         agent_kind="claude",
     )
@@ -428,7 +428,7 @@ def test_run_cannot_finish_with_open_turn(registry, tmp_path, monkeypatch):
     run = registry.start_run(task["id"], agent_role="claude")
     registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_open",
         agent_kind="claude",
     )
@@ -451,7 +451,7 @@ def test_finish_run_with_turns_requires_at_least_one_succeeded_turn(
     run = registry.start_run(task["id"], agent_role="claude")
     registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name="worker_failed_turn",
         agent_kind="claude",
     )
@@ -577,7 +577,7 @@ def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
             INSERT INTO herdr_bindings(
                 run_id, herdr_session, worker_name, agent_kind,
                 status, bound_at, reconciled_at
-            ) VALUES ('run_old', 'continual-agent', 'worker_old', 'claude', 'live', 'now', 'now')
+            ) VALUES ('run_old', 'bossmode', 'worker_old', 'claude', 'live', 'now', 'now')
             """
         )
 
@@ -743,7 +743,7 @@ def test_all_supported_agents_can_bind_and_execute_turns(
     run = registry.start_run(task["id"], agent_role=agent_kind, model=f"{agent_kind}-model")
     binding = registry.bind_herdr_run(
         run["id"],
-        herdr_session="continual-agent",
+        herdr_session="bossmode",
         worker_name=f"worker_{agent_kind}",
         agent_kind=agent_kind,
         session_source=session_source,

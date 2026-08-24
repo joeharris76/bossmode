@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from continual_agent.cli import main
+from bossmode.cli import main
 
 
 def test_cli_smoke(tmp_path, capsys):
@@ -128,7 +128,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
                 "bind",
                 run["id"],
                 "--herdr-session",
-                "continual-agent",
+                "bossmode",
                 "--worker",
                 "worker_1234",
                 "--kind",
@@ -166,7 +166,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
     )
     turn = json.loads(capsys.readouterr().out)
     assert turn["status"] == "running"
-    assert turn["artifact_path"].startswith(".continual/turns/turn_")
+    assert turn["artifact_path"].startswith(".bossmode/turns/turn_")
 
     assert main(["--db", str(database), "run", "show", run["id"]]) == 0
     shown_run = json.loads(capsys.readouterr().out)
@@ -329,7 +329,7 @@ def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
                 "bind",
                 run["id"],
                 "--herdr-session",
-                "continual-agent",
+                "bossmode",
                 "--worker",
                 f"worker_{kind}",
                 "--kind",

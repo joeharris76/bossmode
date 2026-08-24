@@ -1,126 +1,131 @@
-# Continual Agent MVP
+# Bossmode MVP
 
-A Codex-native spike for the system described in Will Brown's thread: one long-running
-supervisor task, bounded specialist agents, durable task state, evidence-backed evaluation,
-and gated promotion of repeated feedback into memories, skills, or deterministic controls.
+A lightweight, durable control plane and supervisor harness for autonomous agents. Bossmode coordinates long-running supervisor workflows, bounded specialist tasks, turn-correlated execution, independent evaluation, and gated promotion of feedback into memories, skills, or deterministic controls.
 
-The model does not update its weights. The surrounding system improves by retrieving prior
-context, recording outcomes, refining reusable workflows, and enforcing recurring rules in code.
+The model does not update its weights. The surrounding system improves by persisting context, recording evidence-backed outcomes, refining reusable procedures, and enforcing recurring rules in code.
 
-## What this spike implements
+---
 
-- A transactional SQLite task and run registry.
-- Enforced task and promotion state machines.
-- Agent-run records with model, effort, token, retry, timing, and artifact fields.
-- Optional Herdr bindings that preserve the runtime name, native session reference, and observed
-  pane identity without making SQLite the lifecycle authority.
-- Correlated turn records that validate bounded, turn-specific JSON before accepting success.
-- Independent evaluations and structured feedback.
-- Conservative promotion proposals:
-  - preference or observation -> memory
-  - repeated correction with passing evidence -> skill
-  - repeated failure -> deterministic control
-- A `supervisor tick` that returns the next ready task, active work, user decisions, blockers,
-  and proposed learning.
-- Project instructions, a supervisor skill, and flexible researcher/worker/reviewer agent roles.
-- Multi-agent compatibility: any agent (AGY, Codex, Claude, Pi, Grok, Muse) can coordinate sessions,
-  and any supported kind can execute bounded subagent or Herdr worker runs.
+## Core Capabilities
 
-It deliberately does **not** implement an LLM API wrapper, its own scheduler, or a generic agent
-backend. Native host environments (Antigravity/AGY, Codex) supply chat, goal, subagent, task, tool,
-and scheduled-task capabilities. Herdr supplies external-agent process, pane, lifecycle, and
-native-session restoration across agent kinds (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`).
+- **Durable Control Plane**: Transactional SQLite registry (`.bossmode/control.db`) with zero external runtime dependencies.
+- **Supervisor Orchestration**: Single-flight task dispatch (`bossmode supervisor tick`) preventing concurrent write collisions.
+- **Runtime & Coordinator Agnostic**: Any agent (Antigravity/AGY, Codex, Claude, Pi, Grok, Muse) can act as coordinator or execute bounded worker runs.
+- **Dual Execution Modes**:
+  - _Native Subagents_: Dispatched via host runtime tools (Codex subagents, AGY `invoke_subagent`).
+  - _External Workers_: Interactive agents (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) managed via the official Herdr CLI with native session recovery.
+- **Correlated Turn Protocol**: Enforces bounded JSON result validation (`.bossmode/turns/<turn_id>.json`), eliminating brittle terminal screen scraping.
+- **Independent Evaluation Gate**: Tasks require third-party verification (`evaluator != run.agent_role`) before reaching `succeeded`.
+- **Gated Continual Learning Ladder**:
+  - _Preference / Observation_ $\rightarrow$ `memory` proposal
+  - _Repeated correction_ ($N \ge 2$) with passing evaluation $\rightarrow$ `skill` proposal
+  - _Repeated failure_ ($N \ge 2$) $\rightarrow$ deterministic `control` proposal
+  - All promotions require explicit user approval (`proposed -> accepted -> applied`).
 
-## Quick start
+---
+
+## Supported Agent Matrix
+
+| Agent                 | Session Coordinator | Native Subagent Dispatch | Herdr External Worker | Independent Reviewer |
+| --------------------- | :-----------------: | :----------------------: | :-------------------: | :------------------: |
+| **Antigravity (AGY)** |         ✅          |  ✅ (`invoke_subagent`)  |   ✅ (`herdr:agy`)    |          ✅          |
+| **Codex**             |         ✅          |  ✅ (native task tools)  |  ✅ (`herdr:codex`)   |          ✅          |
+| **Claude**            |         ✅          |            —             |  ✅ (`herdr:claude`)  |          ✅          |
+| **Pi**                |         ✅          |            —             |    ✅ (`herdr:pi`)    |          ✅          |
+| **Grok**              |         ✅          |            —             |   ✅ (`herdr:grok`)   |          ✅          |
+| **Muse**              |         ✅          |            —             |   ✅ (`herdr:muse`)   |          ✅          |
+
+---
+
+## Quick Start
 
 ```bash
-cd ~/Developer/continual-agent-mvp
+# 1. Setup workspace
+cd ~/Developer/bossmode
 uv sync
-uv run continual-agent init
 
-uv run continual-agent task add \
-  --title "Create the first capability report" \
-  --goal "Summarize what the spike can and cannot do" \
-  --success-criteria "A source-backed report with explicit limitations" \
+# 2. Initialize the registry
+uv run bossmode init
+
+# 3. Create a task with explicit criteria and permission bounds
+uv run bossmode task add \
+  --title "Generate OpenAPI Spec" \
+  --goal "Create OpenAPI 3.0 specification for auth service" \
+  --success-criteria "Valid OpenAPI JSON at specs/auth.json" \
   --priority 10 \
   --permissions-json '{"filesystem":"workspace-write","network":false}'
 
-uv run continual-agent supervisor tick
+# 4. Run supervisor tick to determine next action
+uv run bossmode supervisor tick
 ```
 
-Application commands return JSON, including registry and database errors. Use the returned IDs in
-later commands:
+### Complete Lifecycle Walkthrough
 
 ```bash
-uv run continual-agent run start TASK_ID \
-  --role researcher \
-  --thread-id CODEX_THREAD_ID
+# 5. Start a worker run
+uv run bossmode run start TASK_ID \
+  --role worker_claude \
+  --model claude-3-7-sonnet
 
-uv run continual-agent run finish RUN_ID \
+# 6. Record run completion (moves task to 'evaluating')
+uv run bossmode run finish RUN_ID \
   --outcome succeeded \
-  --summary "Produced and checked the capability report" \
-  --artifacts-json '[{"path":"reports/capabilities.md","kind":"report"}]'
+  --summary "Generated and validated specs/auth.json" \
+  --artifacts-json '[{"path":"specs/auth.json","kind":"spec"}]'
 
-uv run continual-agent evaluate TASK_ID \
+# 7. Record an independent evaluation (moves task to 'succeeded')
+uv run bossmode evaluate TASK_ID \
   --run-id RUN_ID \
-  --evaluator reviewer \
+  --evaluator reviewer_grok \
   --passed \
-  --score 0.9 \
-  --evidence "All claims link to registry or test evidence"
+  --score 1.0 \
+  --evidence "specs/auth.json matches OpenAPI 3.0 schema validator"
 
-uv run continual-agent feedback TASK_ID \
+# 8. Record user or system feedback
+uv run bossmode feedback TASK_ID \
   --kind preference \
-  --key reports.explicit-limitations \
-  --content "Always separate demonstrated capability from inference"
+  --key api.spec-format \
+  --content "Always include example payloads in schema definitions"
 
-uv run continual-agent supervisor tick
+# 9. Supervisor tick proposes candidate promotions
+uv run bossmode supervisor tick
+
+# 10. User reviews and approves promotion
+uv run bossmode promotion set PROMOTION_ID accepted
+uv run bossmode promotion set PROMOTION_ID applied
 ```
 
-The external-agent sequence and exact result contract are documented once in
-[`docs/agent-workflow.md`](docs/agent-workflow.md).
+For a comprehensive, annotated multi-turn scenario covering failure remediation, Herdr worker reuse, and skill promotion, see [**`docs/example-walkthrough.md`**](docs/example-walkthrough.md).
 
-## Run it as a Codex experiment
+---
 
-1. Open this directory as a Codex project.
-2. Start a long-running goal in one pinned task:
+## Architecture & Responsibilities
 
-   ```text
-   /goal Use $supervisor to manage the MVP registry. Dispatch at most one agent at a
-   time, require an independent evaluation before calling work learned, and never apply a
-   promotion without my explicit approval.
-   ```
+```text
+User
+  -> Supervisor Coordinator (Any Agent: AGY, Codex, Claude, Pi, Grok, Muse)
+       -> bossmode CLI / SQLite registry (.bossmode/control.db)
+       -> Native subagent tools ------> Native subagents (e.g. Codex, AGY)
+       -> Official Herdr CLI ---------> External interactive agents
+       -> Independent Reviewer -------> Evaluation (evaluator != worker)
+  <- Material results, blockers, and promotion proposals
+```
 
-3. Give that task requests and corrections normally. The supervisor skill tells Codex how to
-   translate them into registry operations and subagent work.
-4. After the manual loop is trustworthy, schedule a recurrence inside that same task with a
-   durable prompt such as: `Run one $supervisor reconciliation tick. Report only user decisions,
-   new blockers, completed evaluations, or promotion proposals.`
+| Actor              | Owns                                                                                   | Does Not Own                           |
+| ------------------ | -------------------------------------------------------------------------------------- | -------------------------------------- |
+| **User**           | Goals, permission expansions, trust decisions, promotion approvals                     | Registry bookkeeping                   |
+| **Supervisor**     | Tick reconciliation, single-flight dispatch, prompt envelopes, evaluation tracking     | Vendor session internals               |
+| **Registry**       | Durable task/run/turn IDs, state machines, digests, artifact manifests, feedback       | Live agent process liveness            |
+| **Native Runtime** | Subagent lifecycle, execution threads, and live task IDs                               | MVP registry state                     |
+| **Herdr**          | Process panes, terminal lifecycle, native session tuple `{source, agent, kind, value}` | Turn correlation, MVP success criteria |
+| **Worker**         | Bounded task execution and declared artifact generation                                | Self-evaluation or state overrides     |
+| **Reviewer**       | Objective evaluation against task success criteria                                     | Rewriting failed results               |
 
-The stored `owner_thread_id` is an index, not proof that an agent is still alive or owned by the
-current task. The supervisor must reconcile it with live Codex task state before sending,
-interrupting, or closing anything.
+---
 
-The same rule applies to Herdr. A binding records a deterministic worker name, native session
-reference, and last observed pane identity. The supervisor must reconcile it with live Herdr state.
-It must never adopt or destroy a worker by stored name or pane ID alone.
+## State Models
 
-## Herdr experiment
-
-The Herdr path deliberately uses Herdr 0.8.2 directly. Install official integrations for the agents
-under test so `agent get/list` can expose `{source, agent, kind, value}` and Herdr can restore native
-sessions. Do not revive `herdr-orch`, add a YAML runner, scrape output paths from the screen, or add
-an MCP server for this spike.
-
-The supervisor dispatches one active run at a time, and each Herdr run permits one open turn. A
-successful turn reads at most 1 MiB from the exact generated `.continual/turns/<turn_id>.json` path
-and validates its ID, status, summary, and artifact manifest. Screen reads remain diagnostic only.
-
-The architecture decision and replacement trigger are recorded in
-[`docs/adr/0001-herdr-runtime-boundary.md`](docs/adr/0001-herdr-runtime-boundary.md).
-The end-to-end actor responsibilities, Codex path, Herdr prompt/result contract, and recovery rules
-are documented in [`docs/agent-workflow.md`](docs/agent-workflow.md).
-
-## State model
+### Task Lifecycle
 
 ```text
 backlog -> ready -> running -> evaluating -> succeeded -> archived
@@ -129,31 +134,118 @@ backlog -> ready -> running -> evaluating -> succeeded -> archived
                    \-> waiting_user -> ready
 ```
 
-Task transitions and dispatch use conditional SQLite updates inside `BEGIN IMMEDIATE`
-transactions. Only run operations may enter or leave `running`; concurrent supervisors therefore
-fail instead of silently overwriting state. Existing schema versions migrate explicitly.
+- Only `run start` transitions tasks into `running`.
+- Only `run finish` transitions tasks into `evaluating`, `failed`, `blocked`, or `waiting_user`.
+- Only a passing `evaluate` moves tasks from `evaluating` to `succeeded`.
+- All transitions use atomic SQLite updates inside `BEGIN IMMEDIATE` transactions.
 
-Promotions have a separate approval path:
+### Promotion Lifecycle
 
 ```text
 proposed -> accepted -> applied
         \-> rejected
 ```
 
-Successful execution enters `evaluating`; only a recorded passing evaluation enters `succeeded`.
+- `bossmode promotion propose` (and `supervisor tick`) generate proposals heuristically from feedback.
+- Applying promotions requires explicit human authorization and reviewable file/code edits.
 
-`propose` never edits memories, skills, `AGENTS.md`, or enforcement code. Applying an accepted
-proposal remains an explicit, reviewable user-authorized change. The proposal thresholds are
-experimental heuristics to evaluate, not learned model behavior.
+---
 
-## Verification
+## Execution Modes
+
+### 1. Native Subagent Path (Codex, AGY)
+
+For runtimes with built-in subagent toolsets:
+
+1. Spawn bounded subagent with task parameters and output schema.
+2. Record run with live thread/task ID:
+   ```bash
+   uv run bossmode run start TASK_ID --role researcher --thread-id NATIVE_THREAD_ID
+   ```
+3. Await subagent completion and record outcome:
+   ```bash
+   uv run bossmode run finish RUN_ID --outcome succeeded --summary "Task finished"
+   ```
+
+### 2. Herdr External Worker Path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`)
+
+For external interactive agents managed via Herdr:
+
+1. **Reserve Run**: `uv run bossmode run start TASK_ID --role claude`
+2. **Spawn Worker**: Create pane and start agent via Herdr CLI:
+   ```bash
+   herdr pane split PARENT_PANE --direction right --cwd "$PWD" --no-focus
+   herdr agent start worker_1234abcd --kind claude --pane NEW_PANE
+   ```
+3. **Bind Live Worker**:
+   ```bash
+   uv run bossmode herdr bind RUN_ID \
+     --herdr-session bossmode \
+     --worker worker_1234abcd \
+     --kind claude \
+     --pane-id PANE_ID \
+     --session-source "herdr:claude" \
+     --session-agent "claude" \
+     --session-ref-kind "id" \
+     --session-value "session-uuid"
+   ```
+4. **Start Correlated Turn**:
+   ```bash
+   uv run bossmode turn start RUN_ID --purpose task --prompt "Generate OpenAPI spec"
+   ```
+5. **Prompt with Envelope**:
+   ```bash
+   herdr agent prompt worker_1234abcd \
+     "Write exactly one JSON result to .bossmode/turns/turn_xxx.json with turn_id='turn_xxx', status='succeeded', summary='...', artifacts=[...]" \
+     --wait
+   ```
+6. **Validate and Finish Turn**:
+   ```bash
+   uv run bossmode turn finish TURN_ID --status succeeded --lifecycle-evidence done
+   ```
+7. **Finish Run & Evaluate**: Finish the run and record an independent reviewer evaluation.
+
+Detailed protocol specifications and recovery rules are documented in [`docs/agent-workflow.md`](docs/agent-workflow.md).
+
+---
+
+## CLI Reference
+
+All CLI commands output structured JSON and exit `0` on success, `2` on structured error.
+
+| Command Group | Subcommand   | Key Arguments                                                                                    | Description                                                                               |
+| ------------- | ------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `bossmode`    | `init`       | `[--db PATH]`                                                                                    | Initializes registry schema (idempotent, auto-migrating).                                 |
+| `task`        | `add`        | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`                | Creates a new task in `ready` or `backlog`.                                               |
+| `task`        | `list`       | `[--state STATE]`                                                                                | Lists tasks filtered by state.                                                            |
+| `task`        | `show`       | `<task_id>`                                                                                      | Returns task details with runs, events, feedback, and evaluations.                        |
+| `task`        | `transition` | `<task_id>`, `<to_state>`, `--actor`, `--reason`, `[--evidence]`, `[--blocked-on]`               | Executes an explicit state transition.                                                    |
+| `run`         | `start`      | `<task_id>`, `--role`, `[--thread-id]`, `[--model]`, `[--reasoning-effort]`                      | Starts an execution run and sets task to `running`.                                       |
+| `run`         | `finish`     | `<run_id>`, `--outcome`, `--summary`, `[--artifacts-json]`, `[--tokens]`, `[--duration-seconds]` | Finishes run and transitions task to `evaluating` or terminal outcome.                    |
+| `run`         | `show`       | `<run_id>`                                                                                       | Returns run details including turns and Herdr bindings.                                   |
+| `herdr`       | `bind`       | `<run_id>`, `--herdr-session`, `--worker`, `--kind`, `[--pane-id]`, `[--session-*]`              | Records live Herdr worker binding and native session metadata.                            |
+| `turn`        | `start`      | `<run_id>`, `--purpose`, `--prompt`                                                              | Registers a single open turn and allocates result artifact path.                          |
+| `turn`        | `finish`     | `<turn_id>`, `--status`, `[--summary]`, `[--lifecycle-evidence]`                                 | Validates turn JSON result file and marks turn complete.                                  |
+| `turn`        | `show`       | `<turn_id>`                                                                                      | Inspects turn record, prompt digest, and validated result JSON.                           |
+| `evaluate`    |              | `<task_id>`, `--run-id`, `--evaluator`, `--passed \| --failed`, `--evidence`, `[--score]`        | Records independent evaluation (required to reach `succeeded`).                           |
+| `feedback`    |              | `<task_id>`, `--kind`, `--key`, `--content`, `[--run-id]`                                        | Ingests structured user/system feedback with recurrence key.                              |
+| `promotion`   | `propose`    |                                                                                                  | Scans feedback and generates candidate promotion proposals.                               |
+| `promotion`   | `list`       | `[--status STATUS]`                                                                              | Lists promotion proposals filtered by status.                                             |
+| `promotion`   | `set`        | `<promotion_id>`, `<status>` (`accepted`, `rejected`, `applied`)                                 | Advances promotion through user approval gates.                                           |
+| `supervisor`  | `tick`       |                                                                                                  | Computes single-flight dispatch, active work, evaluation queue, blockers, and promotions. |
+
+---
+
+## Verification & Testing
 
 ```bash
+# Check code style and formatting
 uv run ruff check .
 uv run ruff format --check .
-uv run pytest
-```
 
-The first meaningful product experiment should compare a repeated workflow with and without the
-registry/skill loop. Measure correction rate, success rate, retries, time, and cost rather than
-relying on the supervisor's self-description.
+# Run full unit and integration test suite (52 tests)
+uv run pytest
+
+# Run automated end-to-end UAT evaluation loop (28 checks across 5 scenarios)
+uv run python scripts/run_uat.py
+```

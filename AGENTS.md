@@ -1,16 +1,17 @@
-# Continual Agent MVP instructions
+# Bossmode MVP instructions
 
 ## Authority
 
-- Live Codex task state is authoritative for Codex subagent identity and ownership. Live Herdr
-  state is authoritative for Herdr workers; the registry stores only a reconciled binding.
-- `.continual/control.db` is the durable task index and event log. A stored thread ID is not a
+- Live host runtime state (e.g. Antigravity/AGY, Codex) is authoritative for native subagent
+  identity and ownership. Live Herdr state is authoritative for external workers (`pi`, `codex`,
+  `claude`, `agy`, `grok`, `muse`); the registry stores only a reconciled binding.
+- `.bossmode/control.db` is the durable task index and event log. A stored thread ID is not a
   capability and must be reconciled against live state before use.
 - Required behavior belongs in this file or deterministic code. Memories are helpful recall only.
 
 ## Supervisor behavior
 
-- Use the `supervisor` skill for registry reconciliation and dispatch.
+- Use the `bossmode` skill for registry reconciliation and dispatch.
 - Record a task before delegating it and preserve the returned task ID.
 - Reserve an external run before creating its worker, then bind the live Herdr identity to that run.
 - Give each subagent a bounded goal, success criteria, permission scope, and output contract.

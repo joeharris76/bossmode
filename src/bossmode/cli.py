@@ -9,20 +9,23 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from continual_agent.registry import CREATE_TASK_STATES, TASK_STATES, Registry, RegistryError
+from bossmode.registry import CREATE_TASK_STATES, TASK_STATES, Registry, RegistryError
 
-DEFAULT_DB = Path(".continual/control.db")
+DEFAULT_DB = Path(".bossmode/control.db")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="continual-agent",
-        description="Durable control plane for a Codex-native continual-agent spike.",
+        prog="bossmode",
+        description=(
+            "Durable control plane for multi-agent supervisor workflows "
+            "across AGY, Codex, Claude, Pi, Grok, and Muse."
+        ),
     )
     parser.add_argument(
         "--db",
-        default=os.environ.get("CONTINUAL_AGENT_DB", str(DEFAULT_DB)),
-        help="SQLite registry path (default: .continual/control.db)",
+        default=os.environ.get("BOSSMODE_DB", str(DEFAULT_DB)),
+        help="SQLite registry path (default: .bossmode/control.db)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
