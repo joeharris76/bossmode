@@ -35,8 +35,8 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 
 ## Common task lifecycle
 
-1. The supervisor runs `uv run bossmode init` and `supervisor tick`.
-2. It records the user request with `task add`, including success criteria and permission limits.
+1. The supervisor runs `uv run bossmode` to inspect session state and ready tasks.
+2. It records user requests with `bossmode task create`, including success criteria and permission limits.
 3. It selects only the task returned in `dispatch` and starts one run. Dispatch remains empty while
    another task is running or awaiting evaluation.
 4. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
@@ -185,7 +185,7 @@ worker name. Do not replace a worker merely because its pane moved or the server
 
 ## Recover after interruption
 
-Run `supervisor tick`. Its `active` and `needs_evaluation` entries contain nested runs, Herdr
+Run `uv run bossmode` (or `bossmode`). Its `active` and `needs_evaluation` entries contain nested runs, Herdr
 bindings, turns, output paths, and validated results. Use `bossmode run show RUN_ID` or
 `bossmode turn show TURN_ID` when you need one exact record, then reconcile that stored
 identity against live native runtime (AGY, Codex) or Herdr state before continuing.

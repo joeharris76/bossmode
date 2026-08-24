@@ -1293,7 +1293,16 @@ class Registry:
             )
         return self._get_promotion(promotion_id)
 
-    def supervisor_tick(self) -> dict[str, Any]:
+    def accept_promotion(self, promotion_id: str) -> dict[str, Any]:
+        return self.set_promotion_status(promotion_id, "accepted")
+
+    def reject_promotion(self, promotion_id: str) -> dict[str, Any]:
+        return self.set_promotion_status(promotion_id, "rejected")
+
+    def apply_promotion(self, promotion_id: str) -> dict[str, Any]:
+        return self.set_promotion_status(promotion_id, "applied")
+
+    def reconcile(self) -> dict[str, Any]:
         self.initialize()
         created = self.propose_promotions()
         with closing(self._connect()) as connection:
@@ -1317,6 +1326,9 @@ class Registry:
                 "new_promotion_proposals": created,
                 "promotion_proposals": self._list_promotions_impl(connection, "proposed"),
             }
+
+    def supervisor_tick(self) -> dict[str, Any]:
+        return self.reconcile()
 
     @staticmethod
     def _is_relevant_feedback(target: str, kind: str) -> bool:

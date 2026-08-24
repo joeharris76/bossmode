@@ -150,17 +150,17 @@ class UATHarness:
             scenario, "1.2 Create task with explicit criteria and permissions", step_add_task
         )
 
-        # Step 1.3: Supervisor Tick selects ready task
-        def step_supervisor_dispatch() -> str:
-            tick = self.registry.supervisor_tick()
-            assert tick["dispatch"] is not None
-            assert tick["dispatch"]["id"] == task["id"]
-            return f"Dispatched task: {tick['dispatch']['id']}"
+        # Step 1.3: Session Reconciliation & Dispatch
+        def step_reconcile_dispatch() -> str:
+            state = self.registry.reconcile()
+            assert state["dispatch"] is not None
+            assert state["dispatch"]["id"] == task["id"]
+            return f"Dispatched task: {state['dispatch']['id']}"
 
         self.run_step(
             scenario,
-            "1.3 Supervisor tick evaluates ready queue and dispatches",
-            step_supervisor_dispatch,
+            "1.3 Reconcile session state and select dispatch task",
+            step_reconcile_dispatch,
         )
 
         # Step 1.4: Start Run & Bind Herdr Worker
@@ -821,17 +821,17 @@ class UATHarness:
             )
             r_active = self.registry.start_run(t_active["id"], agent_role="worker")
 
-            tick = self.registry.supervisor_tick()
-            assert tick["dispatch"] is None, (
-                f"Dispatched task {tick['dispatch']} while another task was active!"
+            state = self.registry.reconcile()
+            assert state["dispatch"] is None, (
+                f"Dispatched task {state['dispatch']} while another task was active!"
             )
-            assert len(tick["active"]) == 1
-            assert tick["active"][0]["id"] == t_active["id"]
+            assert len(state["active"]) == 1
+            assert state["active"][0]["id"] == t_active["id"]
             return "Dispatch paused while active task is running"
 
         self.run_step(
             scenario,
-            "5.1 Verify supervisor single-flight pause during active execution",
+            "5.1 Verify single-flight pause during active execution",
             step_single_flight,
         )
 
@@ -841,13 +841,13 @@ class UATHarness:
                 r_active["id"], outcome="failed", summary="completed active task"
             )
 
-            tick = self.registry.supervisor_tick()
-            assert tick["dispatch"] is not None
-            assert tick["dispatch"]["id"] == t_ready["id"]
-            assert tick["dispatch"]["priority"] == 100
+            state = self.registry.reconcile()
+            assert state["dispatch"] is not None
+            assert state["dispatch"]["id"] == t_ready["id"]
+            assert state["dispatch"]["priority"] == 100
             msg = (
-                f"Selected highest priority ready task: {tick['dispatch']['id']} "
-                f"(priority {tick['dispatch']['priority']})"
+                f"Selected highest priority ready task: {state['dispatch']['id']} "
+                f"(priority {state['dispatch']['priority']})"
             )
             return msg
 
@@ -857,16 +857,19 @@ class UATHarness:
             step_priority_dispatch,
         )
 
-        # Step 5.3: CLI subprocess execution
+        # Step 5.3: CLI naked and subcommand execution
         def step_cli_execution() -> str:
             db_arg = str(self.db_path)
+            # Naked execution (default reconcile)
+            assert cli_main(["--db", db_arg]) == 0
             assert cli_main(["--db", db_arg, "task", "list"]) == 0
             assert cli_main(["--db", db_arg, "promotion", "list"]) == 0
-            assert cli_main(["--db", db_arg, "supervisor", "tick"]) == 0
-            return "CLI subcommands executed cleanly"
+            return "Naked CLI and subcommands executed cleanly"
 
         self.run_step(
-            scenario, "5.3 Exercise CLI subcommands against live registry", step_cli_execution
+            scenario,
+            "5.3 Exercise naked CLI and subcommands against live registry",
+            step_cli_execution,
         )
 
     def _print_summary(self) -> None:

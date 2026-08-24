@@ -27,28 +27,32 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("BOSSMODE_DB", str(DEFAULT_DB)),
         help="SQLite registry path (default: .bossmode/control.db)",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
-    subparsers.add_parser("init", help="Initialize the registry")
+    subparsers.add_parser(
+        "reconcile",
+        aliases=["next"],
+        help="Reconcile session state, inspect active work, and dispatch next task (default)",
+    )
 
     task = subparsers.add_parser("task", help="Create and manage tasks")
     task_commands = task.add_subparsers(dest="task_command", required=True)
-    task_add = task_commands.add_parser("add")
-    task_add.add_argument("--title", required=True)
-    task_add.add_argument("--goal", required=True)
-    task_add.add_argument("--success-criteria", required=True)
-    task_add.add_argument("--state", choices=sorted(CREATE_TASK_STATES), default="ready")
-    task_add.add_argument("--priority", type=int, default=0)
-    task_add.add_argument("--permissions-json", default="{}")
-    task_add.add_argument("--next-action")
+    task_create = task_commands.add_parser("create", aliases=["add"], help="Create a new task")
+    task_create.add_argument("--title", required=True)
+    task_create.add_argument("--goal", required=True)
+    task_create.add_argument("--success-criteria", required=True)
+    task_create.add_argument("--state", choices=sorted(CREATE_TASK_STATES), default="ready")
+    task_create.add_argument("--priority", type=int, default=0)
+    task_create.add_argument("--permissions-json", default="{}")
+    task_create.add_argument("--next-action")
 
-    task_list = task_commands.add_parser("list")
+    task_list = task_commands.add_parser("list", help="List tasks by state")
     task_list.add_argument("--state", action="append", choices=sorted(TASK_STATES))
 
-    task_show = task_commands.add_parser("show")
+    task_show = task_commands.add_parser("show", help="Show task details")
     task_show.add_argument("task_id")
 
-    task_transition = task_commands.add_parser("transition")
+    task_transition = task_commands.add_parser("transition", help="Transition task state")
     task_transition.add_argument("task_id")
     task_transition.add_argument("to_state", choices=sorted(TASK_STATES))
     task_transition.add_argument("--actor", required=True)
@@ -59,17 +63,17 @@ def _parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="Record delegated agent runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
-    run_start = run_commands.add_parser("start")
+    run_start = run_commands.add_parser("start", help="Start an execution run")
     run_start.add_argument("task_id")
     run_start.add_argument("--role", required=True)
     run_start.add_argument("--thread-id")
     run_start.add_argument("--model")
     run_start.add_argument("--reasoning-effort")
 
-    run_show = run_commands.add_parser("show")
+    run_show = run_commands.add_parser("show", help="Show run details")
     run_show.add_argument("run_id")
 
-    run_finish = run_commands.add_parser("finish")
+    run_finish = run_commands.add_parser("finish", help="Complete a run")
     run_finish.add_argument("run_id")
     run_finish.add_argument(
         "--outcome", choices=["waiting_user", "blocked", "succeeded", "failed"], required=True
@@ -83,7 +87,7 @@ def _parser() -> argparse.ArgumentParser:
 
     herdr = subparsers.add_parser("herdr", help="Bind a run to an official Herdr session")
     herdr_commands = herdr.add_subparsers(dest="herdr_command", required=True)
-    herdr_bind = herdr_commands.add_parser("bind")
+    herdr_bind = herdr_commands.add_parser("bind", help="Bind Herdr worker to run")
     herdr_bind.add_argument("run_id")
     herdr_bind.add_argument("--herdr-session", required=True)
     herdr_bind.add_argument("--worker", required=True)
@@ -99,12 +103,12 @@ def _parser() -> argparse.ArgumentParser:
     herdr_bind.add_argument("--tab-id")
     herdr_bind.add_argument("--workspace-id")
 
-    herdr_show = herdr_commands.add_parser("show")
+    herdr_show = herdr_commands.add_parser("show", help="Show Herdr worker binding")
     herdr_show.add_argument("run_id")
 
     turn = subparsers.add_parser("turn", help="Record a correlated Herdr prompt and result")
     turn_commands = turn.add_subparsers(dest="turn_command", required=True)
-    turn_start = turn_commands.add_parser("start")
+    turn_start = turn_commands.add_parser("start", help="Start an execution turn")
     turn_start.add_argument("run_id")
     turn_start.add_argument(
         "--purpose",
@@ -113,10 +117,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     turn_start.add_argument("--prompt", required=True)
 
-    turn_show = turn_commands.add_parser("show")
+    turn_show = turn_commands.add_parser("show", help="Show turn details")
     turn_show.add_argument("turn_id")
 
-    turn_finish = turn_commands.add_parser("finish")
+    turn_finish = turn_commands.add_parser("finish", help="Complete and validate turn")
     turn_finish.add_argument("turn_id")
     turn_finish.add_argument(
         "--status", choices=["blocked", "succeeded", "failed", "unknown"], required=True
@@ -146,16 +150,29 @@ def _parser() -> argparse.ArgumentParser:
 
     promotion = subparsers.add_parser("promotion", help="Inspect and gate proposed learning")
     promotion_commands = promotion.add_subparsers(dest="promotion_command", required=True)
-    promotion_commands.add_parser("propose")
-    promotion_list = promotion_commands.add_parser("list")
+    promotion_commands.add_parser("propose", help="Generate promotion proposals from feedback")
+    promotion_list = promotion_commands.add_parser("list", help="List promotion proposals")
     promotion_list.add_argument("--status", choices=["proposed", "accepted", "rejected", "applied"])
-    promotion_set = promotion_commands.add_parser("set")
+    promotion_accept = promotion_commands.add_parser(
+        "accept", help="Accept a promotion for implementation"
+    )
+    promotion_accept.add_argument("promotion_id")
+    promotion_reject = promotion_commands.add_parser("reject", help="Reject a promotion proposal")
+    promotion_reject.add_argument("promotion_id")
+    promotion_apply = promotion_commands.add_parser(
+        "apply", help="Mark an accepted promotion as applied"
+    )
+    promotion_apply.add_argument("promotion_id")
+    promotion_set = promotion_commands.add_parser("set", help="Set promotion status explicitly")
     promotion_set.add_argument("promotion_id")
     promotion_set.add_argument("status", choices=["accepted", "rejected", "applied"])
 
-    supervisor = subparsers.add_parser("supervisor", help="Compute the next supervisor action")
+    supervisor = subparsers.add_parser(
+        "supervisor", help="Supervisor actions (alias for default bossmode)"
+    )
     supervisor_commands = supervisor.add_subparsers(dest="supervisor_command", required=True)
-    supervisor_commands.add_parser("tick")
+    supervisor_commands.add_parser("tick", aliases=["reconcile", "next"])
+
     return parser
 
 
@@ -175,12 +192,13 @@ def _load_json(value: str, expected_type: type[Any]) -> Any:
 
 def _run(args: argparse.Namespace) -> Any:
     registry = Registry(args.db)
-    if args.command == "init":
-        registry.initialize()
-        return {"database": str(Path(args.db).resolve()), "initialized": True}
+
+    # Default action: naked `bossmode`, `bossmode reconcile`, or `bossmode next`
+    if args.command in (None, "reconcile", "next"):
+        return registry.reconcile()
 
     if args.command == "task":
-        if args.task_command == "add":
+        if args.task_command in ("create", "add"):
             return registry.create_task(
                 title=args.title,
                 goal=args.goal,
@@ -281,9 +299,18 @@ def _run(args: argparse.Namespace) -> Any:
             return registry.propose_promotions()
         if args.promotion_command == "list":
             return registry.list_promotions(args.status)
+        if args.promotion_command == "accept":
+            return registry.accept_promotion(args.promotion_id)
+        if args.promotion_command == "reject":
+            return registry.reject_promotion(args.promotion_id)
+        if args.promotion_command == "apply":
+            return registry.apply_promotion(args.promotion_id)
         return registry.set_promotion_status(args.promotion_id, args.status)
 
-    return registry.supervisor_tick()
+    if args.command == "supervisor":
+        return registry.reconcile()
+
+    return registry.reconcile()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

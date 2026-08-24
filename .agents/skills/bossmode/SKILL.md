@@ -8,22 +8,51 @@ description: Manage, dispatch, and continue tasks using the Bossmode durable con
 Operate from the repository root. The registry is `.bossmode/control.db` unless the user names a
 different database.
 
+## Command Surface
+
+```text
+bossmode                        # Default: Reconcile project session and return next action
+├── task
+│   ├── create                  # Create a new task with success criteria
+│   ├── list                    # List tasks by state
+│   ├── show <id>               # Show task details and event history
+│   └── transition <id> <state> # Move task between lifecycle states
+├── run
+│   ├── start <task_id>         # Start an execution run for a worker
+│   ├── finish <run_id>         # Complete a run (moves task to evaluating or error)
+│   └── show <run_id>           # Show run details and turn records
+├── herdr
+│   ├── bind <run_id>           # Link a live Herdr worker pane to a run
+│   └── show <run_id>           # Show Herdr binding and native session info
+├── turn
+│   ├── start <run_id>          # Open a prompt turn and allocate result path
+│   ├── finish <turn_id>        # Validate turn JSON artifact and mark completed
+│   └── show <turn_id>          # Show prompt text, digest, and validated result
+├── evaluate <task_id>          # Record independent evaluation (reviewer != worker)
+├── feedback <task_id>          # Record user or system feedback with recurrence key
+└── promotion
+    ├── propose                 # Scan feedback and generate candidate proposals
+    ├── list                    # List promotion proposals by status
+    ├── accept <id>             # Accept a proposal for implementation
+    ├── reject <id>             # Reject a proposal
+    └── apply <id>              # Mark an accepted proposal as verified and applied
+```
+
 ## 1. Reconcile
 
-1. Run `uv run bossmode init` idempotently.
-2. Run `uv run bossmode supervisor tick` and parse its JSON output.
-3. Use the nested run, binding, and turn records in `active` and `needs_evaluation` to recover after
+1. Run `uv run bossmode` (naked execution) to reconcile session state and inspect the JSON output.
+2. Use the nested run, binding, and turn records in `active` and `needs_evaluation` to recover after
    interruption. Use `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` for exact records.
-4. For every active registry task, reconcile its executor against live state before sending,
+3. For every active registry task, reconcile its executor against live state before sending,
    interrupting, completing, or closing it. Use live runtime state for native subagents (AGY, Codex)
    and `herdr agent get/list` for Herdr workers (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`).
    Treat missing, foreign, or ambiguous identity as a blocker; stored IDs are indexes, not capabilities.
-5. Surface `needs_user` and `blocked` items before starting new work when they affect priority or
+4. Surface `needs_user` and `blocked` items before starting new work when they affect priority or
    safety. Ask only for the decision the system cannot safely make.
 
 ## 2. Dispatch
 
-1. Select only the single task returned in `tick.dispatch`.
+1. Select only the single task returned in `dispatch`.
 2. Choose the narrowest role: `researcher` for read-heavy evidence, `worker` for authorized edits,
    or `reviewer` for independent evaluation.
 3. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
@@ -72,14 +101,16 @@ are canonical.
 
 ## 5. Gated Promotion
 
-1. Run `bossmode supervisor tick` after feedback or evaluation to compute promotion proposals.
+1. Run `uv run bossmode` after feedback or evaluation to compute promotion proposals.
 2. Present promotion proposals with their evidence and intended layer:
    - `control`: deterministic code/rules/hooks for repeated failures (2+);
    - `skill`: reusable workflow for repeated corrections with passing evals (2+);
    - `memory`: contextual preference or observation for future retrieval.
 3. Do not accept, apply, or implement a promotion without explicit user authorization.
-4. Enforce the approval lifecycle: `proposed -> accepted -> applied`. Record `accepted` before
-   implementation and `applied` only after verification.
+4. Advance promotions through explicit approval gates:
+   - `bossmode promotion accept PROMOTION_ID`
+   - `bossmode promotion apply PROMOTION_ID`
+   - `bossmode promotion reject PROMOTION_ID`
 
 ## 6. Report
 

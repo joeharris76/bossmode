@@ -40,14 +40,9 @@ User Request
 
 ### ⚙️ Behind the Scenes (Bossmode Engine)
 
-1. **Initialize Registry** (idempotent SQLite setup in WAL mode):
+1. **Create Task** with explicit success criteria and permission limits (auto-initializes registry):
    ```bash
-   uv run bossmode init
-   ```
-
-2. **Add Task** with explicit success criteria and permission limits:
-   ```bash
-   uv run bossmode task add \
+   uv run bossmode task create \
      --title "Implement Rate Limiting" \
      --goal "Implement token bucket algorithm in auth middleware" \
      --success-criteria "Token bucket handles burst of 20 reqs and enforces 100 req/min" \
@@ -56,9 +51,9 @@ User Request
    ```
    *Registry records `task_a1b2c3d4e5f6` in state `ready`.*
 
-3. **Supervisor Reconciliation**:
+2. **Session Reconciliation & Dispatch**:
    ```bash
-   uv run bossmode supervisor tick
+   uv run bossmode
    ```
    *`dispatch` returns `task_a1b2c3d4e5f6` (single-flight scheduling).*
 
@@ -154,11 +149,11 @@ User Request
    ```
    *Task transitions from `evaluating` to `failed`.*
 
-2. **Supervisor Tick Identifies Blocker**:
-   ```bash
-   uv run bossmode supervisor tick
-   ```
-   *Tick indicates task `task_a1b2c3d4e5f6` is in `failed` state and needs remediation.*
+2. **Supervisor Reconciles & Identifies Blocker**:
+    ```bash
+    uv run bossmode
+    ```
+    *Session output indicates task `task_a1b2c3d4e5f6` is in `failed` state and needs remediation.*
 
 ---
 
@@ -181,80 +176,80 @@ User Request
 ### ⚙️ Behind the Scenes (Bossmode Engine)
 
 1. **Record Structured Feedback with Recurrence Key**:
-   ```bash
-   uv run bossmode feedback task_a1b2c3d4e5f6 \
-     --run-id run_111122223333 \
-     --kind correction \
-     --key ratelimit.token-bucket \
-     --content "Must implement token bucket with burst capacity, not fixed window"
-   ```
+    ```bash
+    uv run bossmode feedback task_a1b2c3d4e5f6 \
+      --run-id run_111122223333 \
+      --kind correction \
+      --key ratelimit.token-bucket \
+      --content "Must implement token bucket with burst capacity, not fixed window"
+    ```
 
 2. **Transition Task to Ready**:
-   ```bash
-   uv run bossmode task transition task_a1b2c3d4e5f6 ready \
-     --actor supervisor \
-     --reason "User requested retry with token bucket guidance" \
-     --next-action "Re-dispatch worker with token bucket guidance"
-   ```
+    ```bash
+    uv run bossmode task transition task_a1b2c3d4e5f6 ready \
+      --actor supervisor \
+      --reason "User requested retry with token bucket guidance" \
+      --next-action "Re-dispatch worker with token bucket guidance"
+    ```
 
 3. **Start Run 2 & Bind Remediation Worker**:
-   ```bash
-   uv run bossmode run start task_a1b2c3d4e5f6 --role worker_claude
-   # Returns run_444455556666
+    ```bash
+    uv run bossmode run start task_a1b2c3d4e5f6 --role worker_claude
+    # Returns run_444455556666
 
-   herdr pane split p_root --direction right --cwd "$PWD" --no-focus
-   herdr agent start worker_ratelimit_claude --kind claude --pane p_worker2
+    herdr pane split p_root --direction right --cwd "$PWD" --no-focus
+    herdr agent start worker_ratelimit_claude --kind claude --pane p_worker2
 
-   uv run bossmode herdr bind run_444455556666 \
-     --herdr-session bossmode \
-     --worker worker_ratelimit_claude \
-     --kind claude \
-     --pane-id p_worker2 \
-     --session-source "herdr:claude" \
-     --session-agent "claude" \
-     --session-ref-kind "id" \
-     --session-value "sess_claude_999"
-   ```
+    uv run bossmode herdr bind run_444455556666 \
+      --herdr-session bossmode \
+      --worker worker_ratelimit_claude \
+      --kind claude \
+      --pane-id p_worker2 \
+      --session-source "herdr:claude" \
+      --session-agent "claude" \
+      --session-ref-kind "id" \
+      --session-value "sess_claude_999"
+    ```
 
 4. **Start Remediation Turn**:
-   ```bash
-   uv run bossmode turn start run_444455556666 \
-     --purpose correction \
-     --prompt "Refactor rate limiter to token bucket algorithm supporting burst capacity of 20 and 100 req/min"
-   ```
+    ```bash
+    uv run bossmode turn start run_444455556666 \
+      --purpose correction \
+      --prompt "Refactor rate limiter to token bucket algorithm supporting burst capacity of 20 and 100 req/min"
+    ```
 
-   *Worker updates `src/middleware/ratelimit.py`, creates `tests/test_ratelimit.py`, and writes `.bossmode/turns/turn_fedcba987654.json`:*
-   ```json
-   {
-     "turn_id": "turn_fedcba987654",
-     "status": "succeeded",
-     "summary": "Implemented token bucket with burst capacity parameter and unit test suite",
-     "artifacts": [
-       {"path": "src/middleware/ratelimit.py", "kind": "code"},
-       {"path": "tests/test_ratelimit.py", "kind": "test"}
-     ]
-   }
-   ```
+    *Worker updates `src/middleware/ratelimit.py`, creates `tests/test_ratelimit.py`, and writes `.bossmode/turns/turn_fedcba987654.json`:*
+    ```json
+    {
+      "turn_id": "turn_fedcba987654",
+      "status": "succeeded",
+      "summary": "Implemented token bucket with burst capacity parameter and unit test suite",
+      "artifacts": [
+        {"path": "src/middleware/ratelimit.py", "kind": "code"},
+        {"path": "tests/test_ratelimit.py", "kind": "test"}
+      ]
+    }
+    ```
 
 5. **Finish Turn & Run 2**:
-   ```bash
-   uv run bossmode turn finish turn_fedcba987654 --status succeeded --lifecycle-evidence done
-   uv run bossmode run finish run_444455556666 \
-     --outcome succeeded \
-     --summary "Token bucket algorithm implemented with unit tests" \
-     --artifacts-json '[{"path":"src/middleware/ratelimit.py","kind":"code"},{"path":"tests/test_ratelimit.py","kind":"test"}]'
-   ```
+    ```bash
+    uv run bossmode turn finish turn_fedcba987654 --status succeeded --lifecycle-evidence done
+    uv run bossmode run finish run_444455556666 \
+      --outcome succeeded \
+      --summary "Token bucket algorithm implemented with unit tests" \
+      --artifacts-json '[{"path":"src/middleware/ratelimit.py","kind":"code"},{"path":"tests/test_ratelimit.py","kind":"test"}]'
+    ```
 
 6. **Independent Evaluation (Passing)**:
-   ```bash
-   uv run bossmode evaluate task_a1b2c3d4e5f6 \
-     --run-id run_444455556666 \
-     --evaluator reviewer_muse \
-     --passed \
-     --score 1.0 \
-     --evidence "All 15 burst and rate-limiting test assertions passed in tests/test_ratelimit.py"
-   ```
-   *Task transitions from `evaluating` to `succeeded`.*
+    ```bash
+    uv run bossmode evaluate task_a1b2c3d4e5f6 \
+      --run-id run_444455556666 \
+      --evaluator reviewer_muse \
+      --passed \
+      --score 1.0 \
+      --evidence "All 15 burst and rate-limiting test assertions passed in tests/test_ratelimit.py"
+    ```
+    *Task transitions from `evaluating` to `succeeded`.*
 
 ---
 
@@ -277,36 +272,36 @@ User Request
 ### ⚙️ Behind the Scenes (Bossmode Engine)
 
 1. **Ingest User Preference / Second Correction**:
-   ```bash
-   uv run bossmode feedback task_a1b2c3d4e5f6 \
-     --kind correction \
-     --key ratelimit.token-bucket \
-     --content "Token bucket algorithm should be standard across all API endpoints"
-   ```
+    ```bash
+    uv run bossmode feedback task_a1b2c3d4e5f6 \
+      --kind correction \
+      --key ratelimit.token-bucket \
+      --content "Token bucket algorithm should be standard across all API endpoints"
+    ```
 
-2. **Supervisor Tick Detects Learning Opportunity**:
-   ```bash
-   uv run bossmode supervisor tick
-   ```
-   *The registry detects 2 corrections under `ratelimit.token-bucket` with at least 1 passing evaluation. It generates a `skill` promotion proposal:*
-   ```json
-   {
-     "new_promotion_proposals": [
-       {
-         "id": "promotion_778899aabbcc",
-         "recurrence_key": "ratelimit.token-bucket",
-         "target_layer": "skill",
-         "status": "proposed",
-         "rationale": "Repeated correction appeared 2 times with 1 passing evaluation(s); propose a tested reusable workflow.",
-         "evidence": {
-           "evaluation_ids": ["eval_001122334455", "eval_667788990011"],
-           "feedback_ids": ["feedback_111", "feedback_222"],
-           "task_ids": ["task_a1b2c3d4e5f6"]
-         }
-       }
-     ]
-   }
-   ```
+2. **Session Reconciliation Detects Learning Opportunity**:
+    ```bash
+    uv run bossmode
+    ```
+    *The registry detects 2 corrections under `ratelimit.token-bucket` with at least 1 passing evaluation. It generates a `skill` promotion proposal:*
+    ```json
+    {
+      "new_promotion_proposals": [
+        {
+          "id": "promotion_778899aabbcc",
+          "recurrence_key": "ratelimit.token-bucket",
+          "target_layer": "skill",
+          "status": "proposed",
+          "rationale": "Repeated correction appeared 2 times with 1 passing evaluation(s); propose a tested reusable workflow.",
+          "evidence": {
+            "evaluation_ids": ["eval_001122334455", "eval_667788990011"],
+            "feedback_ids": ["feedback_111", "feedback_222"],
+            "task_ids": ["task_a1b2c3d4e5f6"]
+          }
+        }
+      ]
+    }
+    ```
 
 ---
 
@@ -333,23 +328,23 @@ User Request
 ### ⚙️ Behind the Scenes (Bossmode Engine)
 
 1. **Accept Promotion**:
-   ```bash
-   uv run bossmode promotion set promotion_778899aabbcc accepted
-   ```
+    ```bash
+    uv run bossmode promotion accept promotion_778899aabbcc
+    ```
 
 2. **Write Tested Skill Document**:
-   The supervisor creates `.agents/skills/rate-limiting/SKILL.md` detailing the token bucket pattern, parameter contracts, and test fixtures.
+    The supervisor creates `.agents/skills/rate-limiting/SKILL.md` detailing the token bucket pattern, parameter contracts, and test fixtures.
 
 3. **Mark Promotion Applied**:
-   ```bash
-   uv run bossmode promotion set promotion_778899aabbcc applied
-   ```
+    ```bash
+    uv run bossmode promotion apply promotion_778899aabbcc
+    ```
 
 ---
 
 ### 🖥️ User-Facing Response
 > **Supervisor:** "✅ Promotion `promotion_778899aabbcc` accepted and applied.
-> * **Durable Asset:** [`.agents/skills/rate-limiting/SKILL.md`](file:///Users/joe/Developer/continual-agent-mvp/.agents/skills/rate-limiting/SKILL.md)
+> * **Durable Asset:** [`.agents/skills/rate-limiting/SKILL.md`](file:///Users/joe/Developer/bossmode/.agents/skills/rate-limiting/SKILL.md)
 > 
 > Future agent sessions will automatically discover this skill when implementing API middleware."
 
@@ -360,7 +355,7 @@ User Request
 | Feature | Where Demonstrated |
 |---|---|
 | **Durable SQLite State** | Tasks, runs, turns, evaluations, feedback, and promotions persisted transactionally. |
-| **Supervisor Loop** | `bossmode supervisor tick` coordinates single-flight dispatch and surfaces blockers. |
+| **Session Reconciliation** | `bossmode` coordinates single-flight dispatch and surfaces blockers by default. |
 | **Herdr Worker Binding** | Live process identity and native session `{source, agent, kind, value}` bound across turns. |
 | **Exact Turn Correlation** | Enveloped prompts require exact JSON result at `.bossmode/turns/<turn_id>.json`. |
 | **Independent Evaluation Gate** | `evaluator != worker` gate prevents self-approval and caught the missing burst support. |

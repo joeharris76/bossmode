@@ -12,17 +12,21 @@ from bossmode.cli import main
 def test_cli_smoke(tmp_path, capsys):
     database = tmp_path / "control.db"
 
-    assert main(["--db", str(database), "init"]) == 0
-    initialized = json.loads(capsys.readouterr().out)
-    assert initialized["initialized"] is True
+    # 1. Naked bossmode invocation on fresh DB auto-initializes and returns clean state
+    assert main(["--db", str(database)]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["dispatch"] is None
+    assert state["active"] == []
+    assert database.exists()
 
+    # 2. Create task using `task create`
     assert (
         main(
             [
                 "--db",
                 str(database),
                 "task",
-                "add",
+                "create",
                 "--title",
                 "Smoke task",
                 "--goal",
@@ -37,9 +41,10 @@ def test_cli_smoke(tmp_path, capsys):
     )
     task = json.loads(capsys.readouterr().out)
 
-    assert main(["--db", str(database), "supervisor", "tick"]) == 0
-    tick = json.loads(capsys.readouterr().out)
-    assert tick["dispatch"]["id"] == task["id"]
+    # 3. Re-run naked bossmode to confirm single-flight dispatch of ready task
+    assert main(["--db", str(database)]) == 0
+    reconciled = json.loads(capsys.readouterr().out)
+    assert reconciled["dispatch"]["id"] == task["id"]
 
 
 def test_cli_returns_structured_error(tmp_path, capsys):
@@ -67,12 +72,12 @@ def test_cli_returns_structured_error(tmp_path, capsys):
 
 def test_cli_returns_structured_error_when_database_is_locked(tmp_path, capsys):
     database = tmp_path / "control.db"
-    assert main(["--db", str(database), "init"]) == 0
+    assert main(["--db", str(database)]) == 0
     capsys.readouterr()
     lock = sqlite3.connect(database, isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
     try:
-        exit_code = main(["--db", str(database), "supervisor", "tick"])
+        exit_code = main(["--db", str(database)])
     finally:
         lock.rollback()
         lock.close()
@@ -91,7 +96,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
                 "--db",
                 str(database),
                 "task",
-                "add",
+                "create",
                 "--title",
                 "Herdr task",
                 "--goal",
@@ -252,6 +257,77 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
     assert evaluation["run_id"] == run["id"]
 
 
+def test_cli_promotion_lifecycle_commands(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Feedback Task",
+                "--goal",
+                "Test promotions",
+                "--success-criteria",
+                "Pass",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "feedback",
+                task["id"],
+                "--kind",
+                "failure",
+                "--key",
+                "env.missing-key",
+                "--content",
+                "Failure 1",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "feedback",
+                task["id"],
+                "--kind",
+                "failure",
+                "--key",
+                "env.missing-key",
+                "--content",
+                "Failure 2",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["--db", str(database), "promotion", "propose"]) == 0
+    proposals = json.loads(capsys.readouterr().out)
+    assert len(proposals) == 1
+    prop_id = proposals[0]["id"]
+
+    assert main(["--db", str(database), "promotion", "accept", prop_id]) == 0
+    accepted = json.loads(capsys.readouterr().out)
+    assert accepted["status"] == "accepted"
+
+    assert main(["--db", str(database), "promotion", "apply", prop_id]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["status"] == "applied"
+
+
 def test_cli_herdr_bind_rejects_stale_status(tmp_path):
     database = tmp_path / "control.db"
     with pytest.raises(SystemExit) as exc_info:
@@ -279,8 +355,6 @@ def test_cli_herdr_bind_rejects_stale_status(tmp_path):
 def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
     monkeypatch.chdir(tmp_path)
     database = tmp_path / "control.db"
-    assert main(["--db", str(database), "init"]) == 0
-    capsys.readouterr()
 
     assert (
         main(
@@ -288,7 +362,7 @@ def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
                 "--db",
                 str(database),
                 "task",
-                "add",
+                "create",
                 "--title",
                 f"Task for {kind}",
                 "--goal",

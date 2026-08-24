@@ -1,16 +1,50 @@
 # Bossmode
 
-Bossmode is a task management and orchestration system for AI coding agents. It coordinates supervisor workflows, delegates work to specialized agents (such as Claude, Codex, Grok, Pi, or Muse), verifies results through independent reviewers, and captures feedback to improve future runs.
+Bossmode makes you the CEO of your agent fleet. A supervisor agent manages the specialist worker agents (such as Claude, Codex, Grok, Pi, or Muse) who carry out your coding tasks.
 
-Instead of retraining models, Bossmode improves the agent runtime over time. It saves context to memory, turns successful patterns into reusable skills, and enforces recurring rules in deterministic code.
+Instead of retraining models, Bossmode improves your agent fleet over time: it preserves context in memory, turns successful workflows into reusable skills, and enforces critical rules in deterministic code.
+
+---
+
+## Command Surface
+
+Bossmode provides a minimalist, zero-config CLI. Invoking `bossmode` with no arguments automatically initializes the database if needed, reconciles active work, and returns the next action.
+
+```text
+bossmode                        # Default: Reconcile project session and return next action
+├── task
+│   ├── create                  # Create a new task with success criteria
+│   ├── list                    # List tasks by state
+│   ├── show <id>               # Show task details and event history
+│   └── transition <id> <state> # Move task between lifecycle states
+├── run
+│   ├── start <task_id>         # Start an execution run for a worker
+│   ├── finish <run_id>         # Complete a run (moves task to evaluating or error)
+│   └── show <run_id>           # Show run details and turn records
+├── herdr
+│   ├── bind <run_id>           # Link a live Herdr worker pane to a run
+│   └── show <run_id>           # Show Herdr binding and native session info
+├── turn
+│   ├── start <run_id>          # Open a prompt turn and allocate result path
+│   ├── finish <turn_id>        # Validate turn JSON artifact and mark completed
+│   └── show <turn_id>          # Show prompt text, digest, and validated result
+├── evaluate <task_id>          # Record independent evaluation (reviewer != worker)
+├── feedback <task_id>          # Record user or system feedback with recurrence key
+└── promotion
+    ├── propose                 # Scan feedback and generate candidate proposals
+    ├── list                    # List promotion proposals by status
+    ├── accept <id>             # Accept a proposal for implementation
+    ├── reject <id>             # Reject a proposal
+    └── apply <id>              # Mark an accepted proposal as verified and applied
+```
 
 ---
 
 ## Key Features
 
-- **Durable Task Registry**: Tracks tasks, execution runs, and turn results in a local SQLite database (`.bossmode/control.db`) without external database services.
-- **Single-Flight Dispatch**: Schedules one ready task at a time (`bossmode supervisor tick`), preventing conflicting edits and race conditions.
-- **Flexible Agent Support**: Any supported agent (Antigravity/AGY, Codex, Claude, Pi, Grok, Muse) can supervise workflows, execute worker tasks, or act as an independent reviewer.
+- **Zero-Config Task Registry**: Automatically creates and migrates `.bossmode/control.db` on first read or write.
+- **Single-Flight Dispatch**: Schedules one ready task at a time (`bossmode`), preventing conflicting edits and race conditions.
+- **Flexible Multi-Agent Roles**: Any supported agent (Antigravity/AGY, Codex, Claude, Pi, Grok, Muse) can supervise workflows, execute worker tasks, or act as an independent reviewer.
 - **Dual Execution Options**:
   - *Native subagents*: Dispatched directly through host runtime tools (such as Codex subagents or AGY `invoke_subagent`).
   - *External workers*: Interactive CLI agents running in Herdr terminal panes with native session recovery.
@@ -20,7 +54,7 @@ Instead of retraining models, Bossmode improves the agent runtime over time. It 
   - *Context & preferences* $\rightarrow$ **Memory** proposals.
   - *Repeated corrections with passing evaluations* ($N \ge 2$) $\rightarrow$ **Skill** proposals.
   - *Repeated operational failures* ($N \ge 2$) $\rightarrow$ **Code / Control** proposals.
-  - All proposals remain pending until the user explicitly approves and applies them.
+  - All proposals remain pending until the user explicitly accepts and applies them.
 
 ---
 
@@ -39,12 +73,14 @@ Instead of retraining models, Bossmode improves the agent runtime over time. It 
 
 ## Quick Start
 
-### 1. Setup and Initialize
+### 1. Check Session Status
+
+Run `bossmode` with no arguments to start or inspect the project session:
 
 ```bash
 cd ~/Developer/bossmode
 uv sync
-uv run bossmode init
+uv run bossmode
 ```
 
 ### 2. Create a Task
@@ -52,7 +88,7 @@ uv run bossmode init
 Define a task with clear success criteria and permission limits:
 
 ```bash
-uv run bossmode task add \
+uv run bossmode task create \
   --title "Generate OpenAPI Spec" \
   --goal "Create OpenAPI 3.0 specification for auth service" \
   --success-criteria "Valid OpenAPI JSON file exists at specs/auth.json" \
@@ -60,12 +96,12 @@ uv run bossmode task add \
   --permissions-json '{"filesystem":"workspace-write","network":false}'
 ```
 
-### 3. Check Supervisor Dispatch
+### 3. Check Session Dispatch
 
-Run a supervisor tick to inspect active tasks, blockers, and the next ready task:
+Run `bossmode` again to see the newly dispatched task:
 
 ```bash
-uv run bossmode supervisor tick
+uv run bossmode
 ```
 
 ---
@@ -99,11 +135,11 @@ uv run bossmode feedback TASK_ID \
   --content "Always include example payloads in schema definitions"
 
 # 5. Check for new learning proposals
-uv run bossmode supervisor tick
+uv run bossmode
 
 # 6. Review and approve a promotion proposal
-uv run bossmode promotion set PROMOTION_ID accepted
-uv run bossmode promotion set PROMOTION_ID applied
+uv run bossmode promotion accept PROMOTION_ID
+uv run bossmode promotion apply PROMOTION_ID
 ```
 
 For an end-to-end annotated example covering worker remediation, Herdr session recovery, and skill promotion, see [**`docs/example-walkthrough.md`**](docs/example-walkthrough.md).
@@ -169,7 +205,7 @@ proposed ──► accepted ──► applied
 ```
 
 - Bossmode proposes improvements based on feedback patterns, but never applies them automatically.
-- The user reviews proposals and advances them through explicit approval gates (`accepted` $\rightarrow$ `applied`).
+- The user reviews proposals and advances them through explicit approval gates (`bossmode promotion accept` $\rightarrow$ `bossmode promotion apply`).
 
 ---
 
@@ -240,8 +276,8 @@ All CLI commands output structured JSON, exiting `0` on success and `2` on error
 
 | Command Group | Subcommand   | Key Arguments                                                                                  | Description                                                           |
 | ------------- | ------------ | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `bossmode`    | `init`       | `[--db PATH]`                                                                                  | Initializes or migrates the SQLite registry schema.                   |
-| `task`        | `add`        | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`              | Creates a new task in `ready` or `backlog`.                           |
+| `bossmode`    | *(default)*  | `[--db PATH]`                                                                                  | Reconciles session state, active work, and returns next action.       |
+| `task`        | `create`     | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`              | Creates a new task in `ready` or `backlog` (alias: `add`).            |
 | `task`        | `list`       | `[--state STATE]`                                                                              | Lists tasks filtered by state.                                        |
 | `task`        | `show`       | `<task_id>`                                                                                    | Shows task details with runs, events, feedback, and evaluations.      |
 | `task`        | `transition` | `<task_id>`, `<to_state>`, `--actor`, `--reason`, `[--evidence]`, `[--blocked-on]`             | Executes an explicit state transition.                                |
@@ -256,8 +292,9 @@ All CLI commands output structured JSON, exiting `0` on success and `2` on error
 | `feedback`    |              | `<task_id>`, `--kind`, `--key`, `--content`, `[--run-id]`                                      | Ingests user or system feedback with a recurrence key.                |
 | `promotion`   | `propose`    |                                                                                                | Analyzes feedback history and generates promotion proposals.          |
 | `promotion`   | `list`       | `[--status STATUS]`                                                                            | Lists promotion proposals filtered by status.                         |
-| `promotion`   | `set`        | `<promotion_id>`, `<status>` (`accepted`, `rejected`, `applied`)                               | Updates promotion status through user approval gates.                 |
-| `supervisor`  | `tick`       |                                                                                                | Evaluates active work, blockers, and dispatches the next ready task.  |
+| `promotion`   | `accept`     | `<promotion_id>`                                                                               | Accepts a proposal for implementation.                                |
+| `promotion`   | `reject`     | `<promotion_id>`                                                                               | Rejects a proposal.                                                   |
+| `promotion`   | `apply`      | `<promotion_id>`                                                                               | Marks an accepted proposal as verified and applied.                   |
 
 ---
 
@@ -268,7 +305,7 @@ All CLI commands output structured JSON, exiting `0` on success and `2` on error
 uv run ruff check .
 uv run ruff format --check .
 
-# Run full unit and integration test suite (52 tests)
+# Run full unit and integration test suite (53 tests)
 uv run pytest
 
 # Run automated end-to-end UAT evaluation loop (28 checks across 5 scenarios)
