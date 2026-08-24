@@ -21,9 +21,9 @@ PyPI token.
 
 On 2026-08-24, the `joeharris76/bossmode` repository was configured with a
 `pypi` environment through the GitHub API. Joe Harris (`joeharris76`) is the
-required reviewer, self-review is disabled, administrator bypass is disabled,
-and the environment accepts only tags matching `v*`. No deployment was
-approved.
+required reviewer, self-review is allowed for this solo-maintainer repository,
+administrator bypass is disabled, and the environment accepts only tags
+matching `v*`. No deployment was approved.
 
 The release workflow remains the enforcement point for the exact-tag test gate.
 The environment's custom deployment policy is an additional `v*` tag-only
@@ -42,10 +42,13 @@ is expected for a pending or not-yet-public project, so the pending publisher is
 not publicly verifiable; the user-confirmed state is the authoritative evidence
 available for this task.
 
-Because `prevent_self_review` is enabled, Joe cannot approve a deployment for a
-workflow run that Joe initiated. A non-Joe release initiator must publish the
-GitHub release before Joe can approve the protected `pypi` deployment. The
-first release must also wait for the exact tag verification run to pass.
+Joe may publish the GitHub release and approve the resulting protected `pypi`
+deployment. Requiring Joe's approval preserves a deliberate manual checkpoint
+without creating a second-maintainer dependency. It is not independent
+separation of duties; the exact-tag verification job, tag-only environment
+policy, pinned actions, short-lived OIDC credential, and same-run artifacts are
+the machine-enforced release boundary. The first release must wait for the
+exact tag verification run to pass before Joe approves publication.
 
 Authoritative references:
 
