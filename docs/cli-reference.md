@@ -73,12 +73,12 @@ evaluation moves `evaluating` to `succeeded` or `failed`.
 | `team list` | — | `--root-task-id` |
 | `team show TEAM_ID` | `TEAM_ID` | — |
 | `run manager-start TEAM_ID` | `--identity-json` | `--model`, `--reasoning-effort` |
-| `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--repository-path PATH`, `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
+| `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--approved-repository-path PATH` (`--approved-repository`), `--approved-base-sha SHA` (`--base-sha`), `--repository-path PATH`, `--protected-branches-json ARRAY`, `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
 | `run reviewer-start TASK_ID` | `--worker-run-id`, `--identity-json` | `--model`, `--reasoning-effort` |
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `dispatch batch ROOT_TASK_ID` | `--managers-json`, `--workers-json` | — |
+| `dispatch batch ROOT_TASK_ID` | `--managers-json`, `--workers-json` | `--approved-repository-path PATH` (`--repository-path`), `--approved-base-sha SHA` (`--base-sha`), `--protected-branches-json ARRAY` |
 | `resource reconcile` | — | `--now ISO_TIMESTAMP` |
 | `resource release CLAIM_ID` | `--run-id`, `--fence-token`, `--evidence` | — |
 | `status executive TASK_ID` | `TASK_ID` | — |
@@ -93,6 +93,8 @@ does not require a team tab.
 
 `run worker-start` and `dispatch batch` are admission points, not worker
 creation shortcuts. Before invoking either command, the supervisor must
+provide the explicit supervisor-approved repository and base inputs:
+`--approved-repository-path PATH` and `--approved-base-sha SHA`. It must then
 reconcile live Git evidence against the registry's repository: the branch is dedicated and not protected
 (`main`, `master`, `develop`, or repository-configured protected branches); the
 worktree is a clean linked worktree and not the primary checkout; the branch,
@@ -174,14 +176,16 @@ file supplies the summary; an optional `--summary` must match that file exactly.
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `evaluate TASK_ID` | `TASK_ID`, `--run-id`, `--evaluator`, one of `--passed` or `--failed`, `--evidence` | `--evaluator-run-id`, `--score`, `--notes` |
+| `evaluate TASK_ID` | `TASK_ID`, `--run-id`, `--evaluator`, one of `--passed` or `--failed`, `--evidence` | `--evaluator-run-id`, `--reviewed-head-sha SHA` (required for team workers), `--score`, `--notes` |
 | `feedback TASK_ID` | `TASK_ID`, `--kind`, `--key`, `--content` | `--run-id` |
 
 Feedback kinds are `preference`, `correction`, `failure`, and `observation`. The key should be a
 stable, narrowly scoped recurrence key. Every team worker evaluation requires a
 finished successful reviewer run linked with `--evaluator-run-id`; a reviewer
 string alone is bounded compatibility only for a legacy singleton `run start`.
-The evaluator must be independent of the worker. If provided, `--score` must be
+Team workers also require `--reviewed-head-sha`, and the registry resolves it
+against the repository and rejects any value that differs from the worker's
+accepted head. The evaluator must be independent of the worker. If provided, `--score` must be
 between `0` and `1`, inclusive.
 
 ## Promotions

@@ -379,6 +379,81 @@ def test_cli_promotion_lifecycle_commands(tmp_path, capsys):
     assert applied["status"] == "applied"
 
 
+def test_cli_evaluate_reviewed_head_parser_and_contract_paths(tmp_path, capsys, monkeypatch):
+    reviewed_head = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+    captured = []
+
+    def fake_add_evaluation(self, task_id, **kwargs):
+        captured.append((task_id, kwargs))
+        if kwargs["reviewed_head_sha"] is None:
+            raise registry_module.RegistryError("team evaluation requires an exact reviewed head")
+        return {"id": "eval-reviewed-head", "passed": int(kwargs["passed"]), **kwargs}
+
+    monkeypatch.setattr(registry_module.Registry, "add_evaluation", fake_add_evaluation)
+    parsed = _parser().parse_args(
+        [
+            "evaluate",
+            "task-team",
+            "--run-id",
+            "run-worker",
+            "--evaluator",
+            "reviewer",
+            "--passed",
+            "--evidence",
+            "exact head checked",
+            "--reviewed-head-sha",
+            reviewed_head,
+        ]
+    )
+    assert parsed.reviewed_head_sha == reviewed_head
+
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "evaluate",
+                "task-team",
+                "--run-id",
+                "run-worker",
+                "--evaluator",
+                "reviewer",
+                "--passed",
+                "--evidence",
+                "exact head checked",
+                "--reviewed-head-sha",
+                reviewed_head,
+            ]
+        )
+        == 0
+    )
+    success = json.loads(capsys.readouterr().out)
+    assert success["reviewed_head_sha"] == reviewed_head
+    assert captured[-1][1]["reviewed_head_sha"] == reviewed_head
+
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "evaluate",
+                "task-team",
+                "--run-id",
+                "run-worker",
+                "--evaluator",
+                "reviewer",
+                "--failed",
+                "--evidence",
+                "missing exact head",
+            ]
+        )
+        == 2
+    )
+    failure = json.loads(capsys.readouterr().err)
+    assert "exact reviewed head" in failure["error"]
+    assert captured[-1][1]["reviewed_head_sha"] is None
+
+
 def test_cli_herdr_bind_rejects_stale_status(tmp_path):
     database = tmp_path / "control.db"
     with pytest.raises(SystemExit) as exc_info:
