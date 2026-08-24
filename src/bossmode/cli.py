@@ -243,6 +243,10 @@ def _parser() -> argparse.ArgumentParser:
     result.add_argument("--failed", action="store_true")
     evaluate.add_argument("--score", type=float)
     evaluate.add_argument("--evidence", required=True)
+    evaluate.add_argument(
+        "--reviewed-head-sha",
+        help="Exact Git head reviewed for a team worker; must match its accepted head",
+    )
     evaluate.add_argument("--notes")
 
     feedback = subparsers.add_parser("feedback", help="Record structured user or system feedback")
@@ -643,6 +647,7 @@ def _run(args: argparse.Namespace) -> Any:
             passed=args.passed,
             score=args.score,
             evidence=args.evidence,
+            reviewed_head_sha=args.reviewed_head_sha,
             notes=args.notes,
         )
 

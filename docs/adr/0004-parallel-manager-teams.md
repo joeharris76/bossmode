@@ -63,7 +63,9 @@ these are true:
 - the worktree and base SHA belong to the registry's repository, the base SHA
   names an existing commit there, and it is the approved base for the task.
 
-The reservation records the branch, base SHA, worktree path, and worktree ID.
+The supervisor passes the approved repository root and base explicitly through
+`--approved-repository-path PATH` and `--approved-base-sha SHA`. The reservation
+records the branch, base SHA, worktree path, and worktree ID.
 Invalid base SHAs, unrelated repositories, primary or dirty worktrees,
 protected branches, and duplicate writer identities are admission failures,
 not reasons to create a worker and repair state later. A caller-supplied
@@ -79,6 +81,9 @@ reservation.
   successfully, and be the evaluator run supplied to `evaluate`. A reviewer
   string alone is not valid for team workers; it remains bounded compatibility
   only for a legacy singleton `run start` evaluation.
+- The public `evaluate` command requires `--reviewed-head-sha SHA` for a team
+  worker. The registry resolves that commit in the approved repository and
+  accepts it only when it equals the worker's durable `accepted_head_sha`.
 - A worker's accepted result names its exact Git head SHA. The linked reviewer
   must finish successfully, check that exact head, and record evidence tied to
   that SHA; a failed or unfinished reviewer, a moving branch name, or a
@@ -115,14 +120,25 @@ reservation.
 
 ## Data and migration
 
-Schema version 7 adds `team_herdr_tabs`. The v6-to-v7 migration gives each
-existing team a unique expected tab label and leaves its live tab unbound until
-the supervisor observes and reconciles one. Schema version 6 added `teams`,
-`writer_identities`, `resource_claims`, and `task_signals`, plus nullable
-hierarchy and run identity fields. Both migrations preserve every existing
-task, run, turn, evaluation, feedback, and promotion. Existing runs default to
-`worker`; existing `start_run` callers do not need to create a team or writer
-reservation.
+The current registry schema is version 9. `Registry.initialize()` applies each
+pending migration in order and updates the single schema-version row in the
+same transaction; a newer unsupported version or a missing migration fails
+closed. The relevant parallel-team migrations are:
+
+- v5 -> v6 adds task hierarchy, team and run identity fields, reviewer-run
+  links, and the parallel-team tables while preserving legacy lifecycle rows.
+- v6 -> v7 adds `team_herdr_tabs`, assigning every existing team one unique
+  expected label while leaving its live tab unbound until reconciliation.
+- v7 -> v8 adds resource-claim reconciliation evidence.
+- v8 -> v9 adds task `approved_base_sha`, evaluation `reviewed_head_sha`, and
+  writer `repository_path` and `accepted_head_sha` fields used by explicit
+  repository admission and exact-head acceptance.
+
+Earlier migrations add Herdr bindings and correlated turns, normalize binding
+constraints, add turn prompts, and create maintenance records. All migrations
+preserve existing tasks, runs, turns, evaluations, feedback, and promotions;
+existing runs default to `worker`, and legacy singleton `start_run` callers do
+not need team or writer metadata.
 
 ## Rejected alternatives
 

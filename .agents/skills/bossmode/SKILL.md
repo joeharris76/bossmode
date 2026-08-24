@@ -124,8 +124,10 @@ worktree that is not the primary checkout, unique branch/path/worktree identity,
 and a base SHA that resolves to an existing commit in that repository. Reject
 protected branches (`main`, `master`, `develop`, and repository-configured
 protected branches), dirty or primary worktrees, duplicate worktrees,
-unrelated repositories, and invalid base SHAs before persisting the worker. A
-caller-supplied repository path cannot redirect admission. The writer
+unrelated repositories, and invalid base SHAs before persisting the worker. The
+supervisor supplies the explicit `--approved-repository-path` and
+`--approved-base-sha` inputs; a scope field or writer declaration alone is not
+the approval. A caller-supplied repository path cannot redirect admission. The writer
 reservation records
 branch, base SHA, worktree path, and worktree ID; it is not a substitute for
 live evidence.
@@ -149,7 +151,9 @@ evaluate. Team workers require a finished successful reviewer run and its
 reviewer run ID passed to `evaluate`; a failed or unfinished reviewer is not
 evidence. A reviewer string alone is supported only for bounded legacy
 singleton compatibility. The reviewer must check the worker's exact Git head
-SHA.
+SHA, and team evaluation must pass that same SHA through
+`evaluate --reviewed-head-sha`; the registry rejects a missing or mismatched
+head.
 
 Finalize a team deterministically: settle turns, finish all workers, release or
 reconcile all claims, finish each linked reviewer, record a passing exact-head

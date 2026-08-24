@@ -952,6 +952,25 @@ class UATHarness:
             assert parsed_worker.approved_repository_path == "/tmp/repository"
             assert parsed_worker.approved_base_sha == accepted_head
 
+            parsed_evaluation = cli_parser().parse_args(
+                [
+                    "evaluate",
+                    "task-worker",
+                    "--run-id",
+                    "run-worker",
+                    "--evaluator-run-id",
+                    "run-reviewer",
+                    "--evaluator",
+                    "reviewer",
+                    "--passed",
+                    "--evidence",
+                    "exact head checked",
+                    "--reviewed-head-sha",
+                    accepted_head,
+                ]
+            )
+            assert parsed_evaluation.reviewed_head_sha == accepted_head
+
             for forbidden in (
                 ["--current"],
                 ["--direction", "right"],
@@ -962,7 +981,10 @@ class UATHarness:
                     assert error.code == 2
                 else:
                     raise AssertionError(f"forbidden pane input was accepted: {forbidden}")
-            return "Accepted head and writer approvals parse; forbidden pane inputs reject"
+            return (
+                "Accepted head, writer, and reviewed-head approvals parse; "
+                "forbidden pane inputs reject"
+            )
 
         self.run_step(
             scenario,

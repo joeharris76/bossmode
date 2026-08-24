@@ -51,7 +51,9 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 1. The supervisor runs `uv run bossmode` to inspect session state and ready tasks.
 2. It records user requests with `bossmode task create`, including success criteria, permission
    limits, and (for team Git work) the explicit `--approved-base-sha` input. Do not hide the
-   approved base only inside scope JSON.
+   approved base only inside scope JSON. For worker admission, carry the supervisor-approved
+   repository root explicitly with `--approved-repository-path`; these approvals are inputs to
+   the public CLI and are checked against live Git state.
 3. For singleton work it selects only the task returned in `dispatch` and
    starts one run. For team work it uses the atomic `dispatch batch` path for
    disjoint child tasks; singleton dispatch remains serialized while another
@@ -257,7 +259,8 @@ When a task has disjoint bounded slices, use the team workflow:
    workers.
 3. Dispatch workers through `dispatch batch` or `run worker-start` only after
    live Git admission against the registry's repository. Every writer must
-   provide a dedicated branch, base SHA, worktree path, and worktree ID from
+   provide `--approved-repository-path` and `--approved-base-sha`, plus a
+   dedicated branch, base SHA, worktree path, and worktree ID from
    that same repository; a caller-supplied repository path cannot redirect the
    check. Every file or non-file resource must be claimed atomically before the
    worker is created.
@@ -271,7 +274,8 @@ When a task has disjoint bounded slices, use the team workflow:
 5. Start a reviewer run linked to the worker run. It must finish successfully;
    a failed or unfinished reviewer is not evidence, and its evaluator run ID
    must be supplied to the evaluation. The reviewer checks the worker's exact
-   Git head SHA; a worker cannot evaluate itself.
+   Git head SHA, which must be passed to `evaluate` as
+   `--reviewed-head-sha`; a worker cannot evaluate itself.
 6. Finalize deterministically: settle turns, finish workers, release claims,
    finish linked reviewers, record a passing exact-head evaluation for every
    child, then finish the manager. The manager cannot finish while child
@@ -311,6 +315,13 @@ successful reviewer run.
 
 The parallel acceptance gate requires at least three overlapping workers under
 two managers and an exact-head review for every accepted worker.
+
+The registry schema is currently version 9. Initialization applies migrations
+v1 -> v2 through v9 in order; the parallel-team steps add hierarchy and run
+identity (v5 -> v6), named team tabs (v6 -> v7), claim reconciliation evidence
+(v7 -> v8), and approved-base, repository-binding, accepted-head, and
+reviewed-head columns (v8 -> v9). A newer schema or missing migration is a
+blocker.
 
 - Missing, duplicate, foreign, or ambiguous live identity: stop and report `blocked`; do not adopt
   or close anything.

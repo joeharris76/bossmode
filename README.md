@@ -36,16 +36,20 @@ The parallel safety contract is fail-closed:
   reusable until the observed owner is reconciled and the owner presents the
   matching fence token and evidence to `resource release`. Bossmode never
   auto-steals a claim.
-- Before `run worker-start` or `dispatch batch` can create a worker, admit the
-  live Git writer against the registry's repository: reject protected branches
+- Before `run worker-start` or `dispatch batch` can create a worker, the
+  supervisor supplies the explicit `--approved-base-sha` and
+  `--approved-repository-path` inputs and admits the live Git writer against
+  the registry's repository: reject protected branches
   (`main`, `master`, and `develop`), the primary checkout, dirty worktrees,
   duplicate branch/path/worktree identities, an unrelated repository, and a
   base SHA that is not a valid commit in that repository. Record the dedicated
   branch, base SHA, worktree path, and worktree ID in the writer reservation;
   caller-supplied repository paths cannot redirect admission elsewhere.
 - A team worker reaches acceptance only through its own successful run and a
-  separate, finished, successful reviewer run linked by worker-run ID. A
-  failed, unfinished, or unlinked reviewer is not evaluation evidence. A
+  separate, finished, successful reviewer run linked by worker-run ID. The
+  supervisor records that review with `evaluate --evaluator-run-id` and the
+  required `--reviewed-head-sha`, which must equal the worker's accepted head.
+  A failed, unfinished, or unlinked reviewer is not evaluation evidence. A
   reviewer string without that link is supported only for legacy singleton
   `run start` compatibility.
 - Finalize a team deterministically: all workers and reviewers are terminal,
@@ -76,6 +80,13 @@ remains compatible without team-tab metadata.
 
 Acceptance evidence must include at least three overlapping workers under two
 managers and an exact-head review for each accepted worker.
+
+Team admission approval is explicit and repository-bound. The supervisor passes
+the approved Git root with `--approved-repository-path PATH` and the approved
+commit with `--approved-base-sha SHA` to the public worker or batch command;
+`--writer-json` declares the writer reservation but cannot replace live
+repository validation. A team evaluation must pass the reviewed commit again
+with `--reviewed-head-sha SHA`.
 
 ## Install and start with a prompt
 
