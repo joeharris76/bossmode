@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
+import time
 import uuid
 from collections.abc import Iterable
 from contextlib import closing, contextmanager
@@ -30,7 +34,8 @@ TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
 TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
-SCHEMA_VERSION = 4
+SQLITE_BUSY_TIMEOUT_MS = 5_000
+SCHEMA_VERSION = 5
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -48,6 +53,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
     version INTEGER NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_meta_singleton
+    ON schema_meta((1));
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -180,6 +187,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_active_herdr_worker
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_turn_per_run
     ON run_turns(run_id)
     WHERE status = 'running';
+
+CREATE TABLE IF NOT EXISTS maintenance_runs (
+    id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+    summary_json TEXT NOT NULL,
+    error_message TEXT
+);
 """
 
 
@@ -210,42 +226,63 @@ class Registry:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
-            schema_exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
-            ).fetchone()
-            if schema_exists is None:
-                connection.executescript(SCHEMA)
-                connection.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
-                return
-            version = connection.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
-            if version is None:
-                raise RegistryError("registry schema version is missing")
-            current = version["version"]
-            if current > SCHEMA_VERSION:
-                raise RegistryError(
-                    f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
-                )
-            migrations = {
-                1: self._migrate_v1_to_v2,
-                2: self._migrate_v2_to_v3,
-                3: self._migrate_v3_to_v4,
-            }
-            while current < SCHEMA_VERSION:
-                migration = migrations.get(current)
-                if migration is None:
-                    raise RegistryError(f"no registry migration from schema {current}")
-                target = current + 1
-                try:
-                    connection.execute("BEGIN IMMEDIATE")
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                schema_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+                ).fetchone()
+                if schema_exists is None:
+                    self._execute_schema(connection)
+                    connection.execute(
+                        "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
+                    )
+                    connection.commit()
+                    return
+                versions = connection.execute("SELECT version FROM schema_meta").fetchall()
+                if not versions:
+                    raise RegistryError("registry schema version is missing")
+                if len(versions) != 1:
+                    raise RegistryError("registry schema version must contain exactly one row")
+                current = versions[0]["version"]
+                if current > SCHEMA_VERSION:
+                    raise RegistryError(
+                        f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
+                    )
+                migrations = {
+                    1: self._migrate_v1_to_v2,
+                    2: self._migrate_v2_to_v3,
+                    3: self._migrate_v3_to_v4,
+                    4: self._migrate_v4_to_v5,
+                }
+                while current < SCHEMA_VERSION:
+                    migration = migrations.get(current)
+                    if migration is None:
+                        raise RegistryError(f"no registry migration from schema {current}")
+                    target = current + 1
                     migration(connection)
                     connection.execute("UPDATE schema_meta SET version = ?", (target,))
-                    connection.commit()
                     current = target
-                except sqlite3.Error as error:
-                    connection.rollback()
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_meta_singleton "
+                    "ON schema_meta((1))"
+                )
+                connection.commit()
+            except sqlite3.Error as error:
+                connection.rollback()
+                if "current" in locals() and current < SCHEMA_VERSION:
                     raise RegistryError(
-                        f"registry migration {current} -> {target} failed: {error}"
+                        f"registry migration {current} -> {current + 1} failed: {error}"
                     ) from error
+                raise
+            except Exception:
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _execute_schema(connection: sqlite3.Connection) -> None:
+        for statement in SCHEMA.split(";"):
+            if statement.strip():
+                connection.execute(statement)
 
     @staticmethod
     def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -368,6 +405,21 @@ class Registry:
     def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE run_turns ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
 
+    @staticmethod
+    def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_runs (
+                id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+                summary_json TEXT NOT NULL,
+                error_message TEXT
+            )
+            """
+        )
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -382,12 +434,49 @@ class Registry:
         finally:
             connection.close()
 
+    @contextmanager
+    def _read_transaction(self) -> Iterable[sqlite3.Connection]:
+        self.initialize()
+        connection = self._connect()
+        transaction_started = False
+        try:
+            connection.execute("BEGIN DEFERRED")
+            transaction_started = True
+            yield connection
+            connection.commit()
+            transaction_started = False
+        except Exception as error:
+            if transaction_started:
+                try:
+                    connection.rollback()
+                except Exception as rollback_error:
+                    error.add_note(f"read transaction rollback failed: {rollback_error}")
+            raise
+        finally:
+            connection.close()
+
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
+        connection = sqlite3.connect(
+            self.path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
+            isolation_level=None,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            deadline = time.perf_counter() + (SQLITE_BUSY_TIMEOUT_MS / 1_000)
+            while True:
+                try:
+                    connection.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as error:
+                    if "locked" not in str(error).lower() or time.perf_counter() >= deadline:
+                        raise
+                    time.sleep(0.005)
+        except Exception:
+            connection.close()
+            raise
         return connection
 
     def create_task(
@@ -437,8 +526,7 @@ class Registry:
         return self.get_task(task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._get_task_impl(connection, task_id)
 
     def _get_task_impl(self, connection: sqlite3.Connection, task_id: str) -> dict[str, Any]:
@@ -474,8 +562,7 @@ class Registry:
         return task
 
     def list_tasks(self, states: Iterable[str] | None = None) -> list[dict[str, Any]]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._list_tasks_impl(connection, states)
 
     def _list_tasks_impl(
@@ -599,8 +686,7 @@ class Registry:
         return self.get_run(run_id)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._get_run_impl(connection, run_id)
 
     def _get_run_impl(self, connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:
@@ -874,13 +960,69 @@ class Registry:
         turn: dict[str, Any], *, expected_summary: str | None
     ) -> dict[str, Any]:
         path = Path(turn["artifact_path"])
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        descriptor = -1
+        directory_descriptor = -1
         try:
-            with path.open("rb") as result_file:
+            # Walk parents with O_NOFOLLOW as well as the final component. The
+            # opened descriptor is the authority for the read; path metadata
+            # is never re-opened after this point.
+            absolute_path = Path(os.path.abspath(path))
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_flags |= getattr(os, "O_CLOEXEC", 0)
+            directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+            directory_descriptor = os.open(absolute_path.anchor, directory_flags)
+            for component in absolute_path.parts[1:-1]:
+                try:
+                    next_directory = os.open(
+                        component,
+                        directory_flags,
+                        dir_fd=directory_descriptor,
+                    )
+                except OSError as error:
+                    if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                        try:
+                            component_stat = os.stat(
+                                component,
+                                dir_fd=directory_descriptor,
+                                follow_symlinks=False,
+                            )
+                        except OSError:
+                            component_stat = None
+                        if component_stat is not None and stat.S_ISLNK(component_stat.st_mode):
+                            raise RegistryError(
+                                f"turn result artifact parent cannot be a symlink: {path}"
+                            ) from error
+                    raise
+                os.close(directory_descriptor)
+                directory_descriptor = next_directory
+            descriptor = os.open(
+                absolute_path.name,
+                flags,
+                dir_fd=directory_descriptor,
+            )
+            descriptor_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(descriptor_stat.st_mode):
+                raise RegistryError(f"turn result artifact must be a regular file: {path}")
+            result_file = os.fdopen(descriptor, "rb")
+            descriptor = -1
+            with result_file:
                 raw = result_file.read(MAX_TURN_RESULT_BYTES + 1)
         except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise RegistryError(f"turn result artifact cannot be a symlink: {path}") from error
             raise RegistryError(
                 f"turn result is unavailable at {path}: {error.strerror}"
             ) from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if directory_descriptor >= 0:
+                os.close(directory_descriptor)
         if len(raw) > MAX_TURN_RESULT_BYTES:
             raise RegistryError(f"turn result exceeds {MAX_TURN_RESULT_BYTES} bytes: {path}")
         try:
@@ -961,9 +1103,15 @@ class Registry:
                 turns = connection.execute(
                     "SELECT status FROM run_turns WHERE run_id = ?", (run_id,)
                 ).fetchall()
-                if turns and not any(turn["status"] == "succeeded" for turn in turns):
+                herdr_binding = connection.execute(
+                    "SELECT 1 FROM herdr_bindings WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if (herdr_binding is not None or turns) and (
+                    not turns or not any(turn["status"] == "succeeded" for turn in turns)
+                ):
                     raise RegistryError(
-                        "successful run with turns requires at least one succeeded turn"
+                        "successful run with Herdr worker or turns requires at least "
+                        "one succeeded turn"
                     )
             task = connection.execute(
                 "SELECT * FROM tasks WHERE id = ?", (run["task_id"],)
@@ -1172,7 +1320,7 @@ class Registry:
                     continue
                 existing = connection.execute(
                     """
-                    SELECT id, status FROM promotions
+                    SELECT id, status, evidence_json FROM promotions
                     WHERE recurrence_key = ? AND target_layer = ?
                     """,
                     (key, target),
@@ -1207,6 +1355,16 @@ class Registry:
                 }
                 rationale = self._promotion_rationale(target, relevant_feedback, evaluations)
                 if existing is not None and existing["status"] == "rejected":
+                    existing_evidence = json.loads(existing["evidence_json"])
+                    existing_feedback_ids = set(existing_evidence.get("feedback_ids", []))
+                    existing_eval_ids = set(existing_evidence.get("evaluation_ids", []))
+                    current_feedback_ids = set(evidence["feedback_ids"])
+                    current_eval_ids = set(evidence["evaluation_ids"])
+                    if not (
+                        (current_feedback_ids - existing_feedback_ids)
+                        or (current_eval_ids - existing_eval_ids)
+                    ):
+                        continue
                     promotion_id = existing["id"]
                     connection.execute(
                         """
@@ -1250,8 +1408,7 @@ class Registry:
         return created
 
     def list_promotions(self, status: str | None = None) -> list[dict[str, Any]]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._list_promotions_impl(connection, status)
 
     def _list_promotions_impl(
@@ -1305,7 +1462,7 @@ class Registry:
     def reconcile(self) -> dict[str, Any]:
         self.initialize()
         created = self.propose_promotions()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             ready = self._list_tasks_impl(connection, ["ready"])
             needs_user = self._list_tasks_impl(connection, ["waiting_user"])
             blocked = self._list_tasks_impl(connection, ["blocked"])
@@ -1329,6 +1486,197 @@ class Registry:
 
     def supervisor_tick(self) -> dict[str, Any]:
         return self.reconcile()
+
+    def run_maintenance(self) -> dict[str, Any]:
+        self.initialize()
+        start_time = time.perf_counter()
+        started_at = _now()
+        maint_id = _id("maint")
+
+        try:
+            report = self._collect_maintenance_report(
+                maintenance_id=maint_id,
+                started_at=started_at,
+                start_time=start_time,
+            )
+            self._record_maintenance_run(
+                maint_id,
+                started_at=started_at,
+                status="succeeded",
+                summary=report,
+            )
+        except Exception as error:
+            try:
+                self._record_maintenance_run(
+                    maint_id,
+                    started_at=started_at,
+                    status="failed",
+                    summary={},
+                    error_message=str(error),
+                )
+            except Exception as record_error:
+                error.add_note(f"could not record failed maintenance run: {record_error}")
+            if isinstance(error, RegistryError):
+                raise
+            raise RegistryError(f"maintenance failed: {error}") from error
+        return report
+
+    def _collect_maintenance_report(
+        self,
+        *,
+        maintenance_id: str,
+        started_at: str,
+        start_time: float,
+    ) -> dict[str, Any]:
+
+        with self._read_transaction() as connection:
+            integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
+            integrity = integrity_row[0] if integrity_row else "unknown"
+
+            page_count_row = connection.execute("PRAGMA page_count").fetchone()
+            page_count = page_count_row[0] if page_count_row else 0
+            page_size_row = connection.execute("PRAGMA page_size").fetchone()
+            page_size = page_size_row[0] if page_size_row else 4096
+            db_size_bytes = page_count * page_size
+
+            journal_mode_row = connection.execute("PRAGMA journal_mode").fetchone()
+            journal_mode = journal_mode_row[0] if journal_mode_row else "unknown"
+
+            active_runs = connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE status = 'running'"
+            ).fetchone()[0]
+            stale_bindings = connection.execute(
+                "SELECT COUNT(*) FROM herdr_bindings WHERE status = 'stale'"
+            ).fetchone()[0]
+            live_bindings = connection.execute(
+                "SELECT COUNT(*) FROM herdr_bindings WHERE status = 'live'"
+            ).fetchone()[0]
+            orphaned_turns = connection.execute(
+                """
+                SELECT COUNT(*) FROM run_turns t
+                JOIN runs r ON t.run_id = r.id
+                WHERE t.status = 'running' AND r.status = 'finished'
+                """
+            ).fetchone()[0]
+            unresolved_evals = connection.execute(
+                "SELECT COUNT(*) FROM tasks WHERE state = 'evaluating'"
+            ).fetchone()[0]
+
+            telemetry_rows = connection.execute(
+                """
+                SELECT
+                    COALESCE(model, 'unspecified') AS model,
+                    COALESCE(reasoning_effort, 'none') AS reasoning_effort,
+                    COUNT(*) AS total_runs,
+                    COUNT(
+                        CASE WHEN tokens IS NOT NULL AND tokens > 0 THEN 1 END
+                    ) AS runs_with_tokens,
+                    ROUND(
+                        AVG(CASE WHEN tokens IS NOT NULL AND tokens > 0 THEN tokens END), 0
+                    ) AS avg_tokens,
+                    ROUND(AVG(COALESCE(duration_seconds, 0)), 1) AS avg_duration_sec,
+                    SUM(retries) AS total_retries,
+                    ROUND(
+                        AVG(CASE WHEN outcome = 'succeeded' THEN 1.0 ELSE 0.0 END) * 100, 1
+                    ) AS success_rate_pct
+                FROM runs
+                WHERE status = 'finished'
+                GROUP BY model, reasoning_effort
+                ORDER BY total_runs DESC
+                """
+            ).fetchall()
+
+            telemetry = [
+                {
+                    "model": row["model"],
+                    "reasoning_effort": row["reasoning_effort"],
+                    "total_runs": row["total_runs"],
+                    "runs_with_tokens": row["runs_with_tokens"],
+                    "avg_tokens": row["avg_tokens"],
+                    "avg_duration_sec": row["avg_duration_sec"],
+                    "total_retries": row["total_retries"],
+                    "success_rate_pct": row["success_rate_pct"],
+                }
+                for row in telemetry_rows
+            ]
+
+        new_proposals = self.propose_promotions()
+        pending_promotions = self.list_promotions("proposed")
+
+        health_status = "healthy" if integrity == "ok" and orphaned_turns == 0 else "warning"
+        duration_seconds = round(time.perf_counter() - start_time, 4)
+
+        report = {
+            "id": maintenance_id,
+            "timestamp": started_at,
+            "duration_seconds": duration_seconds,
+            "database": {
+                "path": str(self.path),
+                "integrity": integrity,
+                "size_bytes": db_size_bytes,
+                "journal_mode": journal_mode,
+            },
+            "health": {
+                "active_runs": active_runs,
+                "stale_herdr_bindings": stale_bindings,
+                "live_herdr_bindings": live_bindings,
+                "orphaned_turns": orphaned_turns,
+                "unresolved_evaluations": unresolved_evals,
+                "status": health_status,
+            },
+            "telemetry": telemetry,
+            "promotions": {
+                "new_proposals": new_proposals,
+                "new_proposals_count": len(new_proposals),
+                "pending_approval_count": len(pending_promotions),
+            },
+        }
+
+        return report
+
+    def _record_maintenance_run(
+        self,
+        maintenance_id: str,
+        *,
+        started_at: str,
+        status: str,
+        summary: dict[str, Any],
+        error_message: str | None = None,
+    ) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO maintenance_runs(
+                    id, started_at, finished_at, status, summary_json, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    maintenance_id,
+                    started_at,
+                    _now(),
+                    status,
+                    _json(summary),
+                    error_message,
+                ),
+            )
+
+    def list_maintenance_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self._read_transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, started_at, finished_at, status, summary_json, error_message
+                FROM maintenance_runs
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            item = dict(r)
+            item["summary"] = json.loads(item.pop("summary_json"))
+            result.append(item)
+        return result
 
     @staticmethod
     def _is_relevant_feedback(target: str, kind: str) -> bool:
@@ -1391,8 +1739,7 @@ class Registry:
     def _get_record(self, table: str, record_id: str) -> dict[str, Any]:
         if table not in {"evaluations", "feedback", "run_turns"}:
             raise RegistryError(f"unsupported record table: {table}")
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             record = _row(
                 connection.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
             )
@@ -1401,8 +1748,7 @@ class Registry:
         return record
 
     def _get_promotion(self, promotion_id: str) -> dict[str, Any]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             promotion = _row(
                 connection.execute(
                     "SELECT * FROM promotions WHERE id = ?", (promotion_id,)

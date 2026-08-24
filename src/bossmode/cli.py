@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from bossmode.registry import CREATE_TASK_STATES, TASK_STATES, Registry, RegistryError
+from bossmode.scheduler import (
+    SchedulerError,
+    get_schedule_status,
+    install_schedule,
+    uninstall_schedule,
+)
 
 DEFAULT_DB = Path(".bossmode/control.db")
 
@@ -173,6 +179,37 @@ def _parser() -> argparse.ArgumentParser:
     supervisor_commands = supervisor.add_subparsers(dest="supervisor_command", required=True)
     supervisor_commands.add_parser("tick", aliases=["reconcile", "next"])
 
+    subparsers.add_parser(
+        "maintenance",
+        help="Run telemetry analytics, health checks, and promotion discovery",
+    )
+
+    schedule = subparsers.add_parser(
+        "schedule", help="Manage native OS scheduling for routine tasks"
+    )
+    schedule_commands = schedule.add_subparsers(dest="schedule_command", required=True)
+
+    sched_install = schedule_commands.add_parser("install", help="Install OS scheduler job")
+    sched_install.add_argument(
+        "--interval", type=int, default=3600, help="Interval in seconds (default: 3600)"
+    )
+    sched_install.add_argument("--cron", help="Cron expression (e.g. '0 * * * *')")
+    sched_install.add_argument(
+        "--target",
+        choices=["maintenance", "reconcile"],
+        default="maintenance",
+        help="Target command to run (default: maintenance)",
+    )
+    sched_install.add_argument("--repo-dir", default=".", help="Repository path (default: .)")
+    sched_install.add_argument("--log-path", help="Path for output log file")
+
+    sched_status = schedule_commands.add_parser("status", help="Check OS scheduler job status")
+    sched_status.add_argument("--repo-dir", default=".", help="Repository path (default: .)")
+    sched_status.add_argument("--log-path", help="Path for output log file")
+
+    sched_uninstall = schedule_commands.add_parser("uninstall", help="Uninstall OS scheduler job")
+    sched_uninstall.add_argument("--repo-dir", default=".", help="Repository path (default: .)")
+
     return parser
 
 
@@ -310,6 +347,23 @@ def _run(args: argparse.Namespace) -> Any:
     if args.command == "supervisor":
         return registry.reconcile()
 
+    if args.command == "maintenance":
+        return registry.run_maintenance()
+
+    if args.command == "schedule":
+        if args.schedule_command == "install":
+            return install_schedule(
+                args.repo_dir,
+                target=args.target,
+                interval_seconds=args.interval,
+                cron_expr=args.cron,
+                log_path=args.log_path,
+            )
+        if args.schedule_command == "status":
+            return get_schedule_status(args.repo_dir, log_path=args.log_path)
+        if args.schedule_command == "uninstall":
+            return uninstall_schedule(args.repo_dir)
+
     return registry.reconcile()
 
 
@@ -318,7 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         _emit(_run(args))
-    except RegistryError as error:
+    except (RegistryError, SchedulerError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 2
     except sqlite3.Error as error:

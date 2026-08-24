@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automated end-to-end UAT evaluation loop for bossmode.
+"""Automated in-process functional acceptance loop for Bossmode.
 
 Exercises the full lifecycle across:
 1. Scenario 1: Happy Path End-to-End Task Execution & Independent Evaluation Pass
@@ -22,7 +22,38 @@ from pathlib import Path
 from typing import Any
 
 from bossmode.cli import main as cli_main
-from bossmode.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
+from bossmode.registry import MAX_TURN_RESULT_BYTES, SCHEMA_VERSION, Registry, RegistryError
+
+EXPECTED_UAT_CHECKS = (
+    "1.1 Initialize registry database",
+    "1.2 Create task with explicit criteria and permissions",
+    "1.3 Reconcile session state and select dispatch task",
+    "1.4 Start run and bind Herdr worker with native session",
+    "1.5 Execute turn with correlated artifact validation",
+    "1.6 Finish run into evaluating state & stale Herdr binding",
+    "1.7 Independent evaluator verifies and moves task to succeeded",
+    "2.1 Create task and dispatch Run 1",
+    "2.2 Run 1 finishes with subtle defect",
+    "2.3 Independent evaluator rejects Run 1 -> task marked failed",
+    "2.4 Ingest correction feedback and transition task to ready",
+    "2.5 Run 2 executes correction turn and finishes into evaluating",
+    "2.6 Evaluator passes Run 2 -> task succeeded",
+    "3.1 Log feedback across control, skill, and memory categories",
+    "3.2 Verify skill proposal requires passing evaluation evidence",
+    "3.3 Add passing evaluation and verify skill proposal generated",
+    "3.4 User approval gate enforces proposed -> accepted -> applied",
+    "3.5 Re-propose rejected promotion upon new feedback",
+    "4.1 Reject self-evaluation when evaluator == run.agent_role",
+    "4.2 Reject evaluation when task is not in evaluating state",
+    "4.3 Reject finish_run(succeeded) when all turns failed",
+    "4.4 Detect and reject markdown code fences in turn result JSON",
+    "4.5 Reject turn results exceeding 1 MiB limit",
+    "4.6 Reject duplicate worker name binding to concurrent active runs",
+    "4.7 Reject manual stale status assignment via bind_herdr_run",
+    "5.1 Verify single-flight pause during active execution",
+    "5.2 Dispatch selects highest priority ready task when queue clears",
+    "5.3 Exercise naked CLI and subcommands against in-process registry",
+)
 
 
 @dataclass
@@ -69,7 +100,7 @@ class UATReport:
 
 
 class UATHarness:
-    """Executes end-to-end UAT scenarios against a fresh control plane."""
+    """Executes in-process acceptance scenarios against a fresh control plane."""
 
     def __init__(self, workspace_dir: Path) -> None:
         self.workspace = workspace_dir
@@ -100,7 +131,7 @@ class UATHarness:
 
     def run_all(self) -> bool:
         print("\n==================================================")
-        print(" BOSSMODE MVP: AUTOMATED UAT EVALUATION")
+        print(" BOSSMODE MVP: IN-PROCESS FUNCTIONAL ACCEPTANCE")
         print("==================================================")
         print(f"Workspace: {self.workspace}")
         print(f"Control DB: {self.db_path}\n")
@@ -112,7 +143,7 @@ class UATHarness:
             self.scenario_4_adversarial_safeguards()
             self.scenario_5_scheduling_and_snapshot_reads()
         except Exception as exc:
-            print(f"\n[FATAL] UAT loop interrupted by failure: {exc}")
+            print(f"\n[FATAL] Functional acceptance interrupted by failure: {exc}")
             return False
 
         self._print_summary()
@@ -126,7 +157,7 @@ class UATHarness:
         def step_init() -> str:
             self.registry.initialize()
             assert self.db_path.exists()
-            return "Initialized schema version 4"
+            return f"Initialized schema version {SCHEMA_VERSION}"
 
         self.run_step(scenario, "1.1 Initialize registry database", step_init)
 
@@ -868,13 +899,13 @@ class UATHarness:
 
         self.run_step(
             scenario,
-            "5.3 Exercise naked CLI and subcommands against live registry",
+            "5.3 Exercise naked CLI and subcommands against in-process registry",
             step_cli_execution,
         )
 
     def _print_summary(self) -> None:
         print("\n==================================================")
-        print(" UAT EVALUATION SCORECARD")
+        print(" FUNCTIONAL ACCEPTANCE SCORECARD")
         print("==================================================")
         print(f"Total Checks:  {self.report.total}")
         print(f"Passed:        {self.report.passed}")
@@ -885,9 +916,9 @@ class UATHarness:
         print(f"Success Rate:  {success_rate:.1f}%\n")
 
         if self.report.failed == 0:
-            print(">>> ALL UAT SCENARIOS PASSED WITH ZERO DEFECTS <<<")
+            print(">>> ALL FUNCTIONAL ACCEPTANCE CHECKS PASSED <<<")
         else:
-            print(">>> UAT EVALUATION FAILED <<<")
+            print(">>> FUNCTIONAL ACCEPTANCE FAILED <<<")
             for res in self.report.results:
                 if not res.passed:
                     print(f"  FAILED: [{res.scenario}] {res.name} -> {res.error}")

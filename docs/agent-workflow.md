@@ -209,3 +209,31 @@ identity against live native runtime (AGY, Codex) or Herdr state before continui
 The MVP intentionally has no command that closes a Herdr worker. Destructive lifecycle actions stay
 in the official runtime and require fresh live-identity reconciliation plus user authorization when
 the action could affect ambiguous or foreign work.
+
+## Maintenance and OS scheduling
+
+To ensure database integrity, analyze token and model efficiency, and trigger recurring promotion scans without running a persistent daemon:
+
+1. **On-demand Maintenance**:
+   ```bash
+   uv run bossmode maintenance
+   ```
+   Audits database integrity, active/stale bindings, orphaned turns, and outputs telemetry grouped by model and reasoning effort.
+
+2. **Native OS Scheduling Adapter**:
+   ```bash
+   # Register automated background maintenance (LaunchAgent on macOS, crontab on Linux)
+   uv run bossmode schedule install --interval 3600
+
+   # Check scheduler registration and available log activity
+   uv run bossmode schedule status
+
+   # Cleanly remove the OS scheduler job
+   uv run bossmode schedule uninstall
+   ```
+
+Automated tests validate generated commands and mocked success, fallback, and failure behavior.
+They never mutate a developer or CI host's launchd or crontab state. Run an actual
+install-status-uninstall smoke only after the user authorizes that host change. Likewise, live
+Herdr identity reconciliation remains an explicit operational gate rather than an automated CI
+test.

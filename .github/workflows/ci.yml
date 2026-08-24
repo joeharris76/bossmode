@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv lock --check
+      - run: uv sync --locked --all-groups
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+      - run: git diff --check
+
+  distribution:
+    name: Installed wheel smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv build --wheel
+      - name: Run the wheel in an isolated environment
+        run: |
+          wheel_path=$(find dist -name '*.whl' -print -quit)
+          output_path="$RUNNER_TEMP/bossmode-wheel.json"
+          uv run --isolated --no-project --with "$wheel_path" \
+            bossmode --db "$RUNNER_TEMP/bossmode-wheel.db" > "$output_path"
+          uv run --no-project python -m json.tool "$output_path"
