@@ -22,6 +22,7 @@ def registry(tmp_path):
 def _create_repository(tmp_path: Path) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     repository = tmp_path / "repository"
+    remote = tmp_path / "origin.git"
     repository.mkdir()
     for arguments in (
         ["git", "init", "-b", "main", str(repository)],
@@ -37,6 +38,21 @@ def _create_repository(tmp_path: Path) -> Path:
         capture_output=True,
         text=True,
     )
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "remote", "add", "origin", str(remote)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "push", "-u", "origin", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return repository
 
 
@@ -44,6 +60,12 @@ def _writer(registry: Registry, branch: str, directory: str, worktree_id: str) -
     path = registry.repository_path / directory
     subprocess.run(
         ["git", "-C", str(registry.repository_path), "worktree", "add", "-b", branch, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "push", "-u", "origin", branch],
         check=True,
         capture_output=True,
         text=True,
@@ -226,7 +248,7 @@ def test_reconcile_accepted_head_requires_explicit_repository_path(registry, tmp
 def test_reconcile_accepted_head_rejects_unrelated_supplied_repository(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     unrelated = _create_repository(tmp_path / "unrelated-supplied")
-    with pytest.raises(RegistryError, match="worktree is missing or ambiguous"):
+    with pytest.raises(RegistryError, match="Registry common repository"):
         registry.reconcile_accepted_head(
             worker["id"],
             repository_path=unrelated,
@@ -373,6 +395,79 @@ def test_reconcile_accepted_head_rejects_unrelated_repository(registry, tmp_path
             (str(unrelated), worker["id"]),
         )
     with pytest.raises(RegistryError, match="recorded writer repository does not match"):
+        registry.reconcile_accepted_head(
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
+        )
+
+
+def test_reconcile_accepted_head_rejects_a_clone_of_the_common_repository(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", str(registry.repository_path), str(clone)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="Registry common repository"):
+        registry.reconcile_accepted_head(
+            worker["id"],
+            repository_path=clone,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
+        )
+
+
+def test_team_root_does_not_derive_an_approved_base_from_live_head(registry, tmp_path):
+    root = registry.create_task(
+        title="Root",
+        goal="g",
+        success_criteria="s",
+        scope={"approved_base_sha": _repo_head(registry)},
+    )
+    assert root["approved_base_sha"] is None
+    team = registry.create_team(
+        root["id"], name="explicit-base", manager_identity={"source": "n", "value": "m"}
+    )
+    child = registry.create_child_task(
+        root["id"],
+        title="Child",
+        goal="g",
+        success_criteria="s",
+        team_id=team["id"],
+        scope={},
+    )
+    manager = registry.start_manager_run(team["id"], identity={"source": "n", "value": "m"})
+    writer = _writer(registry, "explicit-base/worker", "explicit-base-worker", "explicit-base")
+    with pytest.raises(RegistryError, match="not approved"):
+        registry.start_worker_run(
+            child["id"],
+            manager_run_id=manager["id"],
+            identity={"source": "n", "value": "w"},
+            writer=writer,
+        )
+
+
+def test_reconcile_accepted_head_rejects_an_unpushed_writer_head(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    worktree = Path(worker["writer_identity"]["worktree_path"])
+    (worktree / "unpushed-recovery.txt").write_text("not on origin\n")
+    subprocess.run(
+        ["git", "-C", str(worktree), "add", "unpushed-recovery.txt"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "commit", "-m", "unpushed recovery head"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="pushed remote branch head"):
         registry.reconcile_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
@@ -1023,7 +1118,20 @@ def test_team_finish_and_review_require_matching_exact_heads(registry, tmp_path)
         capture_output=True,
         text=True,
     )
-    with pytest.raises(RegistryError, match="does not match the live writer head"):
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            worker["writer_identity"]["worktree_path"],
+            "push",
+            "origin",
+            worker["writer_identity"]["branch_name"],
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="does not match the live current head"):
         registry.finish_run(
             worker["id"],
             outcome="succeeded",
@@ -1052,6 +1160,103 @@ def test_team_finish_and_review_require_matching_exact_heads(registry, tmp_path)
             passed=True,
             evidence="wrong exact head",
             reviewed_head_sha=stale_head,
+        )
+
+
+def test_team_finish_rejects_a_dirty_writer_worktree(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "dirty-finish-worker"},
+        writer=_writer(registry, "strict/dirty", "strict-dirty", "strict-dirty"),
+    )
+    worktree = Path(worker["writer_identity"]["worktree_path"])
+    (worktree / "untracked.txt").write_text("must be rejected\n")
+    with pytest.raises(RegistryError, match="worktree is dirty"):
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="dirty writer",
+            accepted_head_sha=_head(worker["writer_identity"]),
+        )
+
+
+def test_team_finish_rejects_an_unpushed_writer_head(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "unpushed-finish-worker"},
+        writer=_writer(registry, "strict/unpushed", "strict-unpushed", "strict-unpushed"),
+    )
+    worktree = Path(worker["writer_identity"]["worktree_path"])
+    (worktree / "unpushed.txt").write_text("not on origin\n")
+    subprocess.run(
+        ["git", "-C", str(worktree), "add", "unpushed.txt"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "commit", "-m", "unpushed head"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="pushed remote branch head"):
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="unpushed writer",
+            accepted_head_sha=_head(worker["writer_identity"]),
+        )
+
+
+def test_team_finish_rejects_a_primary_checkout_recorded_as_writer(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "primary-finish-worker"},
+        writer=_writer(registry, "strict/primary", "strict-primary", "strict-primary"),
+    )
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE writer_identities SET worktree_path = ?, branch_name = ? WHERE run_id = ?",
+            (str(registry.repository_path), "main", worker["id"]),
+        )
+    with pytest.raises(RegistryError, match="primary checkout"):
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="primary writer",
+            accepted_head_sha=_repo_head(registry),
+        )
+
+
+def test_team_finish_rejects_a_foreign_registry_repository(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "foreign-finish-worker"},
+        writer=_writer(registry, "strict/foreign", "strict-foreign", "strict-foreign"),
+    )
+    clone = tmp_path / "finish-clone"
+    subprocess.run(
+        ["git", "clone", str(registry.repository_path), str(clone)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    foreign_registry = Registry(registry.path, repository_path=clone)
+    with pytest.raises(RegistryError, match="Registry common repository"):
+        foreign_registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="foreign repository",
+            accepted_head_sha=_head(worker["writer_identity"]),
         )
 
 
@@ -1584,7 +1789,12 @@ def test_claim_renew_release_and_non_file_canonicalization(registry, tmp_path):
 
 
 def test_batch_can_create_teams_and_rolls_back_conflicts(registry, tmp_path):
-    root = registry.create_task(title="batch", goal="batch", success_criteria="batch")
+    root = registry.create_task(
+        title="batch",
+        goal="batch",
+        success_criteria="batch",
+        approved_base_sha=_repo_head(registry),
+    )
     child = registry.create_task(
         title="child",
         goal="child",
@@ -1624,7 +1834,18 @@ def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys, monkeypat
         assert main(["--db", str(database), *args]) == 0
         return __import__("json").loads(capsys.readouterr().out)
 
-    root = call("task", "create", "--title", "CLI root", "--goal", "g", "--success-criteria", "s")
+    root = call(
+        "task",
+        "create",
+        "--title",
+        "CLI root",
+        "--goal",
+        "g",
+        "--success-criteria",
+        "s",
+        "--approved-base-sha",
+        _repo_head(git_registry),
+    )
     team = call(
         "team",
         "create",
@@ -1721,7 +1942,9 @@ def test_parallel_contract_rejections_are_explicit(registry, tmp_path):
         )
     with pytest.raises(RegistryError, match="root task"):
         registry.create_team("missing", name="team", manager_identity={"source": "n", "value": "m"})
-    root = registry.create_task(title="root", goal="g", success_criteria="s")
+    root = registry.create_task(
+        title="root", goal="g", success_criteria="s", approved_base_sha=_repo_head(registry)
+    )
     other_root = registry.create_task(title="other root", goal="g", success_criteria="s")
     with pytest.raises(RegistryError, match="team name"):
         registry.create_team(root["id"], name=" ", manager_identity={"source": "n", "value": "m"})
