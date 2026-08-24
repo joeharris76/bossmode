@@ -537,6 +537,74 @@ def test_cli_run_finish_records_exact_accepted_head(tmp_path, capsys):
     assert {"kind": "accepted-head", "sha": accepted_head} in finished["artifacts"]
 
 
+def test_cli_task_create_accepts_first_class_approved_base(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    database = tmp_path / "control.db"
+    approved_base = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+    captured = {}
+
+    def fake_create_task(self, **kwargs):
+        captured.update(kwargs)
+        return {"id": "task-approved-base"}
+
+    monkeypatch.setattr(registry_module.Registry, "create_task", fake_create_task)
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Base",
+                "--goal",
+                "Goal",
+                "--success-criteria",
+                "Criteria",
+                "--approved-base-sha",
+                approved_base,
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["id"] == "task-approved-base"
+    assert captured["approved_base_sha"] == approved_base
+
+
+def test_cli_reconcile_accepted_head_forwards_evidence(tmp_path, capsys, monkeypatch):
+    captured = {}
+
+    def fake_reconcile(self, run_id, **kwargs):
+        captured["run_id"] = run_id
+        captured.update(kwargs)
+        return {"id": run_id, "writer_identity": {"accepted_head_sha": kwargs["accepted_head_sha"]}}
+
+    monkeypatch.setattr(registry_module.Registry, "reconcile_accepted_head", fake_reconcile)
+    accepted_head = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "run",
+                "reconcile-accepted-head",
+                "run-worker",
+                "--accepted-head-sha",
+                accepted_head,
+                "--evidence",
+                "live Git verified",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["id"] == "run-worker"
+    assert captured == {
+        "run_id": "run-worker",
+        "accepted_head_sha": accepted_head,
+        "evidence": "live Git verified",
+    }
+
+
 def test_cli_worker_start_forwards_approval_inputs(tmp_path, capsys, monkeypatch):
     captured = {}
 

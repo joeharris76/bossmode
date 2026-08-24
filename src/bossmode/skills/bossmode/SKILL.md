@@ -64,7 +64,9 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
    scope needed for that outcome.
 2. Ask only when a missing choice would materially change the result or permissions. Otherwise,
    make reasonable bounded assumptions and state them.
-3. Record the task with `bossmode task create` and preserve the returned task ID.
+3. Record the task with `bossmode task create` and preserve the returned task ID. For team Git work,
+   provide the supervisor-approved base explicitly with `--approved-base-sha`; do not rely only on
+   scope JSON.
 4. Run `bossmode` to confirm that the recorded task is the next eligible dispatch. Do not delegate
    unrecorded work.
 
@@ -156,6 +158,13 @@ while child workers or reviewers are active, while claims remain held, or while
 a child lacks a passing evaluation. Acceptance requires at least three
 overlapping workers under two managers and exact-head review of each accepted
 worker.
+
+For a legacy finished successful team worker whose schema-upgraded writer row lacks `accepted_head_sha`,
+use `bossmode run reconcile-accepted-head RUN_ID --accepted-head-sha SHA --evidence TEXT`. The
+registry revalidates the recorded repository, linked worktree, branch, live current head, worker
+identity, and exact commit existence before a conditional one-time assignment. Evidence is required
+and recorded in task history; active, wrong-identity, unrelated-repository, moved-branch/head,
+ambiguous-worktree, invalid-commit, and overwrite cases fail closed.
 
 Claims are owned by a run and fenced by a unique token. Lease expiry changes
 `active` to `reconcile_required`; live owner evidence is required before the
