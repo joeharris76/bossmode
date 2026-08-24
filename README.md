@@ -1,153 +1,175 @@
-# Bossmode MVP
+# Bossmode
 
-A lightweight, durable control plane and supervisor harness for autonomous agents. Bossmode coordinates long-running supervisor workflows, bounded specialist tasks, turn-correlated execution, independent evaluation, and gated promotion of feedback into memories, skills, or deterministic controls.
+Bossmode is a task management and orchestration system for AI coding agents. It coordinates supervisor workflows, delegates work to specialized agents (such as Claude, Codex, Grok, Pi, or Muse), verifies results through independent reviewers, and captures feedback to improve future runs.
 
-The model does not update its weights. The surrounding system improves by persisting context, recording evidence-backed outcomes, refining reusable procedures, and enforcing recurring rules in code.
-
----
-
-## Core Capabilities
-
-- **Durable Control Plane**: Transactional SQLite registry (`.bossmode/control.db`) with zero external runtime dependencies.
-- **Supervisor Orchestration**: Single-flight task dispatch (`bossmode supervisor tick`) preventing concurrent write collisions.
-- **Runtime & Coordinator Agnostic**: Any agent (Antigravity/AGY, Codex, Claude, Pi, Grok, Muse) can act as coordinator or execute bounded worker runs.
-- **Dual Execution Modes**:
-  - _Native Subagents_: Dispatched via host runtime tools (Codex subagents, AGY `invoke_subagent`).
-  - _External Workers_: Interactive agents (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) managed via the official Herdr CLI with native session recovery.
-- **Correlated Turn Protocol**: Enforces bounded JSON result validation (`.bossmode/turns/<turn_id>.json`), eliminating brittle terminal screen scraping.
-- **Independent Evaluation Gate**: Tasks require third-party verification (`evaluator != run.agent_role`) before reaching `succeeded`.
-- **Gated Continual Learning Ladder**:
-  - _Preference / Observation_ $\rightarrow$ `memory` proposal
-  - _Repeated correction_ ($N \ge 2$) with passing evaluation $\rightarrow$ `skill` proposal
-  - _Repeated failure_ ($N \ge 2$) $\rightarrow$ deterministic `control` proposal
-  - All promotions require explicit user approval (`proposed -> accepted -> applied`).
+Instead of retraining models, Bossmode improves the agent runtime over time. It saves context to memory, turns successful patterns into reusable skills, and enforces recurring rules in deterministic code.
 
 ---
 
-## Supported Agent Matrix
+## Key Features
 
-| Agent                 | Session Coordinator | Native Subagent Dispatch | Herdr External Worker | Independent Reviewer |
-| --------------------- | :-----------------: | :----------------------: | :-------------------: | :------------------: |
-| **Antigravity (AGY)** |         ✅          |  ✅ (`invoke_subagent`)  |   ✅ (`herdr:agy`)    |          ✅          |
-| **Codex**             |         ✅          |  ✅ (native task tools)  |  ✅ (`herdr:codex`)   |          ✅          |
-| **Claude**            |         ✅          |            —             |  ✅ (`herdr:claude`)  |          ✅          |
-| **Pi**                |         ✅          |            —             |    ✅ (`herdr:pi`)    |          ✅          |
-| **Grok**              |         ✅          |            —             |   ✅ (`herdr:grok`)   |          ✅          |
-| **Muse**              |         ✅          |            —             |   ✅ (`herdr:muse`)   |          ✅          |
+- **Durable Task Registry**: Tracks tasks, execution runs, and turn results in a local SQLite database (`.bossmode/control.db`) without external database services.
+- **Single-Flight Dispatch**: Schedules one ready task at a time (`bossmode supervisor tick`), preventing conflicting edits and race conditions.
+- **Flexible Agent Support**: Any supported agent (Antigravity/AGY, Codex, Claude, Pi, Grok, Muse) can supervise workflows, execute worker tasks, or act as an independent reviewer.
+- **Dual Execution Options**:
+  - *Native subagents*: Dispatched directly through host runtime tools (such as Codex subagents or AGY `invoke_subagent`).
+  - *External workers*: Interactive CLI agents running in Herdr terminal panes with native session recovery.
+- **Verified Turn Results**: Validates structured JSON outputs at exact file paths (`.bossmode/turns/<turn_id>.json`) rather than guessing success from terminal text.
+- **Independent Evaluation**: Requires a separate reviewer (`evaluator != worker`) to verify results against task criteria before marking a task as succeeded.
+- **Safe Learning Ladder**:
+  - *Context & preferences* $\rightarrow$ **Memory** proposals.
+  - *Repeated corrections with passing evaluations* ($N \ge 2$) $\rightarrow$ **Skill** proposals.
+  - *Repeated operational failures* ($N \ge 2$) $\rightarrow$ **Code / Control** proposals.
+  - All proposals remain pending until the user explicitly approves and applies them.
+
+---
+
+## Supported Agents
+
+| Agent                 | Supervisor | Native Subagent Dispatch | Herdr External Worker | Independent Reviewer |
+| --------------------- | :--------: | :----------------------: | :-------------------: | :------------------: |
+| **Antigravity (AGY)** |     ✅     |  ✅ (`invoke_subagent`)  |   ✅ (`herdr:agy`)    |          ✅          |
+| **Codex**             |     ✅     |  ✅ (native task tools)  |  ✅ (`herdr:codex`)   |          ✅          |
+| **Claude**            |     ✅     |            —             |  ✅ (`herdr:claude`)  |          ✅          |
+| **Pi**                |     ✅     |            —             |    ✅ (`herdr:pi`)    |          ✅          |
+| **Grok**              |     ✅     |            —             |   ✅ (`herdr:grok`)   |          ✅          |
+| **Muse**              |     ✅     |            —             |   ✅ (`herdr:muse`)   |          ✅          |
 
 ---
 
 ## Quick Start
 
+### 1. Setup and Initialize
+
 ```bash
-# 1. Setup workspace
 cd ~/Developer/bossmode
 uv sync
-
-# 2. Initialize the registry
 uv run bossmode init
+```
 
-# 3. Create a task with explicit criteria and permission bounds
+### 2. Create a Task
+
+Define a task with clear success criteria and permission limits:
+
+```bash
 uv run bossmode task add \
   --title "Generate OpenAPI Spec" \
   --goal "Create OpenAPI 3.0 specification for auth service" \
-  --success-criteria "Valid OpenAPI JSON at specs/auth.json" \
+  --success-criteria "Valid OpenAPI JSON file exists at specs/auth.json" \
   --priority 10 \
   --permissions-json '{"filesystem":"workspace-write","network":false}'
+```
 
-# 4. Run supervisor tick to determine next action
+### 3. Check Supervisor Dispatch
+
+Run a supervisor tick to inspect active tasks, blockers, and the next ready task:
+
+```bash
 uv run bossmode supervisor tick
 ```
 
-### Complete Lifecycle Walkthrough
+---
+
+## Lifecycle Walkthrough
 
 ```bash
-# 5. Start a worker run
+# 1. Start an execution run
 uv run bossmode run start TASK_ID \
   --role worker_claude \
   --model claude-3-7-sonnet
 
-# 6. Record run completion (moves task to 'evaluating')
+# 2. Complete the run (moves task from 'running' to 'evaluating')
 uv run bossmode run finish RUN_ID \
   --outcome succeeded \
   --summary "Generated and validated specs/auth.json" \
   --artifacts-json '[{"path":"specs/auth.json","kind":"spec"}]'
 
-# 7. Record an independent evaluation (moves task to 'succeeded')
+# 3. Perform an independent evaluation (moves task to 'succeeded')
 uv run bossmode evaluate TASK_ID \
   --run-id RUN_ID \
   --evaluator reviewer_grok \
   --passed \
   --score 1.0 \
-  --evidence "specs/auth.json matches OpenAPI 3.0 schema validator"
+  --evidence "specs/auth.json validated against OpenAPI 3.0 schema"
 
-# 8. Record user or system feedback
+# 4. Record feedback from the task
 uv run bossmode feedback TASK_ID \
   --kind preference \
   --key api.spec-format \
   --content "Always include example payloads in schema definitions"
 
-# 9. Supervisor tick proposes candidate promotions
+# 5. Check for new learning proposals
 uv run bossmode supervisor tick
 
-# 10. User reviews and approves promotion
+# 6. Review and approve a promotion proposal
 uv run bossmode promotion set PROMOTION_ID accepted
 uv run bossmode promotion set PROMOTION_ID applied
 ```
 
-For a comprehensive, annotated multi-turn scenario covering failure remediation, Herdr worker reuse, and skill promotion, see [**`docs/example-walkthrough.md`**](docs/example-walkthrough.md).
+For an end-to-end annotated example covering worker remediation, Herdr session recovery, and skill promotion, see [**`docs/example-walkthrough.md`**](docs/example-walkthrough.md).
 
 ---
 
-## Architecture & Responsibilities
+## System Architecture
 
 ```text
 User
-  -> Supervisor Coordinator (Any Agent: AGY, Codex, Claude, Pi, Grok, Muse)
-       -> bossmode CLI / SQLite registry (.bossmode/control.db)
-       -> Native subagent tools ------> Native subagents (e.g. Codex, AGY)
-       -> Official Herdr CLI ---------> External interactive agents
-       -> Independent Reviewer -------> Evaluation (evaluator != worker)
-  <- Material results, blockers, and promotion proposals
+  │
+  ▼
+Supervisor Agent (AGY, Codex, Claude, Pi, Grok, or Muse)
+  │
+  ├──► bossmode CLI / SQLite Registry (.bossmode/control.db)
+  │
+  ├──► Native Subagent Tools ──────► Native Subagent (Codex, AGY)
+  │
+  ├──► Official Herdr CLI ─────────► External Interactive Agent (pane)
+  │
+  └──► Independent Reviewer ───────► Evaluation Gate (evaluator != worker)
 ```
 
-| Actor              | Owns                                                                                   | Does Not Own                           |
-| ------------------ | -------------------------------------------------------------------------------------- | -------------------------------------- |
-| **User**           | Goals, permission expansions, trust decisions, promotion approvals                     | Registry bookkeeping                   |
-| **Supervisor**     | Tick reconciliation, single-flight dispatch, prompt envelopes, evaluation tracking     | Vendor session internals               |
-| **Registry**       | Durable task/run/turn IDs, state machines, digests, artifact manifests, feedback       | Live agent process liveness            |
-| **Native Runtime** | Subagent lifecycle, execution threads, and live task IDs                               | MVP registry state                     |
-| **Herdr**          | Process panes, terminal lifecycle, native session tuple `{source, agent, kind, value}` | Turn correlation, MVP success criteria |
-| **Worker**         | Bounded task execution and declared artifact generation                                | Self-evaluation or state overrides     |
-| **Reviewer**       | Objective evaluation against task success criteria                                     | Rewriting failed results               |
+### Roles and Boundaries
+
+| Role               | Responsibilities                                                         | Out of Scope                           |
+| ------------------ | ------------------------------------------------------------------------ | -------------------------------------- |
+| **User**           | Defines goals, expands permissions, makes trust decisions, approves promotions | Manual registry bookkeeping            |
+| **Supervisor**     | Reconciles state, dispatches single tasks, formats prompts, tracks evaluations | Modifying vendor session internals     |
+| **Registry**       | Stores task, run, turn, evaluation, and feedback records durably         | Managing live process lifecycles       |
+| **Native Runtime** | Manages subagent creation, messaging, and thread IDs                     | Storing task control state             |
+| **Herdr**          | Manages external agent processes, terminal panes, and session recovery   | Validating turn results or task criteria |
+| **Worker**         | Executes assigned tasks and produces declared artifacts                  | Self-approving work or changing policy |
+| **Reviewer**       | Checks task artifacts objectively against success criteria               | Editing failed results without authorization |
 
 ---
 
 ## State Models
 
-### Task Lifecycle
+### Task States
 
 ```text
-backlog -> ready -> running -> evaluating -> succeeded -> archived
-                   |              \-> failed -> ready
-                   |-> blocked -> ready
-                   \-> waiting_user -> ready
+backlog ──► ready ──► running ──► evaluating ──► succeeded ──► archived
+                         │              │
+                         │              └──► failed ──► ready
+                         │
+                         ├──► blocked ──► ready
+                         │
+                         └──► waiting_user ──► ready
 ```
 
-- Only `run start` transitions tasks into `running`.
-- Only `run finish` transitions tasks into `evaluating`, `failed`, `blocked`, or `waiting_user`.
-- Only a passing `evaluate` moves tasks from `evaluating` to `succeeded`.
-- All transitions use atomic SQLite updates inside `BEGIN IMMEDIATE` transactions.
+- `run start`: Moves a `ready` task into `running`.
+- `run finish`: Moves a `running` task into `evaluating`, `failed`, `blocked`, or `waiting_user`.
+- `evaluate`: Only a passing evaluation (`--passed`) moves a task from `evaluating` to `succeeded`.
+- All database state transitions use atomic SQLite transactions (`BEGIN IMMEDIATE`).
 
-### Promotion Lifecycle
+### Promotion States
 
 ```text
-proposed -> accepted -> applied
-        \-> rejected
+proposed ──► accepted ──► applied
+   │
+   └──► rejected (can be re-proposed upon new feedback)
 ```
 
-- `bossmode promotion propose` (and `supervisor tick`) generate proposals heuristically from feedback.
-- Applying promotions requires explicit human authorization and reviewable file/code edits.
+- Bossmode proposes improvements based on feedback patterns, but never applies them automatically.
+- The user reviews proposals and advances them through explicit approval gates (`accepted` $\rightarrow$ `applied`).
 
 ---
 
@@ -155,33 +177,36 @@ proposed -> accepted -> applied
 
 ### 1. Native Subagent Path (Codex, AGY)
 
-For runtimes with built-in subagent toolsets:
+Use native subagents when running inside environments with built-in subagent tools:
 
-1. Spawn bounded subagent with task parameters and output schema.
-2. Record run with live thread/task ID:
+1. Spawn a subagent with task parameters, success criteria, and output contracts.
+2. Record the run with the subagent thread ID:
    ```bash
    uv run bossmode run start TASK_ID --role researcher --thread-id NATIVE_THREAD_ID
    ```
-3. Await subagent completion and record outcome:
+3. When the subagent finishes, record the result:
    ```bash
-   uv run bossmode run finish RUN_ID --outcome succeeded --summary "Task finished"
+   uv run bossmode run finish RUN_ID --outcome succeeded --summary "Research complete"
    ```
 
 ### 2. Herdr External Worker Path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`)
 
-For external interactive agents managed via Herdr:
+Use Herdr when delegating to interactive agents in separate terminal panes:
 
-1. **Reserve Run**: `uv run bossmode run start TASK_ID --role claude`
-2. **Spawn Worker**: Create pane and start agent via Herdr CLI:
+1. **Reserve Run**:
+   ```bash
+   uv run bossmode run start TASK_ID --role claude
+   ```
+2. **Spawn Worker Pane**:
    ```bash
    herdr pane split PARENT_PANE --direction right --cwd "$PWD" --no-focus
-   herdr agent start worker_1234abcd --kind claude --pane NEW_PANE
+   herdr agent start worker_api --kind claude --pane NEW_PANE
    ```
 3. **Bind Live Worker**:
    ```bash
    uv run bossmode herdr bind RUN_ID \
      --herdr-session bossmode \
-     --worker worker_1234abcd \
+     --worker worker_api \
      --kind claude \
      --pane-id PANE_ID \
      --session-source "herdr:claude" \
@@ -193,46 +218,46 @@ For external interactive agents managed via Herdr:
    ```bash
    uv run bossmode turn start RUN_ID --purpose task --prompt "Generate OpenAPI spec"
    ```
-5. **Prompt with Envelope**:
+5. **Prompt Worker with Envelope**:
    ```bash
-   herdr agent prompt worker_1234abcd \
-     "Write exactly one JSON result to .bossmode/turns/turn_xxx.json with turn_id='turn_xxx', status='succeeded', summary='...', artifacts=[...]" \
+   herdr agent prompt worker_api \
+     "Write JSON result to .bossmode/turns/turn_xxx.json with turn_id='turn_xxx', status='succeeded', summary='...', artifacts=[...]" \
      --wait
    ```
-6. **Validate and Finish Turn**:
+6. **Validate Turn Output**:
    ```bash
    uv run bossmode turn finish TURN_ID --status succeeded --lifecycle-evidence done
    ```
-7. **Finish Run & Evaluate**: Finish the run and record an independent reviewer evaluation.
+7. **Complete and Evaluate**: Finish the run and record an evaluation from an independent reviewer.
 
-Detailed protocol specifications and recovery rules are documented in [`docs/agent-workflow.md`](docs/agent-workflow.md).
+For full protocol details and fault-recovery rules, see [**`docs/agent-workflow.md`**](docs/agent-workflow.md).
 
 ---
 
 ## CLI Reference
 
-All CLI commands output structured JSON and exit `0` on success, `2` on structured error.
+All CLI commands output structured JSON, exiting `0` on success and `2` on error.
 
-| Command Group | Subcommand   | Key Arguments                                                                                    | Description                                                                               |
-| ------------- | ------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `bossmode`    | `init`       | `[--db PATH]`                                                                                    | Initializes registry schema (idempotent, auto-migrating).                                 |
-| `task`        | `add`        | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`                | Creates a new task in `ready` or `backlog`.                                               |
-| `task`        | `list`       | `[--state STATE]`                                                                                | Lists tasks filtered by state.                                                            |
-| `task`        | `show`       | `<task_id>`                                                                                      | Returns task details with runs, events, feedback, and evaluations.                        |
-| `task`        | `transition` | `<task_id>`, `<to_state>`, `--actor`, `--reason`, `[--evidence]`, `[--blocked-on]`               | Executes an explicit state transition.                                                    |
-| `run`         | `start`      | `<task_id>`, `--role`, `[--thread-id]`, `[--model]`, `[--reasoning-effort]`                      | Starts an execution run and sets task to `running`.                                       |
-| `run`         | `finish`     | `<run_id>`, `--outcome`, `--summary`, `[--artifacts-json]`, `[--tokens]`, `[--duration-seconds]` | Finishes run and transitions task to `evaluating` or terminal outcome.                    |
-| `run`         | `show`       | `<run_id>`                                                                                       | Returns run details including turns and Herdr bindings.                                   |
-| `herdr`       | `bind`       | `<run_id>`, `--herdr-session`, `--worker`, `--kind`, `[--pane-id]`, `[--session-*]`              | Records live Herdr worker binding and native session metadata.                            |
-| `turn`        | `start`      | `<run_id>`, `--purpose`, `--prompt`                                                              | Registers a single open turn and allocates result artifact path.                          |
-| `turn`        | `finish`     | `<turn_id>`, `--status`, `[--summary]`, `[--lifecycle-evidence]`                                 | Validates turn JSON result file and marks turn complete.                                  |
-| `turn`        | `show`       | `<turn_id>`                                                                                      | Inspects turn record, prompt digest, and validated result JSON.                           |
-| `evaluate`    |              | `<task_id>`, `--run-id`, `--evaluator`, `--passed \| --failed`, `--evidence`, `[--score]`        | Records independent evaluation (required to reach `succeeded`).                           |
-| `feedback`    |              | `<task_id>`, `--kind`, `--key`, `--content`, `[--run-id]`                                        | Ingests structured user/system feedback with recurrence key.                              |
-| `promotion`   | `propose`    |                                                                                                  | Scans feedback and generates candidate promotion proposals.                               |
-| `promotion`   | `list`       | `[--status STATUS]`                                                                              | Lists promotion proposals filtered by status.                                             |
-| `promotion`   | `set`        | `<promotion_id>`, `<status>` (`accepted`, `rejected`, `applied`)                                 | Advances promotion through user approval gates.                                           |
-| `supervisor`  | `tick`       |                                                                                                  | Computes single-flight dispatch, active work, evaluation queue, blockers, and promotions. |
+| Command Group | Subcommand   | Key Arguments                                                                                  | Description                                                           |
+| ------------- | ------------ | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `bossmode`    | `init`       | `[--db PATH]`                                                                                  | Initializes or migrates the SQLite registry schema.                   |
+| `task`        | `add`        | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`              | Creates a new task in `ready` or `backlog`.                           |
+| `task`        | `list`       | `[--state STATE]`                                                                              | Lists tasks filtered by state.                                        |
+| `task`        | `show`       | `<task_id>`                                                                                    | Shows task details with runs, events, feedback, and evaluations.      |
+| `task`        | `transition` | `<task_id>`, `<to_state>`, `--actor`, `--reason`, `[--evidence]`, `[--blocked-on]`             | Executes an explicit state transition.                                |
+| `run`         | `start`      | `<task_id>`, `--role`, `[--thread-id]`, `[--model]`, `[--reasoning-effort]`                    | Starts an execution run and sets task to `running`.                   |
+| `run`         | `finish`     | `<run_id>`, `--outcome`, `--summary`, `[--artifacts-json]`, `[--tokens]`, `[--duration-seconds]`| Completes a run and transitions task to `evaluating` or error state.  |
+| `run`         | `show`       | `<run_id>`                                                                                     | Shows run details, turn history, and Herdr bindings.                  |
+| `herdr`       | `bind`       | `<run_id>`, `--herdr-session`, `--worker`, `--kind`, `[--pane-id]`, `[--session-*]`            | Links a live Herdr worker and native session reference to a run.      |
+| `turn`        | `start`      | `<run_id>`, `--purpose`, `--prompt`                                                            | Opens a turn and allocates a result artifact path.                    |
+| `turn`        | `finish`     | `<turn_id>`, `--status`, `[--summary]`, `[--lifecycle-evidence]`                               | Validates the turn JSON result file and marks the turn finished.      |
+| `turn`        | `show`       | `<turn_id>`                                                                                    | Shows turn record details, prompt text, and validated result JSON.    |
+| `evaluate`    |              | `<task_id>`, `--run-id`, `--evaluator`, `--passed \| --failed`, `--evidence`, `[--score]`      | Records independent evaluation (required to reach `succeeded`).       |
+| `feedback`    |              | `<task_id>`, `--kind`, `--key`, `--content`, `[--run-id]`                                      | Ingests user or system feedback with a recurrence key.                |
+| `promotion`   | `propose`    |                                                                                                | Analyzes feedback history and generates promotion proposals.          |
+| `promotion`   | `list`       | `[--status STATUS]`                                                                            | Lists promotion proposals filtered by status.                         |
+| `promotion`   | `set`        | `<promotion_id>`, `<status>` (`accepted`, `rejected`, `applied`)                               | Updates promotion status through user approval gates.                 |
+| `supervisor`  | `tick`       |                                                                                                | Evaluates active work, blockers, and dispatches the next ready task.  |
 
 ---
 
