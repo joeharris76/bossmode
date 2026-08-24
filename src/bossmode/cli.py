@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from bossmode.bootstrap import BootstrapError, install_project_skill
 from bossmode.registry import CREATE_TASK_STATES, TASK_STATES, Registry, RegistryError
 from bossmode.scheduler import (
     SchedulerError,
@@ -34,6 +35,13 @@ def _parser() -> argparse.ArgumentParser:
         help="SQLite registry path (default: .bossmode/control.db)",
     )
     subparsers = parser.add_subparsers(dest="command", required=False)
+
+    initialize = subparsers.add_parser(
+        "init", help="Install the version-matched Bossmode skill into a project"
+    )
+    initialize.add_argument(
+        "--project-dir", default=".", help="Existing project directory (default: .)"
+    )
 
     subparsers.add_parser(
         "reconcile",
@@ -228,6 +236,9 @@ def _load_json(value: str, expected_type: type[Any]) -> Any:
 
 
 def _run(args: argparse.Namespace) -> Any:
+    if args.command == "init":
+        return install_project_skill(args.project_dir)
+
     registry = Registry(args.db)
 
     # Default action: naked `bossmode`, `bossmode reconcile`, or `bossmode next`
@@ -372,7 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         _emit(_run(args))
-    except (RegistryError, SchedulerError) as error:
+    except (BootstrapError, OSError, RegistryError, SchedulerError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 2
     except sqlite3.Error as error:

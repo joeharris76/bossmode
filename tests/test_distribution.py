@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,11 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         check=True,
     )
     wheel = next(dist_dir.glob("*.whl"))
+    canonical_skill = source_root / ".agents" / "skills" / "bossmode" / "SKILL.md"
+    with zipfile.ZipFile(wheel) as wheel_archive:
+        assert (
+            wheel_archive.read("bossmode/skills/bossmode/SKILL.md") == canonical_skill.read_bytes()
+        )
     subprocess.run(
         ["uv", "venv", "--python", sys.executable, str(environment)],
         capture_output=True,
@@ -34,12 +40,14 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         text=True,
         check=True,
     )
-    database = tmp_path / "control.db"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = project / ".bossmode" / "control.db"
 
     def invoke(*arguments: str, expected_exit: int = 0) -> dict:
         completed = subprocess.run(
             [str(executable), "--db", str(database), *arguments],
-            cwd=tmp_path,
+            cwd=project,
             capture_output=True,
             text=True,
             check=False,
@@ -47,17 +55,36 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         assert completed.returncode == expected_exit, completed.stderr
         return json.loads(completed.stdout if expected_exit == 0 else completed.stderr)
 
+    initialized = invoke("init", "--project-dir", str(project))
+    installed_skill = project / ".agents" / "skills" / "bossmode" / "SKILL.md"
+    assert initialized["status"] == "installed"
+    assert initialized["skill_version"] == "0.1.0"
+    assert initialized["skill_path"] == str(installed_skill)
+    assert "one bounded task" in initialized["next_prompt"]
+    assert installed_skill.read_bytes() == canonical_skill.read_bytes()
+    assert invoke("init", "--project-dir", str(project))["status"] == "already_installed"
+    assert not database.exists()
+
     assert invoke()["dispatch"] is None
+    requested_outcome = "Create proof.txt containing clean-install-ready."
+    supervisor_prompt = initialized["next_prompt"].replace(
+        "[describe the outcome you want]", requested_outcome
+    )
+    assert supervisor_prompt.endswith(requested_outcome)
     task = invoke(
         "task",
         "create",
         "--title",
-        "Wheel task",
+        "Create clean-install proof",
         "--goal",
-        "Exercise the installed distribution",
+        requested_outcome,
         "--success-criteria",
-        "The persisted lifecycle succeeds",
+        "proof.txt exists and contains exactly clean-install-ready.",
+        "--permissions-json",
+        '{"filesystem":{"write":["proof.txt"]},"network":false}',
     )
+    assert task["goal"] == requested_outcome
+    assert task["permissions"]["network"] is False
     run = invoke("run", "start", task["id"], "--role", "worker")
     invoke(
         "herdr",
@@ -77,17 +104,19 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         "--purpose",
         "task",
         "--prompt",
-        "Complete the wheel smoke",
+        requested_outcome,
     )
-    artifact = tmp_path / turn["artifact_path"]
+    proof = project / "proof.txt"
+    proof.write_text("clean-install-ready.\n")
+    artifact = project / turn["artifact_path"]
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(
         json.dumps(
             {
                 "turn_id": turn["id"],
                 "status": "succeeded",
-                "summary": "Wheel smoke completed",
-                "artifacts": [],
+                "summary": "Created and checked proof.txt",
+                "artifacts": [{"path": "proof.txt", "kind": "proof"}],
             }
         )
     )
@@ -98,7 +127,7 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         "--status",
         "succeeded",
         "--summary",
-        "Wheel smoke completed",
+        "Created and checked proof.txt",
     )
     invoke(
         "run",
@@ -107,7 +136,9 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         "--outcome",
         "succeeded",
         "--summary",
-        "Installed CLI completed the task",
+        "Installed CLI completed the bounded task",
+        "--artifacts-json",
+        '[{"path":"proof.txt","kind":"proof"}]',
     )
     invoke(
         "evaluate",
@@ -118,11 +149,14 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         "reviewer",
         "--passed",
         "--evidence",
-        "Installed-wheel lifecycle verified",
+        "proof.txt contains exactly clean-install-ready.",
     )
     persisted = invoke("task", "show", task["id"])
     assert persisted["state"] == "succeeded"
-    assert persisted["runs"][0]["turns"][0]["result"]["summary"] == "Wheel smoke completed"
+    assert persisted["runs"][0]["turns"][0]["result"]["summary"] == (
+        "Created and checked proof.txt"
+    )
+    assert proof.read_text() == "clean-install-ready.\n"
 
     assert invoke("task", "show", "missing", expected_exit=2) == {
         "error": "task not found: missing"

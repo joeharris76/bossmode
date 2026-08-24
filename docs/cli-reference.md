@@ -11,6 +11,17 @@ invalid choices exit `2` before the JSON handler runs.
 The global `--db PATH` option selects the registry. It defaults to `.bossmode/control.db` or the
 `BOSSMODE_DB` environment variable.
 
+## Installation
+
+| Command | Purpose |
+|---|---|
+| `bossmode init` | Install this version's Bossmode skill in the current project. |
+| `bossmode init --project-dir PATH` | Install the skill in another project directory. |
+
+The command creates `.agents/skills/bossmode/SKILL.md`. It is idempotent when that file already
+matches this Bossmode version, and it refuses to overwrite different content or follow a symlinked
+skill directory.
+
 ## Reconciliation
 
 | Command | Purpose |
