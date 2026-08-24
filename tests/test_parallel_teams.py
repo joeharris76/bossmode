@@ -62,9 +62,31 @@ def _writer(registry: Registry, branch: str, directory: str, worktree_id: str) -
     }
 
 
+def _head(writer: dict) -> str:
+    return subprocess.run(
+        ["git", "-C", writer["worktree_path"], "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _repo_head(registry: Registry) -> str:
+    return subprocess.run(
+        ["git", "-C", str(registry.repository_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def _setup(registry: Registry, tmp_path: Path, count: int = 3, *, start_managers: bool = True):
+    approved_base_sha = _repo_head(registry)
     root = registry.create_task(
-        title="Root", goal="Coordinate teams", success_criteria="All children pass"
+        title="Root",
+        goal="Coordinate teams",
+        success_criteria="All children pass",
+        approved_base_sha=approved_base_sha,
     )
     teams = []
     children = []
@@ -111,6 +133,41 @@ def _worker_spec(tmp_path: Path, child: dict, manager: dict, number: int, resour
         "writer": _writer(registry, f"team/{number}", f"worktree-{number}", f"worktree-{number}"),
         "resources": [resource],
     }
+
+
+def _complete_worker(
+    registry: Registry, child: dict, manager: dict, number: int
+) -> tuple[dict, dict]:
+    worker = registry.start_worker_run(
+        child["id"],
+        manager_run_id=manager["id"],
+        identity={"source": "native", "value": f"complete-worker-{number}"},
+        writer=_writer(registry, f"complete/{number}", f"complete-{number}", f"complete-{number}"),
+        resources=[f"complete-{number}.py"],
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        child["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": f"complete-reviewer-{number}"},
+    )
+    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+    registry.add_evaluation(
+        child["id"],
+        run_id=worker["id"],
+        evaluator=f"complete-reviewer-{number}",
+        evaluator_run_id=reviewer["id"],
+        passed=True,
+        evidence="exact head reviewed",
+        reviewed_head_sha=accepted_head,
+    )
+    return worker, reviewer
 
 
 def test_batch_dispatch_supports_three_workers_and_two_managers(registry, tmp_path):
@@ -268,7 +325,12 @@ def test_reviewer_identity_and_redacted_executive_status(registry, tmp_path):
         writer=_writer(registry, "review/a", "review-a", "review-a"),
         resources=["review.py"],
     )
-    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=_head(worker["writer_identity"]),
+    )
     reviewer = registry.start_reviewer_run(
         children[0]["id"],
         worker_run_id=worker["id"],
@@ -282,6 +344,7 @@ def test_reviewer_identity_and_redacted_executive_status(registry, tmp_path):
         evaluator_run_id=reviewer["id"],
         passed=True,
         evidence="independent check",
+        reviewed_head_sha=_head(worker["writer_identity"]),
     )
     registry.record_decision(root["id"], "Use the bounded team architecture")
     registry.record_blocker(root["id"], "private credential omitted", redacted=True)
@@ -304,7 +367,12 @@ def test_team_evaluation_requires_a_successful_linked_reviewer(registry, tmp_pat
         identity={"source": "native", "value": "worker-linked"},
         writer=_writer(registry, "eval/worker", "eval-worker", "eval-worker"),
     )
-    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=_head(worker["writer_identity"]),
+    )
     with pytest.raises(RegistryError, match="requires an evaluator_run_id"):
         registry.add_evaluation(
             children[0]["id"],
@@ -492,7 +560,7 @@ def test_writer_git_admission_rejects_missing_detached_and_wrong_roots(registry,
         )
 
     other_repository = _create_repository(tmp_path / "other")
-    with pytest.raises(RegistryError, match="missing or ambiguous"):
+    with pytest.raises(RegistryError, match="registry repository"):
         registry.start_worker_run(
             children[0]["id"],
             manager_run_id=managers[0]["id"],
@@ -518,6 +586,20 @@ def test_writer_git_admission_rejects_configured_default_branch(registry, tmp_pa
         capture_output=True,
         text=True,
     )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(registry.repository_path),
+            "config",
+            "--local",
+            "branch.unprotected.protected",
+            "false",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     with pytest.raises(RegistryError, match="protected or the repository default"):
         registry.start_worker_run(
             children[0]["id"],
@@ -525,6 +607,284 @@ def test_writer_git_admission_rejects_configured_default_branch(registry, tmp_pa
             identity={"source": "native", "value": "configured-default"},
             writer=writer,
         )
+
+
+def test_writer_git_admission_rejects_repository_configured_protected_branch(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    writer = _writer(registry, "release/protected", "release-protected", "release-protected")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(registry.repository_path),
+            "config",
+            "--local",
+            "bossmode.protected-branches",
+            "release/protected",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(registry.repository_path),
+            "config",
+            "--local",
+            "branch.release/protected.protected",
+            "true",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="protected"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "configured-protected"},
+            writer=writer,
+        )
+
+
+def test_writer_git_admission_rejects_missing_task_approval(registry, tmp_path):
+    _root, _teams, _children, _managers = _setup(registry, tmp_path, count=1)
+    writer = _writer(registry, "approval/missing", "approval-missing", "approval-missing")
+    with pytest.raises(RegistryError, match="not approved"):
+        registry_module._validate_writer_git(
+            writer, registry.repository_path, approved_base_sha=None
+        )
+
+
+def test_writer_git_admission_requires_the_task_approved_base(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    (registry.repository_path / "approved.txt").write_text("new base\n")
+    subprocess.run(
+        ["git", "-C", str(registry.repository_path), "add", "approved.txt"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(registry.repository_path), "commit", "-m", "new approved base"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    writer = _writer(registry, "approved/mismatch", "approved-mismatch", "approved-mismatch")
+    with pytest.raises(RegistryError, match="approved base"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "approved-mismatch"},
+            writer=writer,
+        )
+
+
+def test_team_finish_and_review_require_matching_exact_heads(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "exact-worker"},
+        writer=_writer(registry, "exact/worker", "exact-worker", "exact-worker"),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    stale_head = accepted_head
+    with pytest.raises(RegistryError, match="accepted head"):
+        registry.finish_run(worker["id"], outcome="succeeded", summary="missing head")
+    (Path(worker["writer_identity"]["worktree_path"]) / "change.txt").write_text("change\n")
+    subprocess.run(
+        ["git", "-C", worker["writer_identity"]["worktree_path"], "add", "change.txt"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            worker["writer_identity"]["worktree_path"],
+            "commit",
+            "-m",
+            "accepted change",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="does not match the live writer head"):
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="stale head",
+            accepted_head_sha=accepted_head,
+        )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="accepted head",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "exact-reviewer"},
+    )
+    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+    with pytest.raises(RegistryError, match="does not match the accepted worker head"):
+        registry.add_evaluation(
+            children[0]["id"],
+            run_id=worker["id"],
+            evaluator="exact-reviewer",
+            evaluator_run_id=reviewer["id"],
+            passed=True,
+            evidence="wrong exact head",
+            reviewed_head_sha=stale_head,
+        )
+
+
+def test_parallel_manager_finish_is_fail_closed_until_all_gates_pass(registry, tmp_path):
+    root, _teams, children, managers = _setup(registry, tmp_path, count=3)
+    for number, child in enumerate(children):
+        _complete_worker(registry, child, managers[number % 2], number)
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    with pytest.raises(RegistryError, match="three overlapping workers"):
+        registry.finish_run(managers[1]["id"], outcome="succeeded", summary="manager complete")
+    assert registry.get_task(root["id"])["state"] == "running"
+
+
+def test_manager_finish_rejects_active_and_unaccepted_children(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "active-worker"},
+        writer=_writer(registry, "active/worker", "active-worker", "active-worker"),
+    )
+    with pytest.raises(RegistryError, match="active"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="too soon")
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=_head(worker["writer_identity"]),
+    )
+    with pytest.raises(RegistryError, match="child task is accepted"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="not reviewed")
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE tasks SET state = 'succeeded' WHERE id = ?", (children[0]["id"],)
+        )
+    with pytest.raises(RegistryError, match="every worker evaluation passes"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="still not reviewed")
+
+
+def test_manager_finish_rejects_unreleased_claim(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "claim-worker"},
+        writer=_writer(registry, "claim/worker", "claim-worker", "claim-worker"),
+        resources=["claim.py"],
+    )
+    claim = worker["resource_claims"][0]
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE resource_claims SET status = 'reconcile_required' WHERE id = ?",
+            (claim["id"],),
+        )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "claim-reviewer"},
+    )
+    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+    registry.add_evaluation(
+        children[0]["id"],
+        run_id=worker["id"],
+        evaluator="claim-reviewer",
+        evaluator_run_id=reviewer["id"],
+        passed=True,
+        evidence="reviewed",
+        reviewed_head_sha=accepted_head,
+    )
+    with pytest.raises(RegistryError, match="claims are unreleased"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="claim remains")
+
+
+def test_manager_finish_requires_a_worker(registry, tmp_path):
+    _root, _teams, _children, managers = _setup(registry, tmp_path, count=0)
+    with pytest.raises(RegistryError, match="without worker runs"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="empty team")
+
+
+def test_manager_finish_rejects_failed_worker(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "failed-worker"},
+        writer=_writer(registry, "failed/worker", "failed-worker", "failed-worker"),
+    )
+    registry.finish_run(worker["id"], outcome="failed", summary="worker failed")
+    with pytest.raises(RegistryError, match="every worker succeeds"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="must reject")
+
+
+def test_manager_finish_rejects_missing_and_mismatched_review_heads(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker, reviewer = _complete_worker(registry, children[0], managers[0], 99)
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE writer_identities SET accepted_head_sha = NULL WHERE run_id = ?",
+            (worker["id"],),
+        )
+    with pytest.raises(RegistryError, match="without an accepted worker head"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="missing head")
+    accepted_head = _head(worker["writer_identity"])
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE writer_identities SET accepted_head_sha = ? WHERE run_id = ?",
+            (accepted_head, worker["id"]),
+        )
+        connection.execute(
+            "UPDATE evaluations SET reviewed_head_sha = ? WHERE run_id = ?",
+            ("0" * 40, worker["id"]),
+        )
+    del reviewer
+    with pytest.raises(RegistryError, match="exact-head review"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="mismatched head")
+
+
+def test_parallel_manager_finish_requires_three_workers(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=2)
+    for number, child in enumerate(children):
+        _complete_worker(registry, child, managers[number], number + 100)
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    with pytest.raises(RegistryError, match="at least three workers"):
+        registry.finish_run(managers[1]["id"], outcome="succeeded", summary="too few workers")
+
+
+def test_manager_finish_requires_two_manager_runs(registry, tmp_path):
+    _root, teams, children, managers = _setup(registry, tmp_path, count=1)
+    _complete_worker(registry, children[0], managers[0], 200)
+    with registry._transaction() as connection:
+        connection.execute("UPDATE teams SET manager_run_id = NULL WHERE id = ?", (teams[1]["id"],))
+        connection.execute("DELETE FROM runs WHERE id = ?", (managers[1]["id"],))
+    with pytest.raises(RegistryError, match="at least two managers"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="one manager")
 
 
 def test_writer_git_admission_rejects_internal_root_branch_and_head_mismatches(
@@ -588,32 +948,50 @@ def test_writer_git_admission_rejects_internal_root_branch_and_head_mismatches(
 
 
 def test_executive_status_derives_finished_team_state(registry, tmp_path):
-    root, teams, children, managers = _setup(registry, tmp_path, count=1)
-    worker = registry.start_worker_run(
-        children[0]["id"],
-        manager_run_id=managers[0]["id"],
-        identity={"source": "native", "value": "status-worker"},
-        writer=_writer(registry, "status/worker", "status-worker", "status-worker"),
-    )
-    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
-    reviewer = registry.start_reviewer_run(
-        children[0]["id"],
-        worker_run_id=worker["id"],
-        identity={"source": "native", "value": "status-reviewer"},
-    )
-    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
-    registry.add_evaluation(
-        children[0]["id"],
-        run_id=worker["id"],
-        evaluator="status-reviewer",
-        evaluator_run_id=reviewer["id"],
-        passed=True,
-        evidence="status verified",
-    )
+    root, teams, children, managers = _setup(registry, tmp_path, count=3)
+    workers = [
+        registry.start_worker_run(
+            child["id"],
+            manager_run_id=managers[number % 2]["id"],
+            identity={"source": "native", "value": f"status-worker-{number}"},
+            writer=_writer(registry, f"status/{number}", f"status-{number}", f"status-{number}"),
+            resources=[f"status-{number}.py"],
+        )
+        for number, child in enumerate(children)
+    ]
+    accepted_heads = [_head(worker["writer_identity"]) for worker in workers]
+    for worker, accepted_head in zip(workers, accepted_heads, strict=True):
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="worker complete",
+            accepted_head_sha=accepted_head,
+        )
+    for number, (child, worker, accepted_head) in enumerate(
+        zip(children, workers, accepted_heads, strict=True)
+    ):
+        reviewer = registry.start_reviewer_run(
+            child["id"],
+            worker_run_id=worker["id"],
+            identity={"source": "native", "value": f"status-reviewer-{number}"},
+        )
+        registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+        registry.add_evaluation(
+            child["id"],
+            run_id=worker["id"],
+            evaluator=f"status-reviewer-{number}",
+            evaluator_run_id=reviewer["id"],
+            passed=True,
+            evidence="status verified",
+            reviewed_head_sha=accepted_head,
+        )
     registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    assert registry.get_task(root["id"])["state"] == "running"
+    registry.finish_run(managers[1]["id"], outcome="succeeded", summary="manager complete")
     status = registry.executive_status(root["id"])
     team_status = next(item for item in status["teams"] if item["team_id"] == teams[0]["id"])
     assert team_status["status"] == "finished"
+    assert registry.get_task(root["id"])["state"] == "succeeded"
 
 
 def test_singleton_start_run_remains_compatible(registry):
@@ -684,7 +1062,12 @@ def test_team_tab_layout_has_unique_label_and_idempotent_live_reconciliation(reg
 
 
 def test_team_manager_worker_and_reviewer_bindings_reject_wrong_tabs(registry, tmp_path):
-    root = registry.create_task(title="Admission", goal="Same tab", success_criteria="Same tab")
+    root = registry.create_task(
+        title="Admission",
+        goal="Same tab",
+        success_criteria="Same tab",
+        approved_base_sha=_repo_head(registry),
+    )
     team = registry.create_team(
         root["id"],
         name="admission",
@@ -734,7 +1117,12 @@ def test_team_manager_worker_and_reviewer_bindings_reject_wrong_tabs(registry, t
             workspace_id="w8",
             tab_id="w8:t2",
         )
-    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=_head(worker["writer_identity"]),
+    )
     reviewer = registry.start_reviewer_run(
         child["id"], worker_run_id=worker["id"], identity={"source": "native", "value": "reviewer"}
     )
@@ -918,10 +1306,11 @@ def test_batch_can_create_teams_and_rolls_back_conflicts(registry, tmp_path):
     assert registry.list_teams(root["id"])[0]["name"] == "created"
 
 
-def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys):
+def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys, monkeypatch):
     database = tmp_path / "control.db"
     repository = _create_repository(tmp_path)
     git_registry = Registry(database, repository_path=repository)
+    monkeypatch.chdir(repository)
 
     def call(*args):
         assert main(["--db", str(database), *args]) == 0
@@ -1045,6 +1434,27 @@ def test_parallel_contract_rejections_are_explicit(registry, tmp_path):
     team = registry.create_team(
         root["id"], name="team", manager_identity={"source": "n", "value": "m"}
     )
+    child_root = registry.create_child_task(
+        root["id"], title="child root", goal="g", success_criteria="s", team_id=team["id"], scope={}
+    )
+    with pytest.raises(RegistryError, match="team root"):
+        registry.create_team(
+            child_root["id"],
+            name="child-root-team",
+            manager_identity={"source": "n", "value": "child-root"},
+        )
+    other_team = registry.create_team(
+        root["id"], name="other-team", manager_identity={"source": "n", "value": "other-team"}
+    )
+    with pytest.raises(RegistryError, match="crosses a team hierarchy"):
+        registry.create_child_task(
+            child_root["id"],
+            title="cross-team child",
+            goal="g",
+            success_criteria="s",
+            team_id=other_team["id"],
+            scope={},
+        )
     with pytest.raises(RegistryError, match="team assignment"):
         registry.create_task(title="unscoped", goal="g", success_criteria="s", team_id=team["id"])
     with pytest.raises(RegistryError, match="does not match the parent task root"):
@@ -1167,7 +1577,12 @@ def test_parallel_recovery_and_conflict_error_matrix(registry, tmp_path):
         registry.claim_resources("missing", [])
     with pytest.raises(RegistryError, match="not found"):
         registry.renew_resource_claim("missing", run_id=worker["id"], fence_token="missing")
-    registry.finish_run(worker["id"], outcome="succeeded", summary="matrix complete")
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="matrix complete",
+        accepted_head_sha=_head(worker["writer_identity"]),
+    )
     with pytest.raises(RegistryError, match="released"):
         registry.renew_resource_claim(
             claim["id"], run_id=worker["id"], fence_token=claim["fence_token"]
