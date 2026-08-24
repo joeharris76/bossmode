@@ -426,6 +426,28 @@ def test_team_tab_label_must_match_observed_tab(registry):
         )
 
 
+def test_team_workflow_requires_downward_panes_and_forbids_right_splits():
+    repository = Path(__file__).parents[1]
+    command_surfaces = (
+        "README.md",
+        "docs/agent-workflow.md",
+        "docs/cli-reference.md",
+        ".agents/skills/bossmode/SKILL.md",
+        "src/bossmode/skills/bossmode/SKILL.md",
+    )
+    for relative_path in command_surfaces:
+        surface = (repository / relative_path).read_text()
+        assert "--direction right" not in surface
+        assert "herdr pane split TEAM_ANCHOR_PANE_ID --direction down" in surface
+
+    adr = (repository / "docs/adr/0004-parallel-manager-teams.md").read_text()
+    assert "right split" not in adr
+    assert "down split" in adr
+    assert "manager/control pane stays at the top" in adr
+    assert "every worker and reviewer is stacked" in adr
+    assert "below it with horizontal dividers" in adr
+
+
 def test_singleton_herdr_binding_does_not_require_team_tab(registry):
     task = registry.create_task(title="Singleton", goal="Legacy", success_criteria="Legacy")
     run = registry.start_run(task["id"], agent_role="codex")

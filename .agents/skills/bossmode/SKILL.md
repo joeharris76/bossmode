@@ -110,10 +110,12 @@ binding whose observed workspace or tab differs. Singleton runs with no
 `team_id` remain compatible with the legacy binding path.
 
 For every team agent invocation, split a pane from an explicit anchor already
-inside the reconciled team tab before starting the agent:
+inside the reconciled team tab before starting the agent. Keep the manager or
+control pane at the top, and stack every worker/reviewer pane below it with
+horizontal dividers:
 
 ```bash
-herdr pane split TEAM_ANCHOR_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
 herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
 ```
 

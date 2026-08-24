@@ -83,10 +83,11 @@ same Herdr session, workspace, and tab. The legacy `run start` singleton path
 does not require a team tab.
 
 For every team agent invocation, create a pane inside that tab before starting
-the agent:
+the agent. Keep the manager/control pane at the top and stack worker/reviewer
+panes below it with horizontal dividers:
 
 ```bash
-herdr pane split TEAM_ANCHOR_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
 herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
 ```
 

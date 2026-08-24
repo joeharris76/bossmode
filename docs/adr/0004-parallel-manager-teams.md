@@ -37,10 +37,11 @@ Bossmode adds a durable team layer while retaining the legacy singleton API.
   workspace/tab location. Manager, worker, and reviewer bindings for that team
   are admitted only when their observed Herdr session, workspace, and tab match
   that location. Singleton runs retain the legacy binding contract.
-- The supervisor creates the named team tab before the first agent. Every later
-  agent invocation creates a pane inside that tab with a right split from an
-  explicit anchor before starting the agent; focused or unrelated tabs are not
-  valid parents.
+- The supervisor creates the named team tab before the first agent. The
+  manager/control pane stays at the top; every worker and reviewer is stacked
+  below it with horizontal dividers. Each agent invocation creates a pane inside
+  that tab with a down split from an explicit anchor before starting the agent;
+  focused or unrelated tabs are not valid parents.
 - Executive status is a mechanically derived view of task outcomes, signals,
   approvals, blockers, and team progress. It does not include prompts,
   transcripts, turn results, or low-level worker activity. Sensitive signals

@@ -36,8 +36,9 @@ prompts or transcripts. See [ADR 0004](docs/adr/0004-parallel-manager-teams.md)
 for the design and migration boundary.
 
 Give every team one unique named Herdr tab. Create and reconcile that tab before
-the first agent, then create each manager, worker, and reviewer pane with
-`herdr pane split TEAM_ANCHOR_PANE_ID --direction right` before starting the
+the first agent, then keep the manager/control pane at the top and stack every
+worker/reviewer pane below it with horizontal dividers. Create each pane with
+`herdr pane split TEAM_ANCHOR_PANE_ID --direction down` before starting the
 agent. Bossmode rejects team bindings observed in another workspace or tab; the
 legacy singleton `run start` path remains compatible without team-tab metadata.
 

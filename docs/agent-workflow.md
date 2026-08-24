@@ -110,14 +110,16 @@ inside the reconciled team tab, then start the agent in the returned pane with
 the release-matched official CLI:
 
 ```bash
-herdr pane split TEAM_ANCHOR_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
 herdr agent start worker_1234abcd --kind claude --pane NEW_PANE_ID
 ```
 
 `TEAM_ANCHOR_PANE_ID` must have the same `workspace_id` and `tab_id` recorded by
-`team bind-tab`. Never use `--current`, the focused tab, or a pane from another
-tab as the parent. Repeat the split-before-start sequence for manager, worker,
-and reviewer agents; the first `tab create` is the only tab creation.
+`team bind-tab`. Keep the manager/control pane at the top and stack every
+worker/reviewer pane below it with horizontal dividers. Never use `--current`,
+the focused tab, or a pane from another tab as the parent. Repeat the
+down-split-before-start sequence for manager, worker, and reviewer agents; the
+first `tab create` is the only tab creation.
 
 Do not start a second worker if either command returns an uncertain result. Reconcile the
 deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
@@ -238,8 +240,8 @@ When a task has disjoint bounded slices, use the team workflow:
    writer must provide a dedicated branch, base SHA, worktree path, and
    worktree ID. Every file or non-file resource must be claimed atomically.
    Before each manager, worker, or reviewer start, create its pane with
-   `herdr pane split TEAM_ANCHOR_PANE_ID --direction right` and start it in
-   that pane.
+   `herdr pane split TEAM_ANCHOR_PANE_ID --direction down` and start it in
+   that pane, keeping all worker/reviewer panes below the manager/control pane.
 4. If a claim lease expires, stop and reconcile it. The claim is not available
    for reuse until it is explicitly released; never auto-steal it.
 5. Start a reviewer run linked to the worker run. Record its evaluator run ID
