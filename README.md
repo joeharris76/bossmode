@@ -35,6 +35,12 @@ contains outcomes, decisions, blockers, approvals, and team progress, not
 prompts or transcripts. See [ADR 0004](docs/adr/0004-parallel-manager-teams.md)
 for the design and migration boundary.
 
+Give every team one unique named Herdr tab. Create and reconcile that tab before
+the first agent, then create each manager, worker, and reviewer pane with
+`herdr pane split TEAM_ANCHOR_PANE_ID --direction right` before starting the
+agent. Bossmode rejects team bindings observed in another workspace or tab; the
+legacy singleton `run start` path remains compatible without team-tab metadata.
+
 ## Install and start with a prompt
 
 Install the v0.1.0 wheel as an isolated command-line tool, then install its version-matched

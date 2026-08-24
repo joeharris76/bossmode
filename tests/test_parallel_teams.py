@@ -259,6 +259,182 @@ def test_singleton_start_run_remains_compatible(registry):
     assert registry.get_task(task["id"])["state"] == "evaluating"
 
 
+def test_team_tab_layout_has_unique_label_and_idempotent_live_reconciliation(registry):
+    root = registry.create_task(title="Tabs", goal="Keep teams separated", success_criteria="Tabs")
+    team = registry.create_team(
+        root["id"],
+        name="layout",
+        tab_label="PR6 · Team Layout",
+        manager_identity={"source": "native", "value": "manager"},
+    )
+    with pytest.raises(RegistryError, match="tab label is already reserved"):
+        registry.create_team(
+            root["id"],
+            name="duplicate-label",
+            tab_label="PR6 · Team Layout",
+            manager_identity={"source": "native", "value": "manager-2"},
+        )
+
+    first = registry.bind_team_herdr_tab(
+        team["id"],
+        herdr_session="bossmode",
+        workspace_id="w8",
+        tab_id="w8:t5",
+        observed_tab_label="PR6 · Team Layout",
+    )
+    second = registry.bind_team_herdr_tab(
+        team["id"],
+        herdr_session="bossmode",
+        workspace_id="w8",
+        tab_id="w8:t5",
+        observed_tab_label="PR6 · Team Layout",
+    )
+    assert second["expected_tab_label"] == first["expected_tab_label"]
+    assert second["tab_id"] == "w8:t5"
+    with pytest.raises(RegistryError, match="reconciled Herdr tab"):
+        registry.bind_team_herdr_tab(
+            team["id"],
+            herdr_session="bossmode",
+            workspace_id="w8",
+            tab_id="w8:t6",
+            observed_tab_label="PR6 · Team Layout",
+        )
+
+    other = registry.create_team(
+        root["id"],
+        name="other",
+        tab_label="Other Team",
+        manager_identity={"source": "native", "value": "manager-3"},
+    )
+    with pytest.raises(RegistryError, match="already bound to team"):
+        registry.bind_team_herdr_tab(
+            other["id"],
+            herdr_session="bossmode",
+            workspace_id="w8",
+            tab_id="w8:t5",
+            observed_tab_label="Other Team",
+        )
+
+
+def test_team_manager_worker_and_reviewer_bindings_reject_wrong_tabs(registry, tmp_path):
+    root = registry.create_task(title="Admission", goal="Same tab", success_criteria="Same tab")
+    team = registry.create_team(
+        root["id"],
+        name="admission",
+        tab_label="Admission Team",
+        manager_identity={"source": "native", "value": "manager"},
+    )
+    registry.bind_team_herdr_tab(
+        team["id"],
+        herdr_session="bossmode",
+        workspace_id="w8",
+        tab_id="w8:t5",
+        observed_tab_label="Admission Team",
+    )
+    manager = registry.start_manager_run(
+        team["id"], identity={"source": "native", "value": "manager"}
+    )
+    with pytest.raises(RegistryError, match="does not match team tab"):
+        registry.bind_herdr_run(
+            manager["id"],
+            herdr_session="bossmode",
+            worker_name="manager_wrong_tab",
+            agent_kind="codex",
+            workspace_id="w8",
+            tab_id="w8:t2",
+        )
+
+    child = registry.create_child_task(
+        root["id"],
+        title="worker",
+        goal="worker",
+        success_criteria="worker",
+        team_id=team["id"],
+        scope={},
+    )
+    worker = registry.start_worker_run(
+        child["id"],
+        manager_run_id=manager["id"],
+        identity={"source": "native", "value": "worker"},
+        writer={
+            "branch_name": "admission/worker",
+            "base_sha": "abcdef1",
+            "worktree_path": str(tmp_path / "worker"),
+            "worktree_id": "admission-worker",
+        },
+    )
+    with pytest.raises(RegistryError, match="does not match team tab"):
+        registry.bind_herdr_run(
+            worker["id"],
+            herdr_session="bossmode",
+            worker_name="worker_wrong_tab",
+            agent_kind="codex",
+            workspace_id="w8",
+            tab_id="w8:t2",
+        )
+    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
+    reviewer = registry.start_reviewer_run(
+        child["id"], worker_run_id=worker["id"], identity={"source": "native", "value": "reviewer"}
+    )
+    with pytest.raises(RegistryError, match="does not match team tab"):
+        registry.bind_herdr_run(
+            reviewer["id"],
+            herdr_session="bossmode",
+            worker_name="reviewer_wrong_tab",
+            agent_kind="codex",
+            workspace_id="w8",
+            tab_id="w8:t2",
+        )
+
+
+def test_team_binding_requires_a_reconciled_tab(registry):
+    root = registry.create_task(title="Unbound", goal="Unbound", success_criteria="Unbound")
+    team = registry.create_team(
+        root["id"],
+        name="unbound",
+        manager_identity={"source": "native", "value": "manager"},
+    )
+    manager = registry.start_manager_run(
+        team["id"], identity={"source": "native", "value": "manager"}
+    )
+    with pytest.raises(RegistryError, match="requires a reconciled team tab"):
+        registry.bind_herdr_run(
+            manager["id"],
+            herdr_session="bossmode",
+            worker_name="unbound_manager",
+            agent_kind="codex",
+            workspace_id="w8",
+            tab_id="w8:t5",
+        )
+
+
+def test_team_tab_label_must_match_observed_tab(registry):
+    root = registry.create_task(title="Observed", goal="Observed", success_criteria="Observed")
+    team = registry.create_team(
+        root["id"],
+        name="observed",
+        tab_label="Expected Team",
+        manager_identity={"source": "native", "value": "manager"},
+    )
+    with pytest.raises(RegistryError, match="expected tab label"):
+        registry.bind_team_herdr_tab(
+            team["id"],
+            herdr_session="bossmode",
+            workspace_id="w8",
+            tab_id="w8:t5",
+            observed_tab_label="Focused Tab",
+        )
+
+
+def test_singleton_herdr_binding_does_not_require_team_tab(registry):
+    task = registry.create_task(title="Singleton", goal="Legacy", success_criteria="Legacy")
+    run = registry.start_run(task["id"], agent_role="codex")
+    binding = registry.bind_herdr_run(
+        run["id"], herdr_session="bossmode", worker_name="singleton", agent_kind="codex"
+    )
+    assert binding["tab_id"] is None
+
+
 @pytest.mark.parametrize(
     ("identity", "writer", "message"),
     [
@@ -382,6 +558,24 @@ def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys):
         "cli",
         "--manager-identity-json",
         '{"source":"cli","value":"m"}',
+        "--tab-label",
+        "CLI Team",
+    )
+    assert (
+        call(
+            "team",
+            "bind-tab",
+            team["id"],
+            "--herdr-session",
+            "bossmode",
+            "--workspace-id",
+            "w8",
+            "--tab-id",
+            "w8:t5",
+            "--observed-tab-label",
+            "CLI Team",
+        )["tab_id"]
+        == "w8:t5"
     )
     child = call(
         "task",
@@ -437,6 +631,13 @@ def test_parallel_contract_rejections_are_explicit(registry, tmp_path):
     root = registry.create_task(title="root", goal="g", success_criteria="s")
     with pytest.raises(RegistryError, match="team name"):
         registry.create_team(root["id"], name=" ", manager_identity={"source": "n", "value": "m"})
+    with pytest.raises(RegistryError, match="team tab label"):
+        registry.create_team(
+            root["id"],
+            name="valid",
+            tab_label=" ",
+            manager_identity={"source": "n", "value": "label"},
+        )
     with pytest.raises(RegistryError, match="parent team"):
         registry.create_team(
             root["id"],

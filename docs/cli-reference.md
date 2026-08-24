@@ -63,6 +63,36 @@ Lifecycle commands own the remaining changes: `run start` moves `ready` to `runn
 moves `running` to `evaluating`, `waiting_user`, `blocked`, or `failed`; and evaluation moves
 `evaluating` to `succeeded` or `failed`.
 
+## Manager teams and Herdr tabs
+
+| Command | Required arguments | Optional arguments |
+|---|---|---|
+| `team create ROOT_TASK_ID` | `--name`, `--manager-identity-json` | `--scope-json`, `--parent-team-id`, `--tab-label` |
+| `team bind-tab TEAM_ID` | `--herdr-session`, `--workspace-id`, `--tab-id`, `--observed-tab-label` | — |
+| `team list` | — | `--root-task-id` |
+| `team show TEAM_ID` | `TEAM_ID` | — |
+| `run manager-start TEAM_ID` | `--identity-json` | `--model`, `--reasoning-effort` |
+| `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
+| `run reviewer-start TASK_ID` | `--worker-run-id`, `--identity-json` | `--model`, `--reasoning-effort` |
+
+Create the Herdr tab with its durable label before the first agent, reconcile it
+with `team bind-tab`, and check the observed workspace and tab IDs. The command
+is idempotent for the same live location and rejects a different location or
+observed label. Team manager, worker, and reviewer bindings then require that
+same Herdr session, workspace, and tab. The legacy `run start` singleton path
+does not require a team tab.
+
+For every team agent invocation, create a pane inside that tab before starting
+the agent:
+
+```bash
+herdr pane split TEAM_ANCHOR_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
+```
+
+The anchor must already be in the reconciled team tab. Do not use the focused
+tab, `--current`, or an unrelated pane as the parent.
+
 ## Runs
 
 | Command | Required arguments | Optional arguments |
@@ -81,8 +111,10 @@ task to `evaluating`, not final success.
 | `herdr bind RUN_ID` | `RUN_ID`, `--herdr-session`, `--worker`, `--kind` | `--status {pending,live,blocked,unknown}`, `--session-source`, `--session-agent`, `--session-ref-kind {id,path}`, `--session-value`, `--pane-id`, `--tab-id`, `--workspace-id` |
 | `herdr show RUN_ID` | `RUN_ID` | — |
 
-`herdr bind` records an observed identity. It does not prove the worker is currently live. Reconcile
-the binding against live Herdr state before prompting, interrupting, continuing, or closing.
+`herdr bind` records an observed identity. For team runs, its observed tab and
+workspace must match the team's reconciled tab. It does not prove the worker is
+currently live. Reconcile the binding against live Herdr state before
+prompting, interrupting, continuing, or closing.
 
 ## Correlated Herdr turns
 

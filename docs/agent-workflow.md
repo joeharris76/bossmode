@@ -84,20 +84,40 @@ correlation gap in Herdr's interactive-agent transport.
 
 ### 1. Reserve before creating runtime state
 
-Start the registry run first:
+Start the registry run first. For a manager team, create and reconcile its
+named tab before creating any agent pane:
 
 ```bash
-uv run bossmode run start TASK_ID --role claude
+uv run bossmode run manager-start TEAM_ID \
+  --identity-json '{"source":"herdr","value":"manager"}'
+
+herdr tab create --workspace WORKSPACE_ID --label "TEAM_TAB_LABEL" --cwd "$PWD" --no-focus
+herdr tab list --workspace WORKSPACE_ID
+herdr tab get TEAM_TAB_ID
+
+uv run bossmode team bind-tab TEAM_ID \
+  --herdr-session bossmode \
+  --workspace-id WORKSPACE_ID \
+  --tab-id TEAM_TAB_ID \
+  --observed-tab-label "TEAM_TAB_LABEL"
 ```
 
+The observed label must equal the team's durable `expected_tab_label`. The
+reconciliation is idempotent and refuses to replace a different live tab.
 Derive a deterministic lowercase worker name from the returned run ID, such as
-`worker_1234abcd`. Create a pane at an interactive shell in this repository, then start the agent
-with the release-matched official CLI:
+`worker_1234abcd`. For every agent invocation, split an explicit anchor pane
+inside the reconciled team tab, then start the agent in the returned pane with
+the release-matched official CLI:
 
 ```bash
-herdr pane split PARENT_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr pane split TEAM_ANCHOR_PANE_ID --direction right --cwd "$PWD" --no-focus
 herdr agent start worker_1234abcd --kind claude --pane NEW_PANE_ID
 ```
+
+`TEAM_ANCHOR_PANE_ID` must have the same `workspace_id` and `tab_id` recorded by
+`team bind-tab`. Never use `--current`, the focused tab, or a pane from another
+tab as the parent. Repeat the split-before-start sequence for manager, worker,
+and reviewer agents; the first `tab create` is the only tab creation.
 
 Do not start a second worker if either command returns an uncertain result. Reconcile the
 deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
@@ -210,12 +230,16 @@ identity against live native runtime (AGY, Codex) or Herdr state before continui
 When a task has disjoint bounded slices, use the team workflow:
 
 1. Record the root task and child tasks with `parent_task_id`, `team_id`, and a
-   declarative scope.
-2. Reserve one manager identity per team. Start manager runs before dispatching
+   declarative scope. Give each team one unique `--tab-label`.
+2. Create and reconcile one named Herdr tab per team. Reserve one manager
+   identity per team. Start manager runs before dispatching
    workers.
 3. Dispatch workers through `dispatch batch` or `run worker-start`. Every
    writer must provide a dedicated branch, base SHA, worktree path, and
    worktree ID. Every file or non-file resource must be claimed atomically.
+   Before each manager, worker, or reviewer start, create its pane with
+   `herdr pane split TEAM_ANCHOR_PANE_ID --direction right` and start it in
+   that pane.
 4. If a claim lease expires, stop and reconcile it. The claim is not available
    for reuse until it is explicitly released; never auto-steal it.
 5. Start a reviewer run linked to the worker run. Record its evaluator run ID
@@ -239,6 +263,8 @@ does not require team or writer metadata.
   evaluation before the task can become `succeeded`.
 - Stored pane ID differs but the unique worker and full native session match: update the observed
   pane metadata through `herdr bind`; live Herdr state remains authoritative.
+- A team binding with a missing, foreign, or different observed workspace/tab is rejected. Reconcile
+  the team tab first; do not repair the mismatch by focusing or moving an existing pane.
 
 The MVP intentionally has no command that closes a Herdr worker. Destructive lifecycle actions stay
 in the official runtime and require fresh live-identity reconciliation plus user authorization when

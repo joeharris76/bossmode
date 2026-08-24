@@ -35,7 +35,7 @@ TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 RUN_TYPES = {"manager", "worker", "reviewer"}
 RESOURCE_STATUSES = {"active", "reconcile_required", "released"}
 SIGNAL_KINDS = {"decision", "blocker", "approval"}
@@ -217,6 +217,26 @@ CREATE TABLE IF NOT EXISTS teams (
     UNIQUE (root_task_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS team_herdr_tabs (
+    team_id TEXT PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+    expected_tab_label TEXT NOT NULL UNIQUE,
+    herdr_session TEXT,
+    workspace_id TEXT,
+    tab_id TEXT,
+    reconciled_at TEXT,
+    CHECK (
+        (
+            herdr_session IS NULL AND workspace_id IS NULL AND tab_id IS NULL
+            AND reconciled_at IS NULL
+        )
+        OR (
+            herdr_session IS NOT NULL AND workspace_id IS NOT NULL
+            AND tab_id IS NOT NULL AND reconciled_at IS NOT NULL
+        )
+    ),
+    UNIQUE (herdr_session, workspace_id, tab_id)
+);
+
 CREATE TABLE IF NOT EXISTS writer_identities (
     run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
     branch_name TEXT NOT NULL UNIQUE,
@@ -337,6 +357,13 @@ def _writer_identity(writer: dict[str, Any] | None) -> dict[str, str]:
     }
 
 
+def _tab_label(label: str | None, *, fallback: str) -> str:
+    value = fallback if label is None else label
+    if not isinstance(value, str) or not value.strip():
+        raise RegistryError("team tab label is required")
+    return value.strip()
+
+
 class Registry:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -372,6 +399,7 @@ class Registry:
                     3: self._migrate_v3_to_v4,
                     4: self._migrate_v4_to_v5,
                     5: self._migrate_v5_to_v6,
+                    6: self._migrate_v6_to_v7,
                 }
                 while current < SCHEMA_VERSION:
                     migration = migrations.get(current)
@@ -556,6 +584,44 @@ class Registry:
         ):
             connection.execute(statement)
         Registry._execute_schema(connection)
+
+    @staticmethod
+    def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
+        """Give every existing manager team a unique durable tab expectation."""
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS team_herdr_tabs (
+                team_id TEXT PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+                expected_tab_label TEXT NOT NULL UNIQUE,
+                herdr_session TEXT,
+                workspace_id TEXT,
+                tab_id TEXT,
+                reconciled_at TEXT,
+                CHECK (
+                    (herdr_session IS NULL AND workspace_id IS NULL AND tab_id IS NULL
+                     AND reconciled_at IS NULL)
+                    OR (
+                        herdr_session IS NOT NULL AND workspace_id IS NOT NULL
+                        AND tab_id IS NOT NULL AND reconciled_at IS NOT NULL
+                    )
+                ),
+                UNIQUE (herdr_session, workspace_id, tab_id)
+            )
+            """
+        )
+        used_labels: set[str] = set()
+        for team in connection.execute("SELECT id, name FROM teams ORDER BY created_at, id"):
+            label = team["name"].strip() or f"team-{team['id']}"
+            if label in used_labels:
+                label = f"{label} · {team['id'][-8:]}"
+            used_labels.add(label)
+            connection.execute(
+                """
+                INSERT INTO team_herdr_tabs(team_id, expected_tab_label)
+                VALUES (?, ?)
+                """,
+                (team["id"], label),
+            )
 
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
@@ -823,10 +889,12 @@ class Registry:
         manager_identity: dict[str, Any],
         scope: dict[str, Any] | None = None,
         parent_team_id: str | None = None,
+        tab_label: str | None = None,
     ) -> dict[str, Any]:
         source, value = _identity(manager_identity, label="manager")
         if not name.strip():
             raise RegistryError("team name is required")
+        expected_tab_label = _tab_label(tab_label, fallback=name)
         team_id = _id("team")
         timestamp = _now()
         with self._transaction() as connection:
@@ -843,6 +911,14 @@ class Registry:
                 is None
             ):
                 raise RegistryError(f"parent team not found: {parent_team_id}")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM team_herdr_tabs WHERE expected_tab_label = ?",
+                    (expected_tab_label,),
+                ).fetchone()
+                is not None
+            ):
+                raise RegistryError(f"team tab label is already reserved: {expected_tab_label}")
             connection.execute(
                 """
                 INSERT INTO teams(
@@ -863,6 +939,10 @@ class Registry:
                     timestamp,
                 ),
             )
+            connection.execute(
+                "INSERT INTO team_herdr_tabs(team_id, expected_tab_label) VALUES (?, ?)",
+                (team_id, expected_tab_label),
+            )
         return self.get_team(team_id)
 
     def get_team(self, team_id: str) -> dict[str, Any]:
@@ -873,6 +953,11 @@ class Registry:
             if team is None:
                 raise RegistryError(f"team not found: {team_id}")
             team["scope"] = json.loads(team.pop("scope_json"))
+            team["herdr_tab"] = _row(
+                connection.execute(
+                    "SELECT * FROM team_herdr_tabs WHERE team_id = ?", (team_id,)
+                ).fetchone()
+            )
             team["manager_run"] = (
                 self._get_run_impl(connection, team["manager_run_id"])["id"]
                 if team["manager_run_id"]
@@ -901,8 +986,66 @@ class Registry:
             for row in connection.execute(query + " ORDER BY created_at, id", parameters):
                 team = dict(row)
                 team["scope"] = json.loads(team.pop("scope_json"))
+                team["herdr_tab"] = _row(
+                    connection.execute(
+                        "SELECT * FROM team_herdr_tabs WHERE team_id = ?", (team["id"],)
+                    ).fetchone()
+                )
                 rows.append(team)
             return rows
+
+    def bind_team_herdr_tab(
+        self,
+        team_id: str,
+        *,
+        herdr_session: str,
+        workspace_id: str,
+        tab_id: str,
+        observed_tab_label: str,
+    ) -> dict[str, Any]:
+        """Reconcile one live Herdr tab to a team's durable tab expectation."""
+        values = {
+            "Herdr session": herdr_session,
+            "workspace ID": workspace_id,
+            "tab ID": tab_id,
+            "observed tab label": observed_tab_label,
+        }
+        if any(not isinstance(value, str) or not value.strip() for value in values.values()):
+            raise RegistryError("team Herdr tab binding requires non-empty observed identity")
+        timestamp = _now()
+        with self._transaction() as connection:
+            layout = connection.execute(
+                "SELECT * FROM team_herdr_tabs WHERE team_id = ?", (team_id,)
+            ).fetchone()
+            if layout is None:
+                raise RegistryError(f"team not found: {team_id}")
+            if observed_tab_label.strip() != layout["expected_tab_label"]:
+                raise RegistryError(
+                    "observed Herdr tab label does not match the team's expected tab label"
+                )
+            existing = tuple(layout[key] for key in ("herdr_session", "workspace_id", "tab_id"))
+            supplied = (herdr_session.strip(), workspace_id.strip(), tab_id.strip())
+            if any(existing) and existing != supplied:
+                raise RegistryError("refuse to replace the team's reconciled Herdr tab")
+            claimed = connection.execute(
+                """
+                SELECT team_id FROM team_herdr_tabs
+                WHERE herdr_session = ? AND workspace_id = ? AND tab_id = ?
+                  AND team_id <> ?
+                """,
+                (*supplied, team_id),
+            ).fetchone()
+            if claimed is not None:
+                raise RegistryError(f"Herdr tab is already bound to team: {claimed['team_id']}")
+            connection.execute(
+                """
+                UPDATE team_herdr_tabs
+                SET herdr_session = ?, workspace_id = ?, tab_id = ?, reconciled_at = ?
+                WHERE team_id = ?
+                """,
+                (*supplied, timestamp, team_id),
+            )
+        return self.get_team(team_id)["herdr_tab"]
 
     @staticmethod
     def _expire_resource_claims(connection: sqlite3.Connection, now: str) -> int:
@@ -1282,6 +1425,17 @@ class Registry:
                     name = spec.get("name")
                     if not isinstance(name, str) or not name.strip():
                         raise RegistryError("batch manager name is required")
+                    expected_tab_label = _tab_label(spec.get("tab_label"), fallback=name)
+                    if (
+                        connection.execute(
+                            "SELECT 1 FROM team_herdr_tabs WHERE expected_tab_label = ?",
+                            (expected_tab_label,),
+                        ).fetchone()
+                        is not None
+                    ):
+                        raise RegistryError(
+                            f"team tab label is already reserved: {expected_tab_label}"
+                        )
                     team_id = _id("team")
                     connection.execute(
                         "INSERT INTO teams(id, root_task_id, name, manager_identity_source, manager_identity_value, scope_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?)",  # noqa: E501
@@ -1296,9 +1450,23 @@ class Registry:
                             timestamp,
                         ),
                     )
+                    connection.execute(
+                        "INSERT INTO team_herdr_tabs(team_id, expected_tab_label) VALUES (?, ?)",
+                        (team_id, expected_tab_label),
+                    )
                 team = connection.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
                 if team is None or team["root_task_id"] != root_task_id:
                     raise RegistryError("batch manager team is outside the root task")
+                if spec.get("tab_label") is not None:
+                    expected_tab_label = _tab_label(spec["tab_label"], fallback=team["name"])
+                    layout = connection.execute(
+                        "SELECT expected_tab_label FROM team_herdr_tabs WHERE team_id = ?",
+                        (team_id,),
+                    ).fetchone()
+                    if layout is None or layout["expected_tab_label"] != expected_tab_label:
+                        raise RegistryError(
+                            "batch manager tab label does not match team reservation"
+                        )
                 if team["manager_run_id"] is not None:
                     raise RegistryError(f"team already has a manager run: {team['manager_run_id']}")
                 if (team["manager_identity_source"], team["manager_identity_value"]) != (
@@ -1580,6 +1748,26 @@ class Registry:
             existing = connection.execute(
                 "SELECT * FROM herdr_bindings WHERE run_id = ?", (run_id,)
             ).fetchone()
+            if run["team_id"] is not None:
+                layout = connection.execute(
+                    "SELECT * FROM team_herdr_tabs WHERE team_id = ?", (run["team_id"],)
+                ).fetchone()
+                if layout is None or not all(
+                    layout[key] for key in ("herdr_session", "workspace_id", "tab_id")
+                ):
+                    raise RegistryError("team Herdr binding requires a reconciled team tab")
+                observed_location = (
+                    herdr_session.strip(),
+                    workspace_id
+                    if workspace_id is not None
+                    else (existing["workspace_id"] if existing else None),
+                    tab_id if tab_id is not None else (existing["tab_id"] if existing else None),
+                )
+                expected_location = tuple(
+                    layout[key] for key in ("herdr_session", "workspace_id", "tab_id")
+                )
+                if observed_location != expected_location:
+                    raise RegistryError("team Herdr binding observed tab does not match team tab")
             claimed = connection.execute(
                 """
                 SELECT run_id FROM herdr_bindings

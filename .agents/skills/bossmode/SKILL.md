@@ -103,6 +103,24 @@ and worktree ID. Resource claims cover both files and named external resources,
 carry fence tokens, and are atomic with worker creation. Expired leases become
 `reconcile_required` and are never automatically stolen.
 
+Each team has one unique durable `expected_tab_label` and one reconciled live
+Herdr `(session, workspace, tab)` binding. Create the named tab first, reconcile
+it with `bossmode team bind-tab`, and reject every manager, worker, or reviewer
+binding whose observed workspace or tab differs. Singleton runs with no
+`team_id` remain compatible with the legacy binding path.
+
+For every team agent invocation, split a pane from an explicit anchor already
+inside the reconciled team tab before starting the agent:
+
+```bash
+herdr pane split TEAM_ANCHOR_PANE_ID --direction right --cwd "$PWD" --no-focus
+herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
+```
+
+Never use the focused or an unrelated tab as the parent, and never use
+`--current` for a team agent. If the tab is missing or ambiguous, stop and
+reconcile it; do not move or close existing panes.
+
 Reviewer runs have their own durable identity and link to the worker run they
 evaluate. Pass that reviewer run ID to `evaluate`; a reviewer string alone is
 only supported for legacy singleton compatibility.

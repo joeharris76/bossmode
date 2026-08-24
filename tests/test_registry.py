@@ -195,7 +195,7 @@ def test_concurrent_fresh_initialization_is_singleton_and_error_free(tmp_path):
         registry = Registry(database)
         with closing(registry._connect()) as connection:
             assert connection.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 1
-            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
@@ -997,7 +997,7 @@ def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -1022,7 +1022,7 @@ def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
     assert migrated["turns"][0]["summary"] == "historical turn"
     assert migrated["turns"][0]["result"] is None
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(herdr_bindings)")}
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
@@ -1044,7 +1044,7 @@ def test_version_three_migration_preserves_turn_data(tmp_path):
         assert turn["summary"] == "preserved"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v3"
         assert turn["prompt"] == ""
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM promotions").fetchone()[0] == 1
@@ -1061,7 +1061,7 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
         turn = connection.execute("SELECT * FROM run_turns WHERE id = 'turn_v4'").fetchone()
         assert turn["prompt"] == "historical prompt"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v4"
@@ -1077,6 +1077,54 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
             ).fetchone()[0]
             == 1
         )
+
+
+def test_version_six_migration_creates_unique_team_tab_layouts(tmp_path):
+    database = tmp_path / "control.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_meta(version INTEGER NOT NULL);
+            INSERT INTO schema_meta(version) VALUES (6);
+            CREATE TABLE tasks(id TEXT PRIMARY KEY);
+            INSERT INTO tasks(id) VALUES ('root');
+            CREATE TABLE teams(
+                id TEXT PRIMARY KEY,
+                root_task_id TEXT NOT NULL,
+                parent_team_id TEXT,
+                name TEXT NOT NULL,
+                manager_identity_source TEXT NOT NULL,
+                manager_identity_value TEXT NOT NULL,
+                scope_json TEXT NOT NULL DEFAULT '{}',
+                manager_run_id TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO teams(
+                id, root_task_id, name, manager_identity_source, manager_identity_value,
+                status, created_at, updated_at
+            ) VALUES
+                ('team_a', 'root', 'Shared', 'native', 'manager-a', 'planned',
+                 '2026-01-01', '2026-01-01'),
+                ('team_b', 'root', 'Shared', 'native', 'manager-b', 'planned',
+                 '2026-01-02', '2026-01-02');
+            """
+        )
+
+    registry = Registry(database)
+    registry.initialize()
+    registry.initialize()
+
+    with closing(registry._connect()) as connection:
+        labels = [
+            row[0]
+            for row in connection.execute(
+                "SELECT expected_tab_label FROM team_herdr_tabs ORDER BY team_id"
+            )
+        ]
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+    assert labels == ["Shared", "Shared · team_b"]
 
 
 def test_failed_migration_rolls_back_schema_and_version(tmp_path, monkeypatch):

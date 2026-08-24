@@ -87,6 +87,15 @@ def _parser() -> argparse.ArgumentParser:
     team_create.add_argument("--manager-identity-json", required=True)
     team_create.add_argument("--scope-json", default="{}")
     team_create.add_argument("--parent-team-id")
+    team_create.add_argument("--tab-label")
+    team_bind_tab = team_commands.add_parser(
+        "bind-tab", help="Reconcile a team's expected Herdr tab"
+    )
+    team_bind_tab.add_argument("team_id")
+    team_bind_tab.add_argument("--herdr-session", required=True)
+    team_bind_tab.add_argument("--workspace-id", required=True)
+    team_bind_tab.add_argument("--tab-id", required=True)
+    team_bind_tab.add_argument("--observed-tab-label", required=True)
     team_list = team_commands.add_parser("list")
     team_list.add_argument("--root-task-id")
     team_show = team_commands.add_parser("show")
@@ -354,9 +363,18 @@ def _run(args: argparse.Namespace) -> Any:
                 manager_identity=_load_json(args.manager_identity_json, dict),
                 scope=_load_json(args.scope_json, dict),
                 parent_team_id=args.parent_team_id,
+                tab_label=args.tab_label,
             )
         if args.team_command == "list":
             return registry.list_teams(args.root_task_id)
+        if args.team_command == "bind-tab":
+            return registry.bind_team_herdr_tab(
+                args.team_id,
+                herdr_session=args.herdr_session,
+                workspace_id=args.workspace_id,
+                tab_id=args.tab_id,
+                observed_tab_label=args.observed_tab_label,
+            )
         return registry.get_team(args.team_id)
 
     if args.command == "run":

@@ -33,6 +33,14 @@ Bossmode adds a durable team layer while retaining the legacy singleton API.
 - Evaluations may reference an independent finished reviewer run. A reviewer
   identity cannot equal the worker identity or silently become a string-only
   self-evaluation.
+- Each team owns one unique expected Herdr tab label and one reconciled live
+  workspace/tab location. Manager, worker, and reviewer bindings for that team
+  are admitted only when their observed Herdr session, workspace, and tab match
+  that location. Singleton runs retain the legacy binding contract.
+- The supervisor creates the named team tab before the first agent. Every later
+  agent invocation creates a pane inside that tab with a right split from an
+  explicit anchor before starting the agent; focused or unrelated tabs are not
+  valid parents.
 - Executive status is a mechanically derived view of task outcomes, signals,
   approvals, blockers, and team progress. It does not include prompts,
   transcripts, turn results, or low-level worker activity. Sensitive signals
@@ -40,11 +48,14 @@ Bossmode adds a durable team layer while retaining the legacy singleton API.
 
 ## Data and migration
 
-Schema version 6 adds `teams`, `writer_identities`, `resource_claims`, and
-`task_signals`, plus nullable hierarchy and run identity fields. The v5-to-v6
-migration preserves every existing task, run, turn, evaluation, feedback, and
-promotion. Existing runs default to `worker`; existing `start_run` callers do
-not need to create a team or writer reservation.
+Schema version 7 adds `team_herdr_tabs`. The v6-to-v7 migration gives each
+existing team a unique expected tab label and leaves its live tab unbound until
+the supervisor observes and reconciles one. Schema version 6 added `teams`,
+`writer_identities`, `resource_claims`, and `task_signals`, plus nullable
+hierarchy and run identity fields. Both migrations preserve every existing
+task, run, turn, evaluation, feedback, and promotion. Existing runs default to
+`worker`; existing `start_run` callers do not need to create a team or writer
+reservation.
 
 ## Rejected alternatives
 
@@ -58,8 +69,8 @@ not need to create a team or writer reservation.
 
 ## Consequences
 
-Parallel execution is available only when task scopes, writer identities, and
-resource claims are valid. Managers still require live runtime reconciliation
-when an external worker is used. The database remains the source of durable
-coordination facts; live native and Herdr runtime identity remains authoritative
-for actual worker ownership.
+Parallel execution is available only when task scopes, writer identities,
+resource claims, and (for team runs) the named-tab admission contract are valid.
+Managers still require live runtime reconciliation when an external worker is
+used. The database remains the source of durable coordination facts; live native
+and Herdr runtime identity remains authoritative for actual worker ownership.
