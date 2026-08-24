@@ -121,6 +121,7 @@ def _parser() -> argparse.ArgumentParser:
     worker_start.add_argument("--manager-run-id", required=True)
     worker_start.add_argument("--identity-json", required=True)
     worker_start.add_argument("--writer-json", required=True)
+    worker_start.add_argument("--repository-path")
     worker_start.add_argument("--resources-json", default="[]")
     worker_start.add_argument("--lease-seconds", type=int, default=300)
     worker_start.add_argument("--model")
@@ -246,6 +247,13 @@ def _parser() -> argparse.ArgumentParser:
     resource_commands = resource.add_subparsers(dest="resource_command", required=True)
     resource_reconcile = resource_commands.add_parser("reconcile")
     resource_reconcile.add_argument("--now")
+    resource_release = resource_commands.add_parser(
+        "release", help="Release a reconcile_required claim after live reconciliation"
+    )
+    resource_release.add_argument("claim_id")
+    resource_release.add_argument("--run-id", required=True)
+    resource_release.add_argument("--fence-token", required=True)
+    resource_release.add_argument("--evidence", required=True)
 
     status = subparsers.add_parser("status", help="Show redacted executive status")
     status_commands = status.add_subparsers(dest="status_command", required=True)
@@ -399,6 +407,7 @@ def _run(args: argparse.Namespace) -> Any:
                 manager_run_id=args.manager_run_id,
                 identity=_load_json(args.identity_json, dict),
                 writer=_load_json(args.writer_json, dict),
+                repository_path=args.repository_path,
                 resources=_load_json(args.resources_json, list),
                 lease_seconds=args.lease_seconds,
                 model=args.model,
@@ -475,6 +484,13 @@ def _run(args: argparse.Namespace) -> Any:
         )
 
     if args.command == "resource":
+        if args.resource_command == "release":
+            return registry.reconcile_resource_claim(
+                args.claim_id,
+                run_id=args.run_id,
+                fence_token=args.fence_token,
+                evidence=args.evidence,
+            )
         return registry.reconcile_resource_claims(now=args.now)
 
     if args.command == "status":

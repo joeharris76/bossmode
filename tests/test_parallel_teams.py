@@ -1,18 +1,65 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
 import pytest
 
+from bossmode import registry as registry_module
 from bossmode.cli import main
 from bossmode.registry import Registry, RegistryError
 
 
 @pytest.fixture
 def registry(tmp_path):
-    return Registry(tmp_path / "control.db")
+    repository = _create_repository(tmp_path)
+    return Registry(tmp_path / "control.db", repository_path=repository)
+
+
+def _create_repository(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for arguments in (
+        ["git", "init", "-b", "main", str(repository)],
+        ["git", "-C", str(repository), "config", "user.name", "Test User"],
+        ["git", "-C", str(repository), "config", "user.email", "test@example.com"],
+    ):
+        subprocess.run(arguments, check=True, capture_output=True, text=True)
+    (repository / "README").write_text("test\n")
+    subprocess.run(["git", "-C", str(repository), "add", "README"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "initial"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return repository
+
+
+def _writer(registry: Registry, branch: str, directory: str, worktree_id: str) -> dict:
+    path = registry.repository_path / directory
+    subprocess.run(
+        ["git", "-C", str(registry.repository_path), "worktree", "add", "-b", branch, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return {
+        "branch_name": branch,
+        "base_sha": base_sha,
+        "worktree_path": str(path),
+        "worktree_id": worktree_id,
+    }
 
 
 def _setup(registry: Registry, tmp_path: Path, count: int = 3, *, start_managers: bool = True):
@@ -31,16 +78,16 @@ def _setup(registry: Registry, tmp_path: Path, count: int = 3, *, start_managers
         teams.append(team)
     for child_number in range(count):
         team = teams[child_number % 2]
-        children.append(
-            registry.create_child_task(
-                root["id"],
-                title=f"Child {child_number}",
-                goal="Implement one disjoint slice",
-                success_criteria="Slice is independently verified",
-                team_id=team["id"],
-                scope={"paths": [f"src/slice{child_number}"]},
-            )
+        child = registry.create_child_task(
+            root["id"],
+            title=f"Child {child_number}",
+            goal="Implement one disjoint slice",
+            success_criteria="Slice is independently verified",
+            team_id=team["id"],
+            scope={"paths": [f"src/slice{child_number}"]},
         )
+        child["_registry"] = registry
+        children.append(child)
     managers = (
         [
             registry.start_manager_run(
@@ -55,16 +102,13 @@ def _setup(registry: Registry, tmp_path: Path, count: int = 3, *, start_managers
 
 
 def _worker_spec(tmp_path: Path, child: dict, manager: dict, number: int, resource: object):
+    del tmp_path
+    registry = child["_registry"]
     return {
         "task_id": child["id"],
         "manager_run_id": manager["id"],
         "identity": {"source": "native", "value": f"worker-{number}"},
-        "writer": {
-            "branch_name": f"team/{number}",
-            "base_sha": f"abcdef{number}",
-            "worktree_path": str(tmp_path / f"worktree-{number}"),
-            "worktree_id": f"worktree-{number}",
-        },
+        "writer": _writer(registry, f"team/{number}", f"worktree-{number}", f"worktree-{number}"),
         "resources": [resource],
     }
 
@@ -110,16 +154,11 @@ def test_batch_dispatch_supports_three_workers_and_two_managers(registry, tmp_pa
 
 def test_writer_and_resource_conflicts_reject_before_worker_creation(registry, tmp_path):
     root, teams, children, managers = _setup(registry, tmp_path, count=3)
-    registry.start_worker_run(
+    first = registry.start_worker_run(
         children[0]["id"],
         manager_run_id=managers[0]["id"],
         identity={"source": "native", "value": "writer-a"},
-        writer={
-            "branch_name": "team/shared",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "a"),
-            "worktree_id": "a",
-        },
+        writer=_writer(registry, "team/shared", "a", "a"),
         resources=["shared.py"],
     )
     with pytest.raises(RegistryError, match="writer identity"):
@@ -128,9 +167,8 @@ def test_writer_and_resource_conflicts_reject_before_worker_creation(registry, t
             manager_run_id=managers[0]["id"],
             identity={"source": "native", "value": "writer-b"},
             writer={
-                "branch_name": "team/shared",
-                "base_sha": "abcdef2",
-                "worktree_path": str(tmp_path / "b"),
+                **first["writer_identity"],
+                "worktree_path": str(registry.repository_path / "b"),
                 "worktree_id": "b",
             },
             resources=["other.py"],
@@ -141,12 +179,7 @@ def test_writer_and_resource_conflicts_reject_before_worker_creation(registry, t
             children[2]["id"],
             manager_run_id=managers[0]["id"],
             identity={"source": "native", "value": "writer-c"},
-            writer={
-                "branch_name": "team/c",
-                "base_sha": "abcdef3",
-                "worktree_path": str(tmp_path / "c"),
-                "worktree_id": "c",
-            },
+            writer=_writer(registry, "team/c", "c", "c"),
             resources=["shared.py"],
         )
     assert registry.get_task(children[2]["id"])["state"] == "ready"
@@ -158,12 +191,7 @@ def test_expired_claim_requires_reconciliation_and_fence_is_required(registry, t
         children[0]["id"],
         manager_run_id=managers[0]["id"],
         identity={"source": "native", "value": "lease-a"},
-        writer={
-            "branch_name": "lease/a",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "lease-a"),
-            "worktree_id": "lease-a",
-        },
+        writer=_writer(registry, "lease/a", "lease-a", "lease-a"),
         resources=["lease.py"],
         lease_seconds=1,
     )
@@ -176,10 +204,39 @@ def test_expired_claim_requires_reconciliation_and_fence_is_required(registry, t
         )
     with pytest.raises(RegistryError, match="requires reconciliation"):
         registry.claim_resources(first["id"], ["lease.py"])
+    with pytest.raises(RegistryError, match="owner"):
+        registry.reconcile_resource_claim(
+            claim["id"],
+            run_id="foreign-run",
+            fence_token=claim["fence_token"],
+            evidence="live worker is gone",
+        )
+    with pytest.raises(RegistryError, match="evidence"):
+        registry.release_resource_claim(
+            claim["id"], run_id=first["id"], fence_token=claim["fence_token"], evidence=" "
+        )
+    released = registry.reconcile_resource_claim(
+        claim["id"],
+        run_id=first["id"],
+        fence_token=claim["fence_token"],
+        evidence="live worker confirmed stopped; worktree inspected clean",
+    )
+    assert released["status"] == "released"
+    assert "worktree inspected clean" in released["reconciliation_evidence"]
+    assert registry.get_task(children[0]["id"])["events"][-1]["event_type"] == (
+        "resource_reconciled"
+    )
+    with pytest.raises(RegistryError, match="only applies"):
+        registry.reconcile_resource_claim(
+            claim["id"],
+            run_id=first["id"],
+            fence_token=claim["fence_token"],
+            evidence="second release",
+        )
 
 
 def test_claim_race_has_one_winner(tmp_path):
-    registry = Registry(tmp_path / "control.db")
+    registry = Registry(tmp_path / "control.db", repository_path=_create_repository(tmp_path))
     root, teams, children, managers = _setup(registry, tmp_path, count=3)
     barrier = Barrier(2)
 
@@ -190,12 +247,7 @@ def test_claim_race_has_one_winner(tmp_path):
                 children[index]["id"],
                 manager_run_id=managers[0]["id"],
                 identity={"source": "native", "value": f"race-{index}"},
-                writer={
-                    "branch_name": f"race/{index}",
-                    "base_sha": f"abcdef{index}",
-                    "worktree_path": str(tmp_path / f"race-{index}"),
-                    "worktree_id": f"race-{index}",
-                },
+                writer=_writer(registry, f"race/{index}", f"race-{index}", f"race-{index}"),
                 resources=["race.py"],
             )
         except RegistryError as error:
@@ -213,12 +265,7 @@ def test_reviewer_identity_and_redacted_executive_status(registry, tmp_path):
         children[0]["id"],
         manager_run_id=managers[0]["id"],
         identity={"source": "native", "value": "worker"},
-        writer={
-            "branch_name": "review/a",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "review-a"),
-            "worktree_id": "review-a",
-        },
+        writer=_writer(registry, "review/a", "review-a", "review-a"),
         resources=["review.py"],
     )
     registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
@@ -247,6 +294,326 @@ def test_reviewer_identity_and_redacted_executive_status(registry, tmp_path):
     assert "prompt" not in str(status).lower()
     assert "transcript" not in str(status).lower()
     assert "worker complete" not in str(status)
+
+
+def test_team_evaluation_requires_a_successful_linked_reviewer(registry, tmp_path):
+    root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "worker-linked"},
+        writer=_writer(registry, "eval/worker", "eval-worker", "eval-worker"),
+    )
+    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
+    with pytest.raises(RegistryError, match="requires an evaluator_run_id"):
+        registry.add_evaluation(
+            children[0]["id"],
+            run_id=worker["id"],
+            evaluator="reviewer-linked",
+            passed=True,
+            evidence="string-only team evaluation",
+        )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "reviewer-linked"},
+    )
+    registry.finish_run(reviewer["id"], outcome="failed", summary="reviewer failed")
+    with pytest.raises(RegistryError, match="succeeded outcome"):
+        registry.add_evaluation(
+            children[0]["id"],
+            run_id=worker["id"],
+            evaluator="reviewer-linked",
+            evaluator_run_id=reviewer["id"],
+            passed=True,
+            evidence="failed reviewer must not pass",
+        )
+    assert registry.get_task(root["id"])["state"] == "running"
+
+
+@pytest.mark.parametrize(
+    ("branch_name", "message"),
+    [
+        ("main", "dedicated"),
+        ("refs/heads/main", "dedicated"),
+        ("refs/remotes/origin/main", "local branch"),
+    ],
+)
+def test_writer_git_admission_rejects_protected_branches(registry, tmp_path, branch_name, message):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    with pytest.raises(RegistryError, match=message):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": f"protected-{branch_name}"},
+            writer={
+                "branch_name": branch_name,
+                "base_sha": "abcdef1",
+                "worktree_path": str(registry.repository_path),
+                "worktree_id": f"protected-{branch_name}",
+            },
+        )
+
+
+def test_writer_git_admission_rejects_primary_dirty_and_mismatched_worktrees(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=3)
+    base = _writer(registry, "git/clean", "git-clean", "git-clean")
+    with pytest.raises(RegistryError, match="primary checkout"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "primary"},
+            writer={
+                **base,
+                "worktree_path": str(registry.repository_path),
+                "worktree_id": "primary",
+            },
+        )
+
+    dirty = _writer(registry, "git/dirty", "git-dirty", "git-dirty")
+    (registry.repository_path / "git-dirty" / "dirty.txt").write_text("dirty\n")
+    with pytest.raises(RegistryError, match="dirty"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "dirty"},
+            writer=dirty,
+        )
+
+    mismatched = _writer(registry, "git/live", "git-live", "git-live")
+    with pytest.raises(RegistryError, match="does not match the live worktree branch"):
+        registry.start_worker_run(
+            children[2]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "mismatched"},
+            writer={**mismatched, "branch_name": "git/other"},
+        )
+
+    non_ancestor = _writer(registry, "git/non-ancestor", "git-non-ancestor", "git-non-ancestor")
+    subprocess.run(
+        ["git", "-C", str(registry.repository_path), "checkout", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (registry.repository_path / "README").write_text("new base\n")
+    subprocess.run(["git", "-C", str(registry.repository_path), "add", "README"], check=True)
+    subprocess.run(
+        ["git", "-C", str(registry.repository_path), "commit", "-m", "new base"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    new_base = subprocess.run(
+        ["git", "-C", str(registry.repository_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    with pytest.raises(RegistryError, match="not an ancestor"):
+        registry.start_worker_run(
+            children[2]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "non-ancestor"},
+            writer={**non_ancestor, "base_sha": new_base},
+        )
+
+
+def test_git_inventory_rejects_ambiguous_and_unusable_records(monkeypatch):
+    def command(output):
+        monkeypatch.setattr(
+            registry_module,
+            "_git_command",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                ["git"], 0, stdout=output, stderr=""
+            ),
+        )
+
+    for output, message in (
+        ("", "inventory is empty"),
+        ("worktree /tmp/one\n", "inventory is ambiguous"),
+        ("worktree /tmp/one\nHEAD abc\nlocked\n", "inventory is ambiguous"),
+        (
+            "worktree /tmp/one\nHEAD abc\nbranch refs/heads/a\n\n"
+            "worktree /tmp/one\nHEAD def\nbranch refs/heads/b\n",
+            "duplicate paths",
+        ),
+    ):
+        command(output)
+        with pytest.raises(RegistryError, match=message):
+            registry_module._live_worktrees("/tmp/repository")
+
+
+def test_git_command_reports_unavailable_and_failed_git(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise OSError("git missing")
+
+    monkeypatch.setattr(registry_module.subprocess, "run", unavailable)
+    with pytest.raises(RegistryError, match="validation unavailable"):
+        registry_module._git_command(["status"], cwd=".")
+
+    monkeypatch.setattr(
+        registry_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["git"], 1, stdout="", stderr=""),
+    )
+    with pytest.raises(RegistryError, match="unknown Git error"):
+        registry_module._git_command(["status"], cwd=".")
+
+
+def test_writer_git_admission_rejects_missing_detached_and_wrong_roots(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=3)
+    valid = _writer(registry, "git/valid", "git-valid", "git-valid")
+    with pytest.raises(RegistryError, match="missing or ambiguous"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "missing-worktree"},
+            writer={
+                **valid,
+                "worktree_path": str(registry.repository_path / "missing"),
+                "worktree_id": "missing",
+            },
+        )
+
+    detached = _writer(registry, "git/detached", "git-detached", "git-detached")
+    subprocess.run(
+        ["git", "-C", detached["worktree_path"], "checkout", "--detach"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="live branch"):
+        registry.start_worker_run(
+            children[2]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "detached-worktree"},
+            writer=detached,
+        )
+
+    other_repository = _create_repository(tmp_path / "other")
+    with pytest.raises(RegistryError, match="missing or ambiguous"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "wrong-root"},
+            writer=valid,
+            repository_path=other_repository,
+        )
+
+
+def test_writer_git_admission_rejects_configured_default_branch(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    writer = _writer(registry, "configured-default", "configured-default", "configured-default")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(registry.repository_path),
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/configured-default",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(RegistryError, match="protected or the repository default"):
+        registry.start_worker_run(
+            children[0]["id"],
+            manager_run_id=managers[0]["id"],
+            identity={"source": "native", "value": "configured-default"},
+            writer=writer,
+        )
+
+
+def test_writer_git_admission_rejects_internal_root_branch_and_head_mismatches(
+    monkeypatch, tmp_path
+):
+    writer = {
+        "branch_name": "git/worker",
+        "base_sha": "a" * 40,
+        "worktree_path": str(tmp_path / "worker"),
+        "worktree_id": "worker",
+    }
+    monkeypatch.setattr(
+        registry_module,
+        "_git_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git"], 0, stdout=str(tmp_path), stderr=""
+        ),
+    )
+    with pytest.raises(RegistryError, match="live Git root"):
+        registry_module._validate_writer_git(writer, tmp_path / "other")
+
+    def branch_mismatch(arguments, **_kwargs):
+        if arguments[:2] == ["rev-parse", "--show-toplevel"]:
+            output = str(tmp_path)
+        elif arguments[:3] == ["worktree", "list", "--porcelain"]:
+            output = (
+                f"worktree {writer['worktree_path']}\nHEAD {'b' * 40}\n"
+                "branch refs/heads/git/worker\n"
+            )
+        else:
+            output = "other/branch"
+        return subprocess.CompletedProcess(["git"], 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(registry_module, "_git_command", branch_mismatch)
+    with pytest.raises(RegistryError, match="mismatched with the live worktree head"):
+        registry_module._validate_writer_git(writer, tmp_path)
+
+    def head_mismatch(arguments, **_kwargs):
+        if arguments[:2] == ["rev-parse", "--show-toplevel"]:
+            output = str(tmp_path)
+        elif arguments[:3] == ["worktree", "list", "--porcelain"]:
+            output = (
+                f"worktree {writer['worktree_path']}\nHEAD {'b' * 40}\n"
+                "branch refs/heads/git/worker\n"
+            )
+        elif arguments[:3] == ["symbolic-ref", "--short", "HEAD"]:
+            output = "git/worker"
+        elif arguments[0] == "status":
+            output = ""
+        elif arguments[:2] == ["rev-parse", "--verify"]:
+            output = "a" * 40
+        elif arguments[:2] == ["rev-parse", "HEAD"]:
+            output = "c" * 40
+        else:
+            output = ""
+        return subprocess.CompletedProcess(["git"], 0, stdout=output, stderr="")
+
+    monkeypatch.setattr(registry_module, "_git_command", head_mismatch)
+    with pytest.raises(RegistryError, match="head is mismatched"):
+        registry_module._validate_writer_git(writer, tmp_path)
+
+
+def test_executive_status_derives_finished_team_state(registry, tmp_path):
+    root, teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "status-worker"},
+        writer=_writer(registry, "status/worker", "status-worker", "status-worker"),
+    )
+    registry.finish_run(worker["id"], outcome="succeeded", summary="worker complete")
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "status-reviewer"},
+    )
+    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+    registry.add_evaluation(
+        children[0]["id"],
+        run_id=worker["id"],
+        evaluator="status-reviewer",
+        evaluator_run_id=reviewer["id"],
+        passed=True,
+        evidence="status verified",
+    )
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    status = registry.executive_status(root["id"])
+    team_status = next(item for item in status["teams"] if item["team_id"] == teams[0]["id"])
+    assert team_status["status"] == "finished"
 
 
 def test_singleton_start_run_remains_compatible(registry):
@@ -356,12 +723,7 @@ def test_team_manager_worker_and_reviewer_bindings_reject_wrong_tabs(registry, t
         child["id"],
         manager_run_id=manager["id"],
         identity={"source": "native", "value": "worker"},
-        writer={
-            "branch_name": "admission/worker",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "worker"),
-            "worktree_id": "admission-worker",
-        },
+        writer=_writer(registry, "admission/worker", "worker", "admission-worker"),
     )
     with pytest.raises(RegistryError, match="does not match team tab"):
         registry.bind_herdr_run(
@@ -437,7 +799,9 @@ def test_team_workflow_requires_downward_panes_and_forbids_right_splits():
     )
     for relative_path in command_surfaces:
         surface = (repository / relative_path).read_text()
-        assert "--direction right" not in surface
+        command_lines = [line for line in surface.splitlines() if "herdr " in line]
+        assert not any("--current" in line for line in command_lines)
+        assert not any("--direction right" in line for line in command_lines)
         assert "herdr pane split TEAM_ANCHOR_PANE_ID --direction down" in surface
 
     adr = (repository / "docs/adr/0004-parallel-manager-teams.md").read_text()
@@ -504,12 +868,7 @@ def test_claim_renew_release_and_non_file_canonicalization(registry, tmp_path):
         children[0]["id"],
         manager_run_id=managers[0]["id"],
         identity={"source": "native", "value": "claims"},
-        writer={
-            "branch_name": "claims/a",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "claims"),
-            "worktree_id": "claims",
-        },
+        writer=_writer(registry, "claims/a", "claims", "claims"),
         resources=[{"kind": "service", "value": "  queue   alpha  "}],
     )
     claim = run["resource_claims"][0]
@@ -550,12 +909,7 @@ def test_batch_can_create_teams_and_rolls_back_conflicts(registry, tmp_path):
                 "task_id": child["id"],
                 "manager_index": 0,
                 "identity": {"source": "n", "value": "w"},
-                "writer": {
-                    "branch_name": "created/w",
-                    "base_sha": "abcdef1",
-                    "worktree_path": str(tmp_path / "created"),
-                    "worktree_id": "created",
-                },
+                "writer": _writer(registry, "created/w", "created", "created"),
                 "resources": [],
             }
         ],
@@ -566,6 +920,8 @@ def test_batch_can_create_teams_and_rolls_back_conflicts(registry, tmp_path):
 
 def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys):
     database = tmp_path / "control.db"
+    repository = _create_repository(tmp_path)
+    git_registry = Registry(database, repository_path=repository)
 
     def call(*args):
         assert main(["--db", str(database), *args]) == 0
@@ -629,9 +985,27 @@ def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys):
         "--identity-json",
         '{"source":"cli","value":"w"}',
         "--writer-json",
-        '{"branch_name":"cli/w","base_sha":"abcdef1","worktree_path":"/tmp/cli-w","worktree_id":"cli-w"}',
+        json.dumps(_writer(git_registry, "cli/w", "cli-w", "cli-w")),
+        "--repository-path",
+        str(repository),
         "--resources-json",
         '[{"kind":"service","value":"cli"}]',
+    )
+    claim = worker["resource_claims"][0]
+    assert call("resource", "reconcile", "--now", "2999-01-01T00:00:00+00:00")["expired"] == 1
+    assert (
+        call(
+            "resource",
+            "release",
+            claim["id"],
+            "--run-id",
+            worker["id"],
+            "--fence-token",
+            claim["fence_token"],
+            "--evidence",
+            "live worker stopped and worktree inspected",
+        )["status"]
+        == "released"
     )
     assert call("team", "list", "--root-task-id", root["id"])[0]["id"] == team["id"]
     assert call("team", "show", team["id"])["manager_run_id"] == manager["id"]
@@ -651,6 +1025,7 @@ def test_parallel_contract_rejections_are_explicit(registry, tmp_path):
     with pytest.raises(RegistryError, match="root task"):
         registry.create_team("missing", name="team", manager_identity={"source": "n", "value": "m"})
     root = registry.create_task(title="root", goal="g", success_criteria="s")
+    other_root = registry.create_task(title="other root", goal="g", success_criteria="s")
     with pytest.raises(RegistryError, match="team name"):
         registry.create_team(root["id"], name=" ", manager_identity={"source": "n", "value": "m"})
     with pytest.raises(RegistryError, match="team tab label"):
@@ -670,6 +1045,24 @@ def test_parallel_contract_rejections_are_explicit(registry, tmp_path):
     team = registry.create_team(
         root["id"], name="team", manager_identity={"source": "n", "value": "m"}
     )
+    with pytest.raises(RegistryError, match="team assignment"):
+        registry.create_task(title="unscoped", goal="g", success_criteria="s", team_id=team["id"])
+    with pytest.raises(RegistryError, match="does not match the parent task root"):
+        registry.create_child_task(
+            other_root["id"],
+            title="cross-root",
+            goal="g",
+            success_criteria="s",
+            team_id=team["id"],
+            scope={},
+        )
+    with pytest.raises(RegistryError, match="does not match the root task"):
+        registry.create_team(
+            other_root["id"],
+            name="cross-root-team",
+            parent_team_id=team["id"],
+            manager_identity={"source": "n", "value": "cross"},
+        )
     with pytest.raises(RegistryError, match="does not match"):
         registry.start_manager_run(team["id"], identity={"source": "n", "value": "other"})
     child = registry.create_child_task(
@@ -681,24 +1074,14 @@ def test_parallel_contract_rejections_are_explicit(registry, tmp_path):
             child["id"],
             manager_run_id="missing",
             identity={"source": "n", "value": "w"},
-            writer={
-                "branch_name": "reject/w",
-                "base_sha": "abcdef1",
-                "worktree_path": str(tmp_path / "reject"),
-                "worktree_id": "reject",
-            },
+            writer=_writer(registry, "reject/preflight", "reject-preflight", "reject-preflight"),
             resources=[],
         )
     worker = registry.start_worker_run(
         child["id"],
         manager_run_id=manager["id"],
         identity={"source": "n", "value": "w"},
-        writer={
-            "branch_name": "reject/w",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "reject"),
-            "worktree_id": "reject",
-        },
+        writer=_writer(registry, "reject/w", "reject-2", "reject-2"),
         resources=[],
     )
     with pytest.raises(RegistryError, match="positive"):
@@ -756,12 +1139,7 @@ def test_parallel_recovery_and_conflict_error_matrix(registry, tmp_path):
         children[0]["id"],
         manager_run_id=managers[0]["id"],
         identity={"source": "n", "value": "matrix"},
-        writer={
-            "branch_name": "matrix/w",
-            "base_sha": "abcdef1",
-            "worktree_path": str(tmp_path / "matrix"),
-            "worktree_id": "matrix",
-        },
+        writer=_writer(registry, "matrix/w", "matrix", "matrix"),
         resources=["matrix.py"],
     )
     with pytest.raises(RegistryError, match="found running"):
@@ -769,12 +1147,7 @@ def test_parallel_recovery_and_conflict_error_matrix(registry, tmp_path):
             children[0]["id"],
             manager_run_id=managers[0]["id"],
             identity={"source": "n", "value": "matrix-2"},
-            writer={
-                "branch_name": "matrix/w2",
-                "base_sha": "abcdef2",
-                "worktree_path": str(tmp_path / "matrix-2"),
-                "worktree_id": "matrix-2",
-            },
+            writer=_writer(registry, "matrix/w2", "matrix-2", "matrix-2"),
             resources=[],
         )
     claim = worker["resource_claims"][0]
