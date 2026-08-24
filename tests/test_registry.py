@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -1380,3 +1381,225 @@ def test_any_agent_can_coordinate_and_review(
     )
     assert evaluation["passed"] == 1
     assert registry.get_task(task["id"])["state"] == "succeeded"
+
+
+def test_rejected_promotion_waits_for_new_evidence(registry):
+    task = create_task(registry)
+    for content in ("Failure 1", "Failure 2"):
+        registry.add_feedback(
+            task["id"],
+            kind="failure",
+            recurrence_key="db.lock-timeout",
+            content=content,
+        )
+
+    proposal = registry.propose_promotions()[0]
+    rejected = registry.reject_promotion(proposal["id"])
+    assert rejected["status"] == "rejected"
+    assert registry.propose_promotions() == []
+
+    registry.add_feedback(
+        task["id"],
+        kind="failure",
+        recurrence_key="db.lock-timeout",
+        content="Failure 3",
+    )
+    reproposed = registry.propose_promotions()
+    assert len(reproposed) == 1
+    assert reproposed[0]["id"] == proposal["id"]
+    assert reproposed[0]["status"] == "proposed"
+
+
+def test_rejected_promotion_accepts_new_evaluation_evidence(registry):
+    task = create_task(registry)
+    for content in ("Failure 1", "Failure 2"):
+        registry.add_feedback(
+            task["id"],
+            kind="failure",
+            recurrence_key="db.lock-timeout",
+            content=content,
+        )
+
+    proposal = registry.propose_promotions()[0]
+    registry.reject_promotion(proposal["id"])
+
+    run = registry.start_run(task["id"], agent_role="worker")
+    registry.finish_run(run["id"], outcome="succeeded", summary="done")
+    registry.add_evaluation(
+        task["id"],
+        run_id=run["id"],
+        evaluator="reviewer",
+        passed=True,
+        evidence="new independent evidence",
+    )
+
+    reproposed = registry.propose_promotions()
+    assert len(reproposed) == 1
+    assert reproposed[0]["id"] == proposal["id"]
+    assert reproposed[0]["evidence"]["evaluation_ids"]
+
+
+def test_herdr_run_cannot_succeed_without_a_succeeded_turn(registry):
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude_worker")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="session-1",
+        worker_name="worker_no_turns",
+        agent_kind="claude",
+    )
+
+    with pytest.raises(
+        RegistryError,
+        match="successful run with Herdr worker or turns requires at least one succeeded turn",
+    ):
+        registry.finish_run(run["id"], outcome="succeeded", summary="claimed success")
+
+
+@pytest.mark.parametrize(
+    ("artifact_kind", "message"),
+    [
+        ("symlink", "turn result artifact cannot be a symlink"),
+        ("directory", "turn result artifact must be a regular file"),
+    ],
+)
+def test_turn_result_rejects_symlinks_and_non_regular_files(
+    registry, tmp_path, monkeypatch, artifact_kind, message
+):
+    monkeypatch.chdir(tmp_path)
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="session-1",
+        worker_name=f"worker_{artifact_kind}",
+        agent_kind="claude",
+    )
+    turn = registry.start_turn(run["id"], purpose="task", prompt="validate artifact path")
+    artifact_path = Path(turn["artifact_path"])
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if artifact_kind == "symlink":
+        target = tmp_path / "result-target.json"
+        target.write_text("{}")
+        artifact_path.symlink_to(target)
+    else:
+        artifact_path.mkdir()
+
+    with pytest.raises(RegistryError, match=message):
+        registry.finish_turn(turn["id"], status="succeeded")
+
+
+def test_turn_result_rejects_symlink_swap_during_open(registry, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="session-1",
+        worker_name="worker_swap",
+        agent_kind="claude",
+    )
+    turn = registry.start_turn(run["id"], purpose="task", prompt="reject path swap")
+    write_turn_result(turn, summary="original result")
+    artifact_path = Path(turn["artifact_path"])
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text(
+        json.dumps(
+            {
+                "turn_id": turn["id"],
+                "status": "succeeded",
+                "summary": "swapped result",
+                "artifacts": [],
+            }
+        )
+    )
+    real_open = os.open
+
+    def swap_then_open(path, flags, *args, **kwargs):
+        if Path(path).name == artifact_path.name:
+            artifact_path.unlink()
+            artifact_path.symlink_to(replacement)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+    with pytest.raises(RegistryError, match="turn result artifact cannot be a symlink"):
+        registry.finish_turn(turn["id"], status="succeeded")
+
+
+def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = create_task(registry)
+    run = registry.start_run(task["id"], agent_role="claude")
+    registry.bind_herdr_run(
+        run["id"],
+        herdr_session="session-1",
+        worker_name="worker_parent_swap",
+        agent_kind="claude",
+    )
+    turn = registry.start_turn(run["id"], purpose="task", prompt="reject parent symlink")
+    write_turn_result(turn, summary="parent result")
+    artifact_path = Path(turn["artifact_path"])
+    real_root = tmp_path / "real-bossmode"
+    artifact_path.parent.parent.rename(real_root)
+    artifact_path.parent.parent.symlink_to(real_root)
+
+    with pytest.raises(RegistryError, match="turn result artifact parent cannot be a symlink"):
+        registry.finish_turn(turn["id"], status="succeeded")
+
+
+class _FailingReadConnection:
+    def __init__(self, failure_stage):
+        self.failure_stage = failure_stage
+        self.calls = []
+
+    def execute(self, statement):
+        self.calls.append(statement)
+        if self.failure_stage == "begin" and statement == "BEGIN DEFERRED":
+            raise sqlite3.OperationalError("begin failed")
+        return self
+
+    def commit(self):
+        self.calls.append("COMMIT")
+        if self.failure_stage == "commit":
+            raise sqlite3.OperationalError("commit failed")
+
+    def rollback(self):
+        self.calls.append("ROLLBACK")
+        raise sqlite3.OperationalError("rollback failed")
+
+    def close(self):
+        self.calls.append("CLOSE")
+
+
+def test_read_transaction_begin_failure_preserves_original_error(registry, monkeypatch):
+    connection = _FailingReadConnection("begin")
+    monkeypatch.setattr(registry, "initialize", lambda: None)
+    monkeypatch.setattr(registry, "_connect", lambda: connection)
+
+    with (
+        pytest.raises(sqlite3.OperationalError, match="begin failed"),
+        registry._read_transaction(),
+    ):
+        pass
+
+    assert connection.calls == ["BEGIN DEFERRED", "CLOSE"]
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "message"),
+    [("body", "body failed"), ("commit", "commit failed")],
+)
+def test_read_transaction_rollback_failure_preserves_original_error(
+    registry, monkeypatch, failure_stage, message
+):
+    connection = _FailingReadConnection(failure_stage)
+    monkeypatch.setattr(registry, "initialize", lambda: None)
+    monkeypatch.setattr(registry, "_connect", lambda: connection)
+
+    with pytest.raises(Exception, match=message) as caught, registry._read_transaction():
+        if failure_stage == "body":
+            raise RuntimeError(message)
+
+    assert "read transaction rollback failed: rollback failed" in caught.value.__notes__
+    assert connection.calls[-2:] == ["ROLLBACK", "CLOSE"]

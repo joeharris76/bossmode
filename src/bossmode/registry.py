@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
 import time
 import uuid
 from collections.abc import Iterable
@@ -431,6 +434,27 @@ class Registry:
         finally:
             connection.close()
 
+    @contextmanager
+    def _read_transaction(self) -> Iterable[sqlite3.Connection]:
+        self.initialize()
+        connection = self._connect()
+        transaction_started = False
+        try:
+            connection.execute("BEGIN DEFERRED")
+            transaction_started = True
+            yield connection
+            connection.commit()
+            transaction_started = False
+        except Exception as error:
+            if transaction_started:
+                try:
+                    connection.rollback()
+                except Exception as rollback_error:
+                    error.add_note(f"read transaction rollback failed: {rollback_error}")
+            raise
+        finally:
+            connection.close()
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.path,
@@ -502,8 +526,7 @@ class Registry:
         return self.get_task(task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._get_task_impl(connection, task_id)
 
     def _get_task_impl(self, connection: sqlite3.Connection, task_id: str) -> dict[str, Any]:
@@ -539,8 +562,7 @@ class Registry:
         return task
 
     def list_tasks(self, states: Iterable[str] | None = None) -> list[dict[str, Any]]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._list_tasks_impl(connection, states)
 
     def _list_tasks_impl(
@@ -664,8 +686,7 @@ class Registry:
         return self.get_run(run_id)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._get_run_impl(connection, run_id)
 
     def _get_run_impl(self, connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:
@@ -939,13 +960,69 @@ class Registry:
         turn: dict[str, Any], *, expected_summary: str | None
     ) -> dict[str, Any]:
         path = Path(turn["artifact_path"])
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        descriptor = -1
+        directory_descriptor = -1
         try:
-            with path.open("rb") as result_file:
+            # Walk parents with O_NOFOLLOW as well as the final component. The
+            # opened descriptor is the authority for the read; path metadata
+            # is never re-opened after this point.
+            absolute_path = Path(os.path.abspath(path))
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_flags |= getattr(os, "O_CLOEXEC", 0)
+            directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+            directory_descriptor = os.open(absolute_path.anchor, directory_flags)
+            for component in absolute_path.parts[1:-1]:
+                try:
+                    next_directory = os.open(
+                        component,
+                        directory_flags,
+                        dir_fd=directory_descriptor,
+                    )
+                except OSError as error:
+                    if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                        try:
+                            component_stat = os.stat(
+                                component,
+                                dir_fd=directory_descriptor,
+                                follow_symlinks=False,
+                            )
+                        except OSError:
+                            component_stat = None
+                        if component_stat is not None and stat.S_ISLNK(component_stat.st_mode):
+                            raise RegistryError(
+                                f"turn result artifact parent cannot be a symlink: {path}"
+                            ) from error
+                    raise
+                os.close(directory_descriptor)
+                directory_descriptor = next_directory
+            descriptor = os.open(
+                absolute_path.name,
+                flags,
+                dir_fd=directory_descriptor,
+            )
+            descriptor_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(descriptor_stat.st_mode):
+                raise RegistryError(f"turn result artifact must be a regular file: {path}")
+            result_file = os.fdopen(descriptor, "rb")
+            descriptor = -1
+            with result_file:
                 raw = result_file.read(MAX_TURN_RESULT_BYTES + 1)
         except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise RegistryError(f"turn result artifact cannot be a symlink: {path}") from error
             raise RegistryError(
                 f"turn result is unavailable at {path}: {error.strerror}"
             ) from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if directory_descriptor >= 0:
+                os.close(directory_descriptor)
         if len(raw) > MAX_TURN_RESULT_BYTES:
             raise RegistryError(f"turn result exceeds {MAX_TURN_RESULT_BYTES} bytes: {path}")
         try:
@@ -1026,9 +1103,15 @@ class Registry:
                 turns = connection.execute(
                     "SELECT status FROM run_turns WHERE run_id = ?", (run_id,)
                 ).fetchall()
-                if turns and not any(turn["status"] == "succeeded" for turn in turns):
+                herdr_binding = connection.execute(
+                    "SELECT 1 FROM herdr_bindings WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if (herdr_binding is not None or turns) and (
+                    not turns or not any(turn["status"] == "succeeded" for turn in turns)
+                ):
                     raise RegistryError(
-                        "successful run with turns requires at least one succeeded turn"
+                        "successful run with Herdr worker or turns requires at least "
+                        "one succeeded turn"
                     )
             task = connection.execute(
                 "SELECT * FROM tasks WHERE id = ?", (run["task_id"],)
@@ -1237,7 +1320,7 @@ class Registry:
                     continue
                 existing = connection.execute(
                     """
-                    SELECT id, status FROM promotions
+                    SELECT id, status, evidence_json FROM promotions
                     WHERE recurrence_key = ? AND target_layer = ?
                     """,
                     (key, target),
@@ -1272,6 +1355,16 @@ class Registry:
                 }
                 rationale = self._promotion_rationale(target, relevant_feedback, evaluations)
                 if existing is not None and existing["status"] == "rejected":
+                    existing_evidence = json.loads(existing["evidence_json"])
+                    existing_feedback_ids = set(existing_evidence.get("feedback_ids", []))
+                    existing_eval_ids = set(existing_evidence.get("evaluation_ids", []))
+                    current_feedback_ids = set(evidence["feedback_ids"])
+                    current_eval_ids = set(evidence["evaluation_ids"])
+                    if not (
+                        (current_feedback_ids - existing_feedback_ids)
+                        or (current_eval_ids - existing_eval_ids)
+                    ):
+                        continue
                     promotion_id = existing["id"]
                     connection.execute(
                         """
@@ -1315,8 +1408,7 @@ class Registry:
         return created
 
     def list_promotions(self, status: str | None = None) -> list[dict[str, Any]]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             return self._list_promotions_impl(connection, status)
 
     def _list_promotions_impl(
@@ -1370,7 +1462,7 @@ class Registry:
     def reconcile(self) -> dict[str, Any]:
         self.initialize()
         created = self.propose_promotions()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             ready = self._list_tasks_impl(connection, ["ready"])
             needs_user = self._list_tasks_impl(connection, ["waiting_user"])
             blocked = self._list_tasks_impl(connection, ["blocked"])
@@ -1437,7 +1529,7 @@ class Registry:
         start_time: float,
     ) -> dict[str, Any]:
 
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
             integrity = integrity_row[0] if integrity_row else "unknown"
 
@@ -1569,8 +1661,7 @@ class Registry:
             )
 
     def list_maintenance_runs(self, limit: int = 10) -> list[dict[str, Any]]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             rows = connection.execute(
                 """
                 SELECT id, started_at, finished_at, status, summary_json, error_message
@@ -1648,8 +1739,7 @@ class Registry:
     def _get_record(self, table: str, record_id: str) -> dict[str, Any]:
         if table not in {"evaluations", "feedback", "run_turns"}:
             raise RegistryError(f"unsupported record table: {table}")
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             record = _row(
                 connection.execute(f"SELECT * FROM {table} WHERE id = ?", (record_id,)).fetchone()
             )
@@ -1658,8 +1748,7 @@ class Registry:
         return record
 
     def _get_promotion(self, promotion_id: str) -> dict[str, Any]:
-        self.initialize()
-        with closing(self._connect()) as connection:
+        with self._read_transaction() as connection:
             promotion = _row(
                 connection.execute(
                     "SELECT * FROM promotions WHERE id = ?", (promotion_id,)
