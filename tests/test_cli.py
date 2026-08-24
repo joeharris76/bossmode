@@ -570,7 +570,12 @@ def test_cli_task_create_accepts_first_class_approved_base(tmp_path, capsys, mon
     assert captured["approved_base_sha"] == approved_base
 
 
-def test_cli_reconcile_accepted_head_forwards_evidence(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize(
+    "command", ["reconcile-accepted-head", "accepted-head-reconcile", "reconcile-head"]
+)
+def test_cli_reconcile_accepted_head_aliases_forward_repository(
+    tmp_path, capsys, monkeypatch, command
+):
     captured = {}
 
     def fake_reconcile(self, run_id, **kwargs):
@@ -586,8 +591,10 @@ def test_cli_reconcile_accepted_head_forwards_evidence(tmp_path, capsys, monkeyp
                 "--db",
                 str(tmp_path / "control.db"),
                 "run",
-                "reconcile-accepted-head",
+                command,
                 "run-worker",
+                "--repository-path",
+                str(tmp_path / "repository"),
                 "--accepted-head-sha",
                 accepted_head,
                 "--evidence",
@@ -599,9 +606,29 @@ def test_cli_reconcile_accepted_head_forwards_evidence(tmp_path, capsys, monkeyp
     assert json.loads(capsys.readouterr().out)["id"] == "run-worker"
     assert captured == {
         "run_id": "run-worker",
+        "repository_path": str(tmp_path / "repository"),
         "accepted_head_sha": accepted_head,
         "evidence": "live Git verified",
     }
+
+
+def test_cli_reconcile_accepted_head_requires_repository_path(tmp_path, capsys):
+    with pytest.raises(SystemExit) as error:
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "run",
+                "reconcile-accepted-head",
+                "run-worker",
+                "--accepted-head-sha",
+                "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d",
+                "--evidence",
+                "live Git verified",
+            ]
+        )
+    assert error.value.code == 2
+    assert "--repository-path" in capsys.readouterr().err
 
 
 def test_cli_worker_start_forwards_approval_inputs(tmp_path, capsys, monkeypatch):

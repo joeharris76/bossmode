@@ -281,20 +281,24 @@ When a task has disjoint bounded slices, use the team workflow:
 ### Recover a legacy accepted head
 
 Schema upgrades can leave a finished successful team worker with a writer row whose
-`accepted_head_sha` is NULL. Reconcile it through the public CLI path only after inspecting the
-recorded run and live Git state:
+`repository_path` and `accepted_head_sha` are both NULL. The supervisor must supply the recorded
+repository's live Git root explicitly. Reconcile it through the public CLI path only after
+inspecting the recorded run and live Git state:
 
 ```bash
 uv run bossmode run reconcile-accepted-head RUN_ID \
+  --repository-path RECORDED_REPOSITORY_ROOT \
   --accepted-head-sha LIVE_CURRENT_HEAD_SHA \
   --evidence "Recorded repository, clean linked worktree, branch, and exact current head verified"
 ```
 
-The registry validates the recorded repository, worktree, branch, live current head, successful
-team-worker identity, and exact commit existence in one write transaction. Evidence is required
-and recorded in task history. The assignment is conditional on `accepted_head_sha IS NULL`, so it
-is immutable and cannot overwrite a prior accepted head. Active runs, non-workers, wrong identities,
-unrelated repositories, moved branches or heads, ambiguous worktrees, and invalid commits are
+The registry validates the supplied live Git root/common repository, recorded linked worktree,
+branch, clean current head, successful worker identity, and exact commit existence in one write
+transaction. Evidence is required and recorded in task history. For a schema-upgraded row with
+both fields NULL, `repository_path` and `accepted_head_sha` are populated together only while both
+remain NULL. A pre-existing non-NULL repository path must match the supplied path and is never
+overwritten; a prior accepted head is also immutable. Active runs, non-workers, wrong identities,
+unrelated or non-root repositories, dirty/moved/ambiguous worktrees, and invalid commits are
 rejected.
 7. Report `status executive TASK_ID` to leadership. This view contains only
    aggregate outcomes, signals, approvals, blockers, and team progress; it
