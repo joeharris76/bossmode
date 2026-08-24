@@ -195,7 +195,7 @@ def test_concurrent_fresh_initialization_is_singleton_and_error_free(tmp_path):
         registry = Registry(database)
         with closing(registry._connect()) as connection:
             assert connection.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 1
-            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
+            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
@@ -997,15 +997,25 @@ def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         turn_columns = {row[1] for row in connection.execute("PRAGMA table_info(run_turns)")}
+        task_columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
+        evaluation_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(evaluations)")
+        }
+        writer_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(writer_identities)")
+        }
     assert {"herdr_bindings", "run_turns", "maintenance_runs"} <= tables
     assert "result_json" in turn_columns
     assert "prompt" in turn_columns
+    assert "approved_base_sha" in task_columns
+    assert "reviewed_head_sha" in evaluation_columns
+    assert {"repository_path", "accepted_head_sha"} <= writer_columns
 
 
 def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
@@ -1022,7 +1032,7 @@ def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
     assert migrated["turns"][0]["summary"] == "historical turn"
     assert migrated["turns"][0]["result"] is None
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(herdr_bindings)")}
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
@@ -1044,7 +1054,7 @@ def test_version_three_migration_preserves_turn_data(tmp_path):
         assert turn["summary"] == "preserved"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v3"
         assert turn["prompt"] == ""
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM promotions").fetchone()[0] == 1
@@ -1061,7 +1071,7 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
         turn = connection.execute("SELECT * FROM run_turns WHERE id = 'turn_v4'").fetchone()
         assert turn["prompt"] == "historical prompt"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v4"
@@ -1124,7 +1134,7 @@ def test_version_six_migration_creates_unique_team_tab_layouts(tmp_path):
             )
         ]
         version = connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-    assert version == 8
+    assert version == 9
     assert labels == ["Shared", "Shared · team_b"]
 
 
@@ -1150,7 +1160,7 @@ def test_version_seven_migration_adds_reconciliation_evidence(tmp_path):
     with closing(registry._connect()) as connection:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(resource_claims)")}
         version = connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-    assert version == 8
+    assert version == 9
     assert "reconciliation_evidence" in columns
 
 

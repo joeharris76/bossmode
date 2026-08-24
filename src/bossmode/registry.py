@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Iterable
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 RUN_TYPES = {"manager", "worker", "reviewer"}
 RESOURCE_STATUSES = {"active", "reconcile_required", "released"}
 SIGNAL_KINDS = {"decision", "blocker", "approval"}
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     team_id TEXT,
     task_kind TEXT NOT NULL DEFAULT 'task',
     scope_json TEXT NOT NULL DEFAULT '{}',
+    approved_base_sha TEXT,
     permissions_json TEXT NOT NULL DEFAULT '{}',
     next_action TEXT,
     blocked_on TEXT,
@@ -164,6 +166,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
     passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
     score REAL CHECK (score IS NULL OR (score >= 0 AND score <= 1)),
     evidence TEXT NOT NULL,
+    reviewed_head_sha TEXT,
     notes TEXT,
     created_at TEXT NOT NULL
 );
@@ -240,10 +243,12 @@ CREATE TABLE IF NOT EXISTS team_herdr_tabs (
 
 CREATE TABLE IF NOT EXISTS writer_identities (
     run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repository_path TEXT NOT NULL,
     branch_name TEXT NOT NULL UNIQUE,
     base_sha TEXT NOT NULL,
     worktree_path TEXT NOT NULL UNIQUE,
     worktree_id TEXT NOT NULL UNIQUE,
+    accepted_head_sha TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -363,6 +368,12 @@ def _writer_identity(writer: dict[str, Any] | None) -> dict[str, str]:
     }
 
 
+def _validate_sha(value: str | None, *, label: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{7,64}", value.strip()):
+        raise RegistryError(f"{label} is invalid")
+    return value.strip().lower()
+
+
 def _git_command(
     arguments: list[str], *, cwd: str | Path, expected: tuple[int, ...] = (0,)
 ) -> subprocess.CompletedProcess[str]:
@@ -411,7 +422,41 @@ def _live_worktrees(repository_path: str | Path) -> list[dict[str, str | None]]:
     return worktrees
 
 
-def _validate_writer_git(writer: dict[str, str], repository_path: str | Path | None) -> None:
+def _configured_protected_branches(repository_path: str | Path) -> set[str]:
+    configured: set[str] = set()
+    for key in (
+        "bossmode.protected-branch",
+        "bossmode.protected-branches",
+        "bossmode.protectedBranch",
+        "bossmode.protectedBranches",
+    ):
+        result = _git_command(["config", "--get-all", key], cwd=repository_path, expected=(0, 1))
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                configured.update(
+                    _canonical_branch(branch)
+                    for branch in re.split(r"[\s,]+", line.strip())
+                    if branch
+                )
+    result = _git_command(
+        ["config", "--get-regexp", r"^branch\..+\.protected$"],
+        cwd=repository_path,
+        expected=(0, 1),
+    )
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition(" ")
+            if value.strip().lower() in {"true", "yes", "on", "1"}:
+                configured.add(key.removeprefix("branch.").removesuffix(".protected"))
+    return configured
+
+
+def _validate_writer_git(
+    writer: dict[str, str],
+    repository_path: str | Path | None,
+    *,
+    approved_base_sha: str | None = None,
+) -> None:
     repository = os.path.realpath(
         os.path.abspath(str(repository_path) if repository_path is not None else os.getcwd())
     )
@@ -453,6 +498,13 @@ def _validate_writer_git(writer: dict[str, str], repository_path: str | Path | N
     )
     if ancestor.returncode != 0:
         raise RegistryError("writer base SHA is not an ancestor of the live worktree head")
+    if approved_base_sha is None:
+        raise RegistryError("writer base SHA is not approved for the task")
+    resolved_approved = _git_command(
+        ["rev-parse", "--verify", f"{approved_base_sha}^{{commit}}"], cwd=repository
+    ).stdout.strip()
+    if resolved_base != resolved_approved:
+        raise RegistryError("writer base SHA does not match the task's approved base")
     protected = {"main", "master", "develop", "trunk", "default"}
     default_branch = _git_command(
         ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
@@ -461,9 +513,23 @@ def _validate_writer_git(writer: dict[str, str], repository_path: str | Path | N
     )
     if default_branch.returncode == 0:
         protected.add(_canonical_branch(default_branch.stdout.strip().removeprefix("origin/")))
+    protected.update(_configured_protected_branches(repository))
     if live_worktree["branch"] in protected:
         raise RegistryError("writer branch must not be protected or the repository default")
     writer["base_sha"] = resolved_base
+
+
+def _validated_accepted_head(
+    writer: sqlite3.Row, accepted_head_sha: str | None, repository_path: str | Path
+) -> str:
+    head = _validate_sha(accepted_head_sha, label="accepted head SHA")
+    resolved = _git_command(
+        ["rev-parse", "--verify", f"{head}^{{commit}}"], cwd=repository_path
+    ).stdout.strip()
+    live_head = _git_command(["rev-parse", "HEAD"], cwd=writer["worktree_path"]).stdout.strip()
+    if resolved != live_head:
+        raise RegistryError("accepted head SHA does not match the live writer head")
+    return live_head
 
 
 def _tab_label(label: str | None, *, fallback: str) -> str:
@@ -511,6 +577,7 @@ class Registry:
                     5: self._migrate_v5_to_v6,
                     6: self._migrate_v6_to_v7,
                     7: self._migrate_v7_to_v8,
+                    8: self._migrate_v8_to_v9,
                 }
                 while current < SCHEMA_VERSION:
                     migration = migrations.get(current)
@@ -748,6 +815,39 @@ class Registry:
                 "ALTER TABLE resource_claims ADD COLUMN reconciliation_evidence TEXT"
             )
 
+    @staticmethod
+    def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
+        """Persist approved bases, repository bindings, and exact-head evidence."""
+        additions = (
+            ("tasks", "approved_base_sha", "ALTER TABLE tasks ADD COLUMN approved_base_sha TEXT"),
+            (
+                "evaluations",
+                "reviewed_head_sha",
+                "ALTER TABLE evaluations ADD COLUMN reviewed_head_sha TEXT",
+            ),
+            (
+                "writer_identities",
+                "repository_path",
+                "ALTER TABLE writer_identities ADD COLUMN repository_path TEXT",
+            ),
+            (
+                "writer_identities",
+                "accepted_head_sha",
+                "ALTER TABLE writer_identities ADD COLUMN accepted_head_sha TEXT",
+            ),
+        )
+        for table, column, statement in additions:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+                ).fetchone()
+                is None
+            ):
+                continue
+            columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                connection.execute(statement)
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -821,6 +921,7 @@ class Registry:
         team_id: str | None = None,
         task_kind: str = "task",
         scope: dict[str, Any] | None = None,
+        approved_base_sha: str | None = None,
     ) -> dict[str, Any]:
         if state not in CREATE_TASK_STATES:
             raise RegistryError(f"invalid initial task state: {state}")
@@ -832,10 +933,25 @@ class Registry:
             parent = None
             if parent_task_id is not None:
                 parent = connection.execute(
-                    "SELECT id, parent_task_id FROM tasks WHERE id = ?", (parent_task_id,)
+                    "SELECT id, parent_task_id, team_id, approved_base_sha FROM tasks WHERE id = ?",
+                    (parent_task_id,),
                 ).fetchone()
                 if parent is None:
                     raise RegistryError(f"parent task not found: {parent_task_id}")
+            task_scope = scope or {}
+            if approved_base_sha is None and isinstance(task_scope, dict):
+                approved_base_sha = task_scope.get("approved_base_sha")
+            if approved_base_sha is None and parent is not None:
+                approved_base_sha = parent["approved_base_sha"]
+            if approved_base_sha is None and parent is None:
+                try:
+                    approved_base_sha = _git_command(
+                        ["rev-parse", "--verify", "HEAD"], cwd=self.repository_path
+                    ).stdout.strip()
+                except RegistryError:
+                    approved_base_sha = None
+            if approved_base_sha is not None:
+                approved_base_sha = _validate_sha(approved_base_sha, label="approved base SHA")
             if team_id is not None:
                 team = connection.execute(
                     "SELECT root_task_id FROM teams WHERE id = ?", (team_id,)
@@ -844,10 +960,13 @@ class Registry:
                     raise RegistryError(f"team not found: {team_id}")
                 if parent_task_id is None:
                     raise RegistryError("team assignment requires a parent task in that team root")
+                if parent["team_id"] is not None and parent["team_id"] != team_id:
+                    raise RegistryError("team assignment crosses a team hierarchy")
                 root = parent_task_id
                 while parent is not None and parent["parent_task_id"] is not None:
                     parent = connection.execute(
-                        "SELECT id, parent_task_id FROM tasks WHERE id = ?",
+                        "SELECT id, parent_task_id, team_id, approved_base_sha "
+                        "FROM tasks WHERE id = ?",
                         (parent["parent_task_id"],),
                     ).fetchone()
                     if parent is None:
@@ -859,9 +978,9 @@ class Registry:
                 """
                 INSERT INTO tasks(
                     id, title, goal, success_criteria, state, priority,
-                    parent_task_id, team_id, task_kind, scope_json,
+                    parent_task_id, team_id, task_kind, scope_json, approved_base_sha,
                     permissions_json, next_action, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -873,7 +992,8 @@ class Registry:
                     parent_task_id,
                     team_id,
                     task_kind,
-                    _json(scope or {}),
+                    _json(task_scope),
+                    approved_base_sha,
                     _json(permissions or {}),
                     next_action,
                     timestamp,
@@ -1010,6 +1130,7 @@ class Registry:
         priority: int = 0,
         permissions: dict[str, Any] | None = None,
         state: str = "ready",
+        approved_base_sha: str | None = None,
     ) -> dict[str, Any]:
         return self.create_task(
             title=title,
@@ -1022,6 +1143,7 @@ class Registry:
             team_id=team_id,
             task_kind="child",
             scope=scope,
+            approved_base_sha=approved_base_sha,
         )
 
     def create_team(
@@ -1041,11 +1163,16 @@ class Registry:
         team_id = _id("team")
         timestamp = _now()
         with self._transaction() as connection:
-            if (
-                connection.execute("SELECT 1 FROM tasks WHERE id = ?", (root_task_id,)).fetchone()
-                is None
-            ):
+            root_task = connection.execute(
+                "SELECT parent_task_id, team_id, task_kind FROM tasks WHERE id = ?",
+                (root_task_id,),
+            ).fetchone()
+            if root_task is None:
                 raise RegistryError(f"root task not found: {root_task_id}")
+            if root_task["parent_task_id"] is not None or root_task["task_kind"] == "child":
+                raise RegistryError("team root must be a root task")
+            if root_task["team_id"] is not None:
+                raise RegistryError("team root cannot already belong to a team")
             if (
                 parent_team_id is not None
                 and (
@@ -1477,6 +1604,14 @@ class Registry:
     ) -> dict[str, Any]:
         source, value = _identity(identity, label="worker")
         writer_data = _writer_identity(writer)
+        registry_repository = os.path.realpath(os.path.abspath(str(self.repository_path)))
+        for supplied_repository in (repository_path, writer.get("repository_path")):
+            if (
+                supplied_repository is not None
+                and os.path.realpath(os.path.abspath(str(supplied_repository)))
+                != registry_repository
+            ):
+                raise RegistryError("writer repository must match the registry repository")
         run_id = _id("run")
         timestamp = _now()
         with self._transaction() as connection:
@@ -1510,9 +1645,8 @@ class Registry:
                 )
             _validate_writer_git(
                 writer_data,
-                repository_path
-                if repository_path is not None
-                else writer.get("repository_path", self.repository_path),
+                self.repository_path,
+                approved_base_sha=task["approved_base_sha"],
             )
             connection.execute(
                 "INSERT INTO runs(id, task_id, agent_role, run_type, parent_run_id, team_id, identity_source, identity_value, model, reasoning_effort, status, started_at) VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, ?, 'running', ?)",  # noqa: E501
@@ -1530,9 +1664,10 @@ class Registry:
                 ),
             )
             connection.execute(
-                "INSERT INTO writer_identities(run_id, branch_name, base_sha, worktree_path, worktree_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: E501
+                "INSERT INTO writer_identities(run_id, repository_path, branch_name, base_sha, worktree_path, worktree_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",  # noqa: E501
                 (
                     run_id,
+                    registry_repository,
                     writer_data["branch_name"],
                     writer_data["base_sha"],
                     writer_data["worktree_path"],
@@ -1577,6 +1712,14 @@ class Registry:
                 raise RegistryError("reviewer run must reference the task's worker run")
             if worker["status"] != "finished" or worker["outcome"] != "succeeded":
                 raise RegistryError("reviewer run requires a succeeded worker run")
+            accepted_head = connection.execute(
+                "SELECT accepted_head_sha FROM writer_identities WHERE run_id = ?",
+                (worker_run_id,),
+            ).fetchone()
+            if worker["team_id"] is not None and (
+                accepted_head is None or accepted_head["accepted_head_sha"] is None
+            ):
+                raise RegistryError("reviewer run requires the worker's accepted head")
             if task is None or task["state"] != "evaluating":
                 raise RegistryError("reviewer run requires an evaluating task")
             if worker["identity_value"] == value and worker["identity_source"] == source:
@@ -1613,6 +1756,7 @@ class Registry:
             ):
                 raise RegistryError("batch manager name is required")
         preflight_writers: list[dict[str, str]] = []
+        registry_repository = os.path.realpath(os.path.abspath(str(self.repository_path)))
         seen_branches: set[str] = set()
         seen_paths: set[str] = set()
         seen_ids: set[str] = set()
@@ -1630,20 +1774,26 @@ class Registry:
             writer_repository = spec.get("repository_path")
             if writer_repository is None and isinstance(spec.get("writer"), dict):
                 writer_repository = spec["writer"].get("repository_path")
-            _validate_writer_git(
-                writer_data,
-                writer_repository if writer_repository is not None else self.repository_path,
-            )
+            if (
+                writer_repository is not None
+                and os.path.realpath(os.path.abspath(str(writer_repository))) != registry_repository
+            ):
+                raise RegistryError("writer repository must match the registry repository")
             preflight_writers.append(writer_data)
         timestamp = _now()
         manager_runs: list[dict[str, Any]] = []
         worker_runs: list[dict[str, Any]] = []
         with self._transaction() as connection:
             root = connection.execute(
-                "SELECT state FROM tasks WHERE id = ?", (root_task_id,)
+                "SELECT state, parent_task_id, team_id, task_kind FROM tasks WHERE id = ?",
+                (root_task_id,),
             ).fetchone()
             if root is None:
                 raise RegistryError(f"root task not found: {root_task_id}")
+            if root["parent_task_id"] is not None or root["task_kind"] == "child":
+                raise RegistryError("batch root task must be a root task")
+            if root["team_id"] is not None:
+                raise RegistryError("batch root task cannot already belong to a team")
             if root["state"] not in {"ready", "running"}:
                 raise RegistryError("batch root task must be ready or running")
             for _index, spec in enumerate(managers):
@@ -1759,6 +1909,11 @@ class Registry:
                     raise RegistryError("batch worker task is not ready in the manager team")
                 source, value = _identity(spec.get("identity"), label="worker")
                 writer_data = preflight_writers[worker_index]
+                _validate_writer_git(
+                    writer_data,
+                    self.repository_path,
+                    approved_base_sha=task["approved_base_sha"],
+                )
                 existing_writer = connection.execute(
                     "SELECT run_id FROM writer_identities WHERE branch_name = ? OR worktree_path = ? OR worktree_id = ?",  # noqa: E501
                     (
@@ -1788,9 +1943,10 @@ class Registry:
                     ),
                 )
                 connection.execute(
-                    "INSERT INTO writer_identities(run_id, branch_name, base_sha, worktree_path, worktree_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: E501
+                    "INSERT INTO writer_identities(run_id, repository_path, branch_name, base_sha, worktree_path, worktree_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",  # noqa: E501
                     (
                         run_id,
+                        registry_repository,
                         writer_data["branch_name"],
                         writer_data["base_sha"],
                         writer_data["worktree_path"],
@@ -2304,6 +2460,120 @@ class Registry:
             "value": binding["session_value"],
         }
 
+    @staticmethod
+    def _team_finalization_error(
+        connection: sqlite3.Connection, manager: sqlite3.Row
+    ) -> str | None:
+        team_id = manager["team_id"]
+        active_child = connection.execute(
+            "SELECT id, run_type FROM runs WHERE team_id = ? AND id <> ? "
+            "AND status = 'running' LIMIT 1",
+            (team_id, manager["id"]),
+        ).fetchone()
+        if active_child is not None:
+            return f"manager cannot finish while {active_child['run_type']} runs are active"
+        unreleased_claim = connection.execute(
+            "SELECT id, status FROM resource_claims WHERE run_id IN "
+            "(SELECT id FROM runs WHERE team_id = ?) AND status <> 'released' LIMIT 1",
+            (team_id,),
+        ).fetchone()
+        if unreleased_claim is not None:
+            return "manager cannot finish while resource claims are unreleased"
+        workers = connection.execute(
+            "SELECT r.*, w.accepted_head_sha FROM runs r "
+            "LEFT JOIN writer_identities w ON w.run_id = r.id "
+            "WHERE r.team_id = ? AND r.run_type = 'worker' ORDER BY r.started_at, r.id",
+            (team_id,),
+        ).fetchall()
+        team_tasks = connection.execute(
+            "SELECT state FROM tasks WHERE team_id = ?", (team_id,)
+        ).fetchall()
+        if not workers:
+            return "manager cannot finish without worker runs"
+        if any(
+            worker["status"] != "finished" or worker["outcome"] != "succeeded" for worker in workers
+        ):
+            return "manager cannot finish until every worker succeeds"
+        if any(task["state"] not in {"succeeded", "archived"} for task in team_tasks):
+            return "manager cannot finish until every child task is accepted"
+        for worker in workers:
+            evaluation = connection.execute(
+                "SELECT passed, reviewed_head_sha FROM evaluations "
+                "WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+                (worker["id"],),
+            ).fetchone()
+            if worker["accepted_head_sha"] is None:
+                return "manager cannot finish without an accepted worker head"
+            if evaluation is None or not evaluation["passed"]:
+                return "manager cannot finish until every worker evaluation passes"
+            if evaluation["reviewed_head_sha"] != worker["accepted_head_sha"]:
+                return "manager cannot finish until every worker has an exact-head review"
+
+        root_id = manager["task_id"]
+        managers = connection.execute(
+            "SELECT id, status, outcome FROM runs WHERE task_id = ? AND run_type = 'manager'",
+            (root_id,),
+        ).fetchall()
+        other_running = any(
+            row["id"] != manager["id"] and row["status"] == "running" for row in managers
+        )
+        if other_running:
+            return None
+        if len(managers) < 2:
+            return "parallel acceptance requires at least two managers"
+        if any(
+            row["id"] != manager["id"]
+            and (row["status"] != "finished" or row["outcome"] != "succeeded")
+            for row in managers
+        ):
+            return "manager cannot finish until every manager succeeds"
+        all_workers = connection.execute(
+            "SELECT r.*, w.accepted_head_sha FROM runs r "
+            "LEFT JOIN writer_identities w ON w.run_id = r.id "
+            "WHERE r.team_id IN (SELECT id FROM teams WHERE root_task_id = ?) "
+            "AND r.run_type = 'worker' ORDER BY r.started_at, r.id",
+            (root_id,),
+        ).fetchall()
+        if len(all_workers) < 3:
+            return "parallel acceptance requires at least three workers"
+        for worker in all_workers:
+            evaluation = connection.execute(
+                "SELECT passed, reviewed_head_sha FROM evaluations "
+                "WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+                (worker["id"],),
+            ).fetchone()
+            if (
+                worker["status"] != "finished"
+                or worker["outcome"] != "succeeded"
+                or worker["accepted_head_sha"] is None
+                or evaluation is None
+                or not evaluation["passed"]
+                or evaluation["reviewed_head_sha"] != worker["accepted_head_sha"]
+            ):
+                return "parallel acceptance requires exact-head review for every worker"
+        intervals = []
+        for worker in all_workers:
+            if worker["finished_at"] is None:
+                continue
+            intervals.append(
+                (
+                    datetime.fromisoformat(worker["started_at"]),
+                    datetime.fromisoformat(worker["finished_at"]),
+                    worker["parent_run_id"],
+                )
+            )
+        overlapping = False
+        for group in combinations(intervals, 3):
+            if (
+                max(item[0] for item in group) < min(item[1] for item in group)
+                and len({item[2] for item in group}) >= 2
+            ):
+                overlapping = True
+                break
+        if not overlapping:
+            return "parallel acceptance requires three overlapping workers under two managers"
+        return ""
+
     def finish_run(
         self,
         run_id: str,
@@ -2315,6 +2585,7 @@ class Registry:
         duration_seconds: float | None = None,
         retries: int = 0,
         blocked_on: str | None = None,
+        accepted_head_sha: str | None = None,
     ) -> dict[str, Any]:
         if outcome not in TERMINAL_RUN_OUTCOMES:
             raise RegistryError(f"invalid run outcome: {outcome}")
@@ -2356,13 +2627,31 @@ class Registry:
                 state = None if task is None else task["state"]
                 expected = "evaluating" if run_type == "reviewer" else "running"
                 raise RegistryError(f"{run_type} run task must be {expected}; found {state}")
+            writer = connection.execute(
+                "SELECT * FROM writer_identities WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            stored_head = None
+            if run_type == "worker" and run["team_id"] is not None and outcome == "succeeded":
+                if writer is None:
+                    raise RegistryError("successful team worker requires a writer identity")
+                stored_head = _validated_accepted_head(
+                    writer, accepted_head_sha, self.repository_path
+                )
+            elif accepted_head_sha is not None:
+                if writer is None:
+                    raise RegistryError("accepted head requires a writer identity")
+                stored_head = _validated_accepted_head(
+                    writer, accepted_head_sha, self.repository_path
+                )
             if run_type == "manager" and outcome == "succeeded":
-                open_children = connection.execute(
-                    "SELECT 1 FROM runs WHERE parent_run_id = ? AND status = 'running' LIMIT 1",
-                    (run_id,),
-                ).fetchone()
-                if open_children is not None:
-                    raise RegistryError("manager cannot finish while worker runs are active")
+                finalization_error = self._team_finalization_error(connection, run)
+                if finalization_error:
+                    raise RegistryError(finalization_error)
+            if stored_head is not None:
+                connection.execute(
+                    "UPDATE writer_identities SET accepted_head_sha = ? WHERE run_id = ?",
+                    (stored_head, run_id),
+                )
             timestamp = _now()
             connection.execute(
                 """
@@ -2391,7 +2680,14 @@ class Registry:
                 (timestamp, run_id),
             )
             task_outcome = "evaluating" if outcome == "succeeded" else outcome
-            if run_type == "reviewer":
+            if run_type == "manager" and outcome == "succeeded":
+                other_manager = connection.execute(
+                    "SELECT 1 FROM runs WHERE task_id = ? AND run_type = 'manager' "
+                    "AND id <> ? AND status = 'running' LIMIT 1",
+                    (run["task_id"], run_id),
+                ).fetchone()
+                task_outcome = "running" if other_manager is not None else "succeeded"
+            if run_type == "reviewer" or (run_type == "manager" and task_outcome == "running"):
                 changed = 1
             else:
                 changed = connection.execute(
@@ -2433,6 +2729,7 @@ class Registry:
         evaluator_run_id: str | None = None,
         passed: bool,
         evidence: str,
+        reviewed_head_sha: str | None = None,
         score: float | None = None,
         notes: str | None = None,
     ) -> dict[str, Any]:
@@ -2480,6 +2777,9 @@ class Registry:
                 )
             if run["agent_role"] == evaluator:
                 raise RegistryError("evaluation must be independent from the run agent role")
+            worker_writer = connection.execute(
+                "SELECT accepted_head_sha FROM writer_identities WHERE run_id = ?", (run_id,)
+            ).fetchone()
             if run["team_id"] is not None and evaluator_run_id is None:
                 raise RegistryError("team evaluation requires an evaluator_run_id")
             evaluator_run = None
@@ -2506,13 +2806,25 @@ class Registry:
                     raise RegistryError("evaluator run must be independent from the worker run")
                 if evaluator != evaluator_run["identity_value"]:
                     raise RegistryError("evaluator identity does not match evaluator run")
+            if run["team_id"] is not None:
+                if worker_writer is None or worker_writer["accepted_head_sha"] is None:
+                    raise RegistryError("team evaluation requires an accepted worker head")
+                if reviewed_head_sha is None:
+                    raise RegistryError("team evaluation requires an exact reviewed head")
+                reviewed_head_sha = _validate_sha(reviewed_head_sha, label="reviewed head SHA")
+                resolved_reviewed = _git_command(
+                    ["rev-parse", "--verify", f"{reviewed_head_sha}^{{commit}}"],
+                    cwd=self.repository_path,
+                ).stdout.strip()
+                if resolved_reviewed != worker_writer["accepted_head_sha"]:
+                    raise RegistryError("reviewed head SHA does not match the accepted worker head")
             timestamp = _now()
             connection.execute(
                 """
                 INSERT INTO evaluations(
                     id, task_id, run_id, evaluator_run_id, evaluator, passed,
-                    score, evidence, notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    score, evidence, reviewed_head_sha, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     evaluation_id,
@@ -2523,6 +2835,7 @@ class Registry:
                     int(passed),
                     score,
                     evidence,
+                    reviewed_head_sha,
                     notes,
                     timestamp,
                 ),
