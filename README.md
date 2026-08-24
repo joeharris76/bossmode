@@ -17,15 +17,28 @@ efficiency, and enforces critical rules in deterministic code.
 > Bossmode is a control plane, not a background agent or provider router. Your supervisor agent
 > performs the work and uses the Bossmode CLI for durable bookkeeping.
 
-## Start with a prompt
+## Install and start with a prompt
 
-This MVP currently runs from source. In this checkout, prepare the environment once:
+Install the v0.1.0 wheel as an isolated command-line tool, then install its version-matched
+Bossmode skill in your project:
 
 ```bash
-uv sync
+uv tool install ./bossmode-0.1.0-py3-none-any.whl
+cd /path/to/your-project
+bossmode init
 ```
 
-Then ask an agent that can see this repository's `AGENTS.md` and `bossmode` skill:
+`bossmode init` creates `.agents/skills/bossmode/SKILL.md`. Running it again is safe when the file
+is identical. It refuses to overwrite a different file or install through a symlinked skill
+directory.
+
+Then ask an agent that discovers project skills:
+
+```text
+Use the Bossmode skill for this project. Turn my request into one bounded task with explicit success criteria and permission limits, record it before delegation, and require independent evidence before marking it complete: [describe the outcome you want]
+```
+
+For example:
 
 ```text
 Use Bossmode to implement rate limiting for the auth endpoints.
