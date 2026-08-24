@@ -34,7 +34,7 @@ the following claims:
 
 - owner: `joeharris76`
 - repository: `bossmode`
-- workflow: `.github/workflows/publish.yml`
+- workflow: `publish.yml`
 - environment: `pypi`
 
 PyPI's public project endpoint currently returns HTTP 404 for `bossmode`. That
