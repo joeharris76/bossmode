@@ -1270,6 +1270,142 @@ def test_parallel_manager_finish_is_fail_closed_until_all_gates_pass(registry, t
     assert registry.get_task(root["id"])["state"] == "running"
 
 
+def test_archived_failed_worker_is_ignored_but_non_archived_failure_blocks(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=3)
+    archived_failed = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "archived-failed-worker"},
+        writer=_writer(registry, "archived/failed", "archived-failed", "archived-failed"),
+    )
+    registry.finish_run(archived_failed["id"], outcome="failed", summary="superseded attempt")
+    registry.transition_task(
+        children[0]["id"],
+        "archived",
+        actor="audit",
+        reason="superseded attempt retired",
+    )
+    _complete_worker(registry, children[2], managers[0], 301)
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+
+    live_failed = registry.start_worker_run(
+        children[1]["id"],
+        manager_run_id=managers[1]["id"],
+        identity={"source": "native", "value": "live-failed-worker"},
+        writer=_writer(registry, "active/failed", "active-failed", "active-failed"),
+    )
+    registry.finish_run(live_failed["id"], outcome="failed", summary="current failure")
+    with pytest.raises(RegistryError, match="every worker succeeds"):
+        registry.finish_run(managers[1]["id"], outcome="succeeded", summary="must reject")
+
+
+def test_archived_worker_does_not_count_toward_parallel_minimum(registry, tmp_path):
+    root, _teams, children, managers = _setup(registry, tmp_path, count=3)
+    archived = registry.start_worker_run(
+        children[2]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "archived-worker"},
+        writer=_writer(registry, "archived/worker", "archived-worker", "archived-worker"),
+    )
+    registry.finish_run(
+        archived["id"],
+        outcome="succeeded",
+        summary="superseded success",
+        accepted_head_sha=_head(archived["writer_identity"]),
+    )
+    registry.transition_task(
+        children[2]["id"],
+        "archived",
+        actor="audit",
+        reason="superseded success retired",
+    )
+    _complete_worker(registry, children[0], managers[0], 302)
+    _complete_worker(registry, children[1], managers[1], 303)
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    with pytest.raises(RegistryError, match="at least three workers"):
+        registry.finish_run(managers[1]["id"], outcome="succeeded", summary="must reject")
+    assert registry.get_task(root["id"])["state"] == "running"
+
+
+def test_archived_worker_does_not_count_toward_parallel_overlap(registry, tmp_path):
+    root, _teams, children, managers = _setup(registry, tmp_path, count=4)
+    workers = [
+        registry.start_worker_run(
+            child["id"],
+            manager_run_id=managers[number % 2]["id"],
+            identity={"source": "native", "value": f"overlap-worker-{number}"},
+            writer=_writer(
+                registry,
+                f"archived-overlap/{number}",
+                f"archived-overlap-{number}",
+                f"archived-overlap-{number}",
+            ),
+        )
+        for number, child in enumerate(children)
+    ]
+    for worker in workers:
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="worker complete",
+            accepted_head_sha=_head(worker["writer_identity"]),
+        )
+    registry.transition_task(
+        children[0]["id"],
+        "archived",
+        actor="audit",
+        reason="historical overlap attempt retired",
+    )
+    for number in (1, 2, 3):
+        reviewer = registry.start_reviewer_run(
+            children[number]["id"],
+            worker_run_id=workers[number]["id"],
+            identity={"source": "native", "value": f"overlap-reviewer-{number}"},
+        )
+        accepted_head = _head(workers[number]["writer_identity"])
+        registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+        registry.add_evaluation(
+            children[number]["id"],
+            run_id=workers[number]["id"],
+            evaluator=f"overlap-reviewer-{number}",
+            evaluator_run_id=reviewer["id"],
+            passed=True,
+            evidence="exact head reviewed",
+            reviewed_head_sha=accepted_head,
+        )
+    with registry._transaction() as connection:
+        intervals = (
+            (workers[0]["id"], "2026-01-01T00:00:00+00:00", "2026-01-01T00:10:00+00:00"),
+            (workers[1]["id"], "2026-01-01T00:00:00+00:00", "2026-01-01T00:10:00+00:00"),
+            (workers[2]["id"], "2026-01-01T00:02:00+00:00", "2026-01-01T00:03:00+00:00"),
+            (workers[3]["id"], "2026-01-01T00:04:00+00:00", "2026-01-01T00:05:00+00:00"),
+        )
+        for run_id, started_at, finished_at in intervals:
+            connection.execute(
+                "UPDATE runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                (started_at, finished_at, run_id),
+            )
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    with pytest.raises(RegistryError, match="three overlapping workers"):
+        registry.finish_run(managers[1]["id"], outcome="succeeded", summary="must reject")
+    assert registry.get_task(root["id"])["state"] == "running"
+
+
+def test_archived_task_does_not_retire_an_active_worker(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "archived-active-worker"},
+        writer=_writer(registry, "archived/active", "archived-active", "archived-active"),
+    )
+    with registry._transaction() as connection:
+        connection.execute("UPDATE tasks SET state = 'archived' WHERE id = ?", (children[0]["id"],))
+    with pytest.raises(RegistryError, match="active"):
+        registry.finish_run(managers[0]["id"], outcome="succeeded", summary="must reject")
+    assert registry.get_run(worker["id"])["status"] == "running"
+
+
 def test_manager_finish_rejects_active_and_unaccepted_children(registry, tmp_path):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker = registry.start_worker_run(
