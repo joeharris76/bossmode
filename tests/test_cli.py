@@ -491,7 +491,7 @@ def test_cli_schedule_subcommands(tmp_path, capsys, monkeypatch):
     assert "platform" in status
 
 
-def test_cli_run_finish_records_exact_accepted_head(tmp_path, capsys):
+def test_cli_run_finish_rejects_accepted_head_without_writer(tmp_path, capsys):
     database = tmp_path / "control.db"
     assert (
         main(
@@ -531,10 +531,9 @@ def test_cli_run_finish_records_exact_accepted_head(tmp_path, capsys):
                 accepted_head,
             ]
         )
-        == 0
+        == 2
     )
-    finished = json.loads(capsys.readouterr().out)
-    assert {"kind": "accepted-head", "sha": accepted_head} in finished["artifacts"]
+    assert "writer identity" in json.loads(capsys.readouterr().err)["error"]
 
 
 def test_cli_task_create_accepts_first_class_approved_base(tmp_path, capsys, monkeypatch):

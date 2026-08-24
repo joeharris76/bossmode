@@ -595,6 +595,7 @@ def _run(args: argparse.Namespace) -> Any:
             outcome=args.outcome,
             summary=args.summary,
             artifacts=_run_artifacts(args.artifacts_json, args.accepted_head_sha),
+            accepted_head_sha=args.accepted_head_sha,
             tokens=args.tokens,
             duration_seconds=args.duration_seconds,
             retries=args.retries,

@@ -209,6 +209,42 @@ def test_reconcile_accepted_head_repairs_a_legacy_team_worker(registry, tmp_path
     assert "live current head verified" in event["evidence"]
 
 
+def test_cli_run_finish_records_exact_accepted_head_for_team_worker(
+    registry, tmp_path, capsys, monkeypatch
+):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "cli-finish-worker"},
+        writer=_writer(registry, "cli/finish", "cli-finish", "cli-finish"),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    monkeypatch.chdir(registry.repository_path)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(registry.path),
+                "run",
+                "finish",
+                worker["id"],
+                "--outcome",
+                "succeeded",
+                "--summary",
+                "CLI finished team worker",
+                "--accepted-head-sha",
+                accepted_head,
+            ]
+        )
+        == 0
+    )
+    finished = json.loads(capsys.readouterr().out)
+    assert finished["writer_identity"]["accepted_head_sha"] == accepted_head
+    assert registry.get_run(worker["id"])["writer_identity"]["accepted_head_sha"] == accepted_head
+
+
 def test_reconcile_accepted_head_rejects_active_and_wrong_identity(registry, tmp_path):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker = registry.start_worker_run(
