@@ -20,27 +20,58 @@ efficiency, and enforces critical rules in deterministic code.
 ## Parallel manager teams
 
 For work that can be split safely, create a root task, one team per bounded
-scope, and child tasks for each slice. Start managers, then use an atomic batch
-dispatch so branch, base SHA, worktree, and resource conflicts are rejected
-before workers are created:
+scope, and child tasks for each slice. Validate the hierarchy before persisting
+any team, child, run, writer, or claim row. Start managers, then use an atomic
+batch dispatch so branch, base SHA, worktree, and resource conflicts are
+rejected before workers are created:
 
 ```text
 team -> manager run -> child task -> fenced worker run -> independent reviewer run
 ```
 
-File and non-file resources share one canonical claim registry. Leases that
-expire become `reconcile_required`; Bossmode never auto-steals them. Use
-`bossmode status executive TASK_ID` for the redacted management view. It
-contains outcomes, decisions, blockers, approvals, and team progress, not
-prompts or transcripts. See [ADR 0004](docs/adr/0004-parallel-manager-teams.md)
-for the design and migration boundary.
+The parallel safety contract is fail-closed:
 
-Give every team one unique named Herdr tab. Create and reconcile that tab before
-the first agent, then keep the manager/control pane at the top and stack every
-worker/reviewer pane below it with horizontal dividers. Create each pane with
-`herdr pane split TEAM_ANCHOR_PANE_ID --direction down` before starting the
-agent. Bossmode rejects team bindings observed in another workspace or tab; the
-legacy singleton `run start` path remains compatible without team-tab metadata.
+- Every claim has an owner run, a unique fence token, a lease, and live
+  reconciliation evidence. Expiry becomes `reconcile_required`; it is not
+  reusable until the observed owner is reconciled and the owner presents the
+  matching fence token for explicit release. Bossmode never auto-steals a
+  claim.
+- Before `run worker-start` or `dispatch batch` can create a worker, admit the
+  live Git writer: reject protected branches (`main`, `master`, and `develop`),
+  the primary checkout, dirty worktrees, duplicate branch/path/worktree
+  identities, and a base SHA that is not a valid commit in the repository.
+  Record the dedicated branch, base SHA, worktree path, and worktree ID in the
+  writer reservation.
+- A team worker reaches acceptance only through its own successful run and a
+  separate, finished, successful reviewer run linked by worker-run ID. A
+  reviewer string without that link is supported only for legacy singleton
+  `run start` compatibility.
+- Finalize a team deterministically: all workers and reviewers are terminal,
+  every claim is released, each accepted worker is reviewed at its exact Git
+  head, and only then may the manager finish and the root task be accepted.
+
+Use `bossmode status executive TASK_ID` for the redacted management view. It
+contains outcomes, decisions, blockers, approvals, and team progress, never
+prompts, transcripts, turn artifacts, or low-level worker activity. See [ADR
+0004](docs/adr/0004-parallel-manager-teams.md) for the full contract.
+
+Give every team exactly one unique named Herdr tab. Create and reconcile that
+tab before the first agent. Keep the manager/control pane at the top and stack
+every worker/reviewer pane below it with horizontal dividers. For every agent,
+split an explicit anchor in that tab before starting the agent:
+
+```bash
+herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
+herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
+```
+
+The team layout mechanically forbids the `--current` focused-pane option and
+rightward splits. A missing, foreign, or ambiguous tab or anchor is a blocker; never
+repair it by moving or closing panes. The legacy singleton `run start` path
+remains compatible without team-tab metadata.
+
+Acceptance evidence must include at least three overlapping workers under two
+managers and an exact-head review for each accepted worker.
 
 ## Install and start with a prompt
 

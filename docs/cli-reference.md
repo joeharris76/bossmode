@@ -60,10 +60,11 @@ must follow the registry state machine.
 | `running`, `archived` | no explicit `task transition` target |
 
 Lifecycle commands own the remaining changes: `run start` moves `ready` to `running`; `run finish`
-moves `running` to `evaluating`, `waiting_user`, `blocked`, or `failed`; and evaluation moves
-`evaluating` to `succeeded` or `failed`.
+moves `running` to `evaluating`, `waiting_user`, `blocked`, or `failed`; team
+`dispatch batch` reserves multiple managers and workers atomically; and
+evaluation moves `evaluating` to `succeeded` or `failed`.
 
-## Manager teams and Herdr tabs
+## Parallel manager teams and Herdr tabs
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
@@ -75,12 +76,34 @@ moves `running` to `evaluating`, `waiting_user`, `blocked`, or `failed`; and eva
 | `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
 | `run reviewer-start TASK_ID` | `--worker-run-id`, `--identity-json` | `--model`, `--reasoning-effort` |
 
+| Command | Required arguments | Optional arguments |
+|---|---|---|
+| `dispatch batch ROOT_TASK_ID` | `--managers-json`, `--workers-json` | — |
+| `resource reconcile` | — | `--now ISO_TIMESTAMP` |
+| `status executive TASK_ID` | `TASK_ID` | — |
+| `signal TASK_ID KIND` | `TASK_ID`, `KIND {decision,blocker,approval}`, `--content` | `--source-run-id`, `--team-id`, `--redacted` |
+
 Create the Herdr tab with its durable label before the first agent, reconcile it
 with `team bind-tab`, and check the observed workspace and tab IDs. The command
 is idempotent for the same live location and rejects a different location or
 observed label. Team manager, worker, and reviewer bindings then require that
 same Herdr session, workspace, and tab. The legacy `run start` singleton path
 does not require a team tab.
+
+`run worker-start` and `dispatch batch` are admission points, not worker
+creation shortcuts. Before invoking either command, the supervisor must
+reconcile live Git evidence: the branch is dedicated and not protected
+(`main`, `master`, `develop`, or repository-configured protected branches); the
+worktree is a clean linked worktree and not the primary checkout; the branch,
+canonical real path, and worktree ID are not duplicates; and the base SHA is an
+existing commit in this repository. A failed check rejects the worker before
+its run, writer, or claims are persisted. `--writer-json` records the branch,
+base SHA, worktree path, and worktree ID; it does not bypass live admission.
+
+Hierarchy validation is also before persistence: root, parent, team, manager,
+child, and reviewer links must all belong to the same valid hierarchy. Batch
+dispatch is atomic and leaves no partial team or worker records after a failed
+check.
 
 For every team agent invocation, create a pane inside that tab before starting
 the agent. Keep the manager/control pane at the top and stack worker/reviewer
@@ -91,8 +114,10 @@ herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
 herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
 ```
 
-The anchor must already be in the reconciled team tab. Do not use the focused
-tab, `--current`, or an unrelated pane as the parent.
+The anchor must already be in the reconciled team tab. The `--current`
+focused-pane option and rightward splits are mechanically forbidden; an unrelated pane or tab is
+not a valid parent. If the tab or anchor is missing or ambiguous, stop and
+reconcile it rather than moving or closing panes.
 
 ## Runs
 
@@ -135,12 +160,15 @@ file supplies the summary; an optional `--summary` must match that file exactly.
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `evaluate TASK_ID` | `TASK_ID`, `--run-id`, `--evaluator`, one of `--passed` or `--failed`, `--evidence` | `--score`, `--notes` |
+| `evaluate TASK_ID` | `TASK_ID`, `--run-id`, `--evaluator`, one of `--passed` or `--failed`, `--evidence` | `--evaluator-run-id`, `--score`, `--notes` |
 | `feedback TASK_ID` | `TASK_ID`, `--kind`, `--key`, `--content` | `--run-id` |
 
 Feedback kinds are `preference`, `correction`, `failure`, and `observation`. The key should be a
-stable, narrowly scoped recurrence key. The evaluator must be independent of the worker. If
-provided, `--score` must be between `0` and `1`, inclusive.
+stable, narrowly scoped recurrence key. Every team worker evaluation requires a
+finished successful reviewer run linked with `--evaluator-run-id`; a reviewer
+string alone is bounded compatibility only for a legacy singleton `run start`.
+The evaluator must be independent of the worker. If provided, `--score` must be
+between `0` and `1`, inclusive.
 
 ## Promotions
 
@@ -175,11 +203,22 @@ user authorization.
 ## Operational rules
 
 - Run the naked `bossmode` command before dispatch and after material state changes.
-- Dispatch only the single task returned in `dispatch`.
+- For singleton work, dispatch only the task returned in `dispatch`; use
+  `dispatch batch` for disjoint team children.
 - Reserve an external run before creating its Herdr worker.
+- Admit live Git writer state before creating a team worker; reject protected,
+  primary, dirty, duplicate, or invalid-base worktrees.
+- Claims are owned and fenced. Expiry is `reconcile_required`, not availability;
+  release requires live owner evidence and the matching owner/fence pair, and
+  claims are never auto-stolen.
 - Treat live native-runtime or Herdr identity as authoritative; stored IDs are indexes.
 - Preserve `blocked`, `failed`, `unknown`, and `waiting_user` as distinct outcomes.
 - Require an independent evaluation before a task reaches `succeeded`.
+- Finalize a team only after all workers and reviewers are terminal, claims are
+  released, and every accepted worker has an exact-head review. The manager
+  cannot finish while child workers are active.
+- Acceptance evidence must show at least three overlapping workers under two
+  managers and exact-head review.
 - Treat promotion acceptance and verified artifact application as separate actions.
 
 See the [supervisor protocol](agent-workflow.md) for the full command sequence, result schema, live

@@ -50,10 +50,12 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 
 1. The supervisor runs `uv run bossmode` to inspect session state and ready tasks.
 2. It records user requests with `bossmode task create`, including success criteria and permission limits.
-3. It selects only the task returned in `dispatch` and starts one run. Dispatch remains empty while
-   another task is running or awaiting evaluation.
-4. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
-   path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) below.
+3. For singleton work it selects only the task returned in `dispatch` and
+   starts one run. For team work it uses the atomic `dispatch batch` path for
+   disjoint child tasks; singleton dispatch remains serialized while another
+   task is running or awaiting evaluation.
+4. It delegates through either the native subagent path (e.g. AGY, Codex), the
+   legacy singleton Herdr path, or the parallel team path below.
 5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
 6. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
    records that verdict with `evaluate`.
@@ -82,10 +84,11 @@ correlation gap in Herdr's interactive-agent transport.
 
 ## Herdr worker path
 
-### 1. Reserve before creating runtime state
+### 1. Reserve and admit before creating runtime state
 
-Start the registry run first. For a manager team, create and reconcile its
-named tab before creating any agent pane:
+Validate the task hierarchy and live Git writer before creating any worker. A
+manager run must exist before a worker run; a team tab must be created and
+reconciled before any team pane:
 
 ```bash
 uv run bossmode run manager-start TEAM_ID \
@@ -123,6 +126,17 @@ first `tab create` is the only tab creation.
 
 Do not start a second worker if either command returns an uncertain result. Reconcile the
 deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
+
+Before `run worker-start` or `dispatch batch`, collect live Git evidence for
+the proposed writer. It must use a dedicated non-protected branch, a separate
+linked worktree rather than the primary checkout, a clean worktree including
+untracked files, a unique branch/path/worktree ID, and a base SHA that resolves
+to an existing commit in this repository. Reject protected branches
+(`main`, `master`, `develop`, and repository-configured protected branches),
+primary or dirty worktrees, duplicate writer identities, and invalid base SHAs.
+Only after these checks pass may the supervisor persist the writer reservation
+and create the worker. The current CLI carries the reservation in
+`--writer-json`; it does not provide a flag to bypass live admission.
 
 ### 2. Bind only observed identity
 
@@ -232,25 +246,39 @@ identity against live native runtime (AGY, Codex) or Herdr state before continui
 When a task has disjoint bounded slices, use the team workflow:
 
 1. Record the root task and child tasks with `parent_task_id`, `team_id`, and a
-   declarative scope. Give each team one unique `--tab-label`.
+   declarative scope. Validate every hierarchy relation before persistence.
+   Give each team one unique `--tab-label`.
 2. Create and reconcile one named Herdr tab per team. Reserve one manager
    identity per team. Start manager runs before dispatching
    workers.
-3. Dispatch workers through `dispatch batch` or `run worker-start`. Every
-   writer must provide a dedicated branch, base SHA, worktree path, and
-   worktree ID. Every file or non-file resource must be claimed atomically.
+3. Dispatch workers through `dispatch batch` or `run worker-start` only after
+   live Git admission. Every writer must provide a dedicated branch, base SHA,
+   worktree path, and worktree ID. Every file or non-file resource must be
+   claimed atomically before the worker is created.
    Before each manager, worker, or reviewer start, create its pane with
    `herdr pane split TEAM_ANCHOR_PANE_ID --direction down` and start it in
    that pane, keeping all worker/reviewer panes below the manager/control pane.
-4. If a claim lease expires, stop and reconcile it. The claim is not available
-   for reuse until it is explicitly released; never auto-steal it.
-5. Start a reviewer run linked to the worker run. Record its evaluator run ID
-   with the evaluation; a worker cannot evaluate itself.
-6. Report `status executive TASK_ID` to leadership. This view contains only
-   aggregate outcomes, signals, approvals, blockers, and team progress.
+4. If a claim lease expires, stop and reconcile it with live owner evidence.
+   The claim is not available for reuse until the owner and exact fence token
+   explicitly release it; never auto-steal it. Normal successful run
+   finalization releases still-active claims.
+5. Start a reviewer run linked to the worker run. It must finish successfully,
+   and its evaluator run ID must be supplied to the evaluation. The reviewer
+   checks the worker's exact Git head SHA; a worker cannot evaluate itself.
+6. Finalize deterministically: settle turns, finish workers, release claims,
+   finish linked reviewers, record exact-head evaluations, then finish the
+   manager. The manager cannot finish while child workers are active.
+7. Report `status executive TASK_ID` to leadership. This view contains only
+   aggregate outcomes, signals, approvals, blockers, and team progress; it
+   excludes prompts, transcripts, turn artifacts, and low-level worker activity.
 
-Use the legacy `run start` path for singleton tasks. It remains compatible and
-does not require team or writer metadata.
+Use the legacy `run start` path for singleton tasks. It remains bounded
+compatible and does not require team or writer metadata. A string evaluator is
+accepted only on that legacy singleton path; team workers require the linked
+successful reviewer run.
+
+The parallel acceptance gate requires at least three overlapping workers under
+two managers and an exact-head review for every accepted worker.
 
 - Missing, duplicate, foreign, or ambiguous live identity: stop and report `blocked`; do not adopt
   or close anything.
