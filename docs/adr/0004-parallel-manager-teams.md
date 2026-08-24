@@ -1,4 +1,4 @@
-# ADR 0003: Durable Parallel Manager Teams
+# ADR 0004: Durable Parallel Manager Teams
 
 **Status:** Accepted  
 **Date:** 2026-08-24  

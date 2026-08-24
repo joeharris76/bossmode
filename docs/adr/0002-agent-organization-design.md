@@ -1,6 +1,6 @@
 # ADR 0002: Agent Organizational Topologies and Conway's Law
 
-**Status:** Superseded by ADR 0003
+**Status:** Superseded by ADR 0004
 
 ---
 
@@ -70,7 +70,7 @@ Single workers implement vertical feature slices within bounded contexts, while 
 ## 4. Decision & Future Guidance
 
 1. The original single-flight MVP and its deferral are superseded by
-   [ADR 0003](0003-parallel-manager-teams.md), which implements the bounded
+   [ADR 0004](0004-parallel-manager-teams.md), which implements the bounded
    hybrid team architecture with durable claims and identities.
 2. **Post-MVP Scaling Model:** When multi-agent concurrency is implemented, adopt **Option C (Hybrid Matrix)**:
    * **Declarative Bounded Contexts:** Define team boundaries via path permissions in task definitions rather than through interactive manager chat trees.

@@ -32,7 +32,7 @@ File and non-file resources share one canonical claim registry. Leases that
 expire become `reconcile_required`; Bossmode never auto-steals them. Use
 `bossmode status executive TASK_ID` for the redacted management view. It
 contains outcomes, decisions, blockers, approvals, and team progress, not
-prompts or transcripts. See [ADR 0003](docs/adr/0003-parallel-manager-teams.md)
+prompts or transcripts. See [ADR 0004](docs/adr/0004-parallel-manager-teams.md)
 for the design and migration boundary.
 
 ## Install and start with a prompt
