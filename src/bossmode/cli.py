@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -122,6 +123,23 @@ def _parser() -> argparse.ArgumentParser:
     worker_start.add_argument("--identity-json", required=True)
     worker_start.add_argument("--writer-json", required=True)
     worker_start.add_argument("--repository-path")
+    worker_start.add_argument(
+        "--approved-repository-path",
+        "--approved-repository",
+        dest="approved_repository_path",
+        help="Supervisor-approved repository path for live writer admission",
+    )
+    worker_start.add_argument(
+        "--approved-base-sha",
+        "--base-sha",
+        dest="approved_base_sha",
+        help="Supervisor-approved base SHA; must match the writer declaration",
+    )
+    worker_start.add_argument(
+        "--protected-branches-json",
+        default="[]",
+        help="JSON array of repository-configured protected branches",
+    )
     worker_start.add_argument("--resources-json", default="[]")
     worker_start.add_argument("--lease-seconds", type=int, default=300)
     worker_start.add_argument("--model")
@@ -150,6 +168,12 @@ def _parser() -> argparse.ArgumentParser:
     run_finish.add_argument("--duration-seconds", type=float)
     run_finish.add_argument("--retries", type=int, default=0)
     run_finish.add_argument("--blocked-on")
+    run_finish.add_argument(
+        "--accepted-head-sha",
+        "--head-sha",
+        dest="accepted_head_sha",
+        help="Exact Git head SHA accepted for this run",
+    )
 
     herdr = subparsers.add_parser("herdr", help="Bind a run to an official Herdr session")
     herdr_commands = herdr.add_subparsers(dest="herdr_command", required=True)
@@ -242,6 +266,23 @@ def _parser() -> argparse.ArgumentParser:
     batch.add_argument("root_task_id")
     batch.add_argument("--managers-json", required=True)
     batch.add_argument("--workers-json", required=True)
+    batch.add_argument(
+        "--approved-repository-path",
+        "--repository-path",
+        dest="approved_repository_path",
+        help="Supervisor-approved repository path for all batch writers",
+    )
+    batch.add_argument(
+        "--approved-base-sha",
+        "--base-sha",
+        dest="approved_base_sha",
+        help="Supervisor-approved base SHA for all batch writers",
+    )
+    batch.add_argument(
+        "--protected-branches-json",
+        default="[]",
+        help="JSON array of repository-configured protected branches",
+    )
 
     resource = subparsers.add_parser("resource", help="Reconcile fenced resource leases")
     resource_commands = resource.add_subparsers(dest="resource_command", required=True)
@@ -324,6 +365,100 @@ def _load_json(value: str, expected_type: type[Any]) -> Any:
     return parsed
 
 
+def _validate_sha(value: str, *, label: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{7,64}", value):
+        raise RegistryError(f"{label} must be a hexadecimal Git SHA")
+    return value
+
+
+def _protected_branches(value: str) -> set[str]:
+    branches = _load_json(value, list)
+    normalized: set[str] = set()
+    for branch in branches:
+        if not isinstance(branch, str) or not branch.strip():
+            raise RegistryError("protected branches must be non-empty strings")
+        normalized.add(branch.strip().removeprefix("refs/heads/").removeprefix("origin/"))
+    return normalized
+
+
+def _approved_writer(
+    writer: dict[str, Any],
+    *,
+    repository_path: str | None,
+    approved_repository_path: str | None,
+    approved_base_sha: str | None,
+    protected_branches: set[str],
+) -> tuple[dict[str, Any], str | None]:
+    if not isinstance(writer, dict):
+        raise RegistryError("expected JSON object")
+    result = dict(writer)
+    effective_repository = approved_repository_path or repository_path
+    if (
+        approved_repository_path is not None
+        and repository_path is not None
+        and os.path.realpath(os.path.abspath(approved_repository_path))
+        != os.path.realpath(os.path.abspath(repository_path))
+    ):
+        raise RegistryError("repository path does not match the approved repository path")
+    if approved_base_sha is not None:
+        approved_base_sha = _validate_sha(approved_base_sha, label="approved base SHA")
+        declared_base_sha = result.get("base_sha")
+        if declared_base_sha != approved_base_sha:
+            raise RegistryError("writer base SHA does not match the approved base SHA")
+        result["approved_base_sha"] = approved_base_sha
+    branch = result.get("branch_name")
+    if protected_branches and isinstance(branch, str):
+        normalized_branch = branch.strip().removeprefix("refs/heads/")
+        if normalized_branch in protected_branches:
+            raise RegistryError("writer branch is in the approved protected-branch set")
+    if protected_branches:
+        result["protected_branches"] = sorted(protected_branches)
+    if effective_repository is not None:
+        result["repository_path"] = effective_repository
+    if approved_repository_path is not None:
+        result["approved_repository_path"] = approved_repository_path
+    return result, effective_repository
+
+
+def _approved_batch_workers(
+    workers: list[Any],
+    *,
+    approved_repository_path: str | None,
+    approved_base_sha: str | None,
+    protected_branches: set[str],
+) -> list[dict[str, Any]]:
+    approved: list[dict[str, Any]] = []
+    for worker in workers:
+        if not isinstance(worker, dict):
+            raise RegistryError("batch workers must be JSON objects")
+        spec = dict(worker)
+        writer, repository_path = _approved_writer(
+            spec.get("writer"),
+            repository_path=spec.get("repository_path"),
+            approved_repository_path=approved_repository_path,
+            approved_base_sha=approved_base_sha,
+            protected_branches=protected_branches,
+        )
+        spec["writer"] = writer
+        if repository_path is not None:
+            spec["repository_path"] = repository_path
+        approved.append(spec)
+    return approved
+
+
+def _run_artifacts(artifacts_json: str, accepted_head_sha: str | None) -> list[Any]:
+    artifacts = _load_json(artifacts_json, list)
+    if accepted_head_sha is None:
+        return artifacts
+    accepted_head_sha = _validate_sha(accepted_head_sha, label="accepted head SHA")
+    if any(
+        isinstance(artifact, dict) and artifact.get("kind") == "accepted-head"
+        for artifact in artifacts
+    ):
+        raise RegistryError("accepted head SHA is declared more than once")
+    return [*artifacts, {"kind": "accepted-head", "sha": accepted_head_sha}]
+
+
 def _run(args: argparse.Namespace) -> Any:
     if args.command == "init":
         return install_project_skill(args.project_dir)
@@ -402,12 +537,19 @@ def _run(args: argparse.Namespace) -> Any:
                 reasoning_effort=args.reasoning_effort,
             )
         if args.run_command == "worker-start":
+            writer, repository_path = _approved_writer(
+                _load_json(args.writer_json, dict),
+                repository_path=args.repository_path,
+                approved_repository_path=args.approved_repository_path,
+                approved_base_sha=args.approved_base_sha,
+                protected_branches=_protected_branches(args.protected_branches_json),
+            )
             return registry.start_worker_run(
                 args.task_id,
                 manager_run_id=args.manager_run_id,
                 identity=_load_json(args.identity_json, dict),
-                writer=_load_json(args.writer_json, dict),
-                repository_path=args.repository_path,
+                writer=writer,
+                repository_path=repository_path,
                 resources=_load_json(args.resources_json, list),
                 lease_seconds=args.lease_seconds,
                 model=args.model,
@@ -427,7 +569,7 @@ def _run(args: argparse.Namespace) -> Any:
             args.run_id,
             outcome=args.outcome,
             summary=args.summary,
-            artifacts=_load_json(args.artifacts_json, list),
+            artifacts=_run_artifacts(args.artifacts_json, args.accepted_head_sha),
             tokens=args.tokens,
             duration_seconds=args.duration_seconds,
             retries=args.retries,
@@ -477,10 +619,16 @@ def _run(args: argparse.Namespace) -> Any:
         )
 
     if args.command == "dispatch":
+        workers = _approved_batch_workers(
+            _load_json(args.workers_json, list),
+            approved_repository_path=args.approved_repository_path,
+            approved_base_sha=args.approved_base_sha,
+            protected_branches=_protected_branches(args.protected_branches_json),
+        )
         return registry.dispatch_batch(
             args.root_task_id,
             managers=_load_json(args.managers_json, list),
-            workers=_load_json(args.workers_json, list),
+            workers=workers,
         )
 
     if args.command == "resource":
