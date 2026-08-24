@@ -2551,7 +2551,9 @@ class Registry:
         workers = connection.execute(
             "SELECT r.*, w.accepted_head_sha FROM runs r "
             "LEFT JOIN writer_identities w ON w.run_id = r.id "
-            "WHERE r.team_id = ? AND r.run_type = 'worker' ORDER BY r.started_at, r.id",
+            "JOIN tasks t ON t.id = r.task_id "
+            "WHERE r.team_id = ? AND r.run_type = 'worker' "
+            "AND t.state <> 'archived' ORDER BY r.started_at, r.id",
             (team_id,),
         ).fetchall()
         team_tasks = connection.execute(
@@ -2599,8 +2601,10 @@ class Registry:
         all_workers = connection.execute(
             "SELECT r.*, w.accepted_head_sha FROM runs r "
             "LEFT JOIN writer_identities w ON w.run_id = r.id "
+            "JOIN tasks t ON t.id = r.task_id "
             "WHERE r.team_id IN (SELECT id FROM teams WHERE root_task_id = ?) "
-            "AND r.run_type = 'worker' ORDER BY r.started_at, r.id",
+            "AND r.run_type = 'worker' AND t.state <> 'archived' "
+            "ORDER BY r.started_at, r.id",
             (root_id,),
         ).fetchall()
         if len(all_workers) < 3:
