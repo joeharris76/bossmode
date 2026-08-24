@@ -130,17 +130,19 @@ tab to work around an ambiguity.
 | `run start TASK_ID` | `TASK_ID`, `--role` | `--thread-id`, `--model`, `--reasoning-effort` |
 | `run show RUN_ID` | `RUN_ID` | — |
 | `run finish RUN_ID` | `RUN_ID`, `--outcome`, `--summary` | `--artifacts-json ARRAY`, `--tokens`, `--duration-seconds`, `--retries`, `--blocked-on`, `--accepted-head-sha SHA` |
-| `run reconcile-accepted-head RUN_ID` | `RUN_ID`, `--accepted-head-sha SHA`, `--evidence TEXT` | aliases: `accepted-head-reconcile`, `reconcile-head` |
+| `run reconcile-accepted-head RUN_ID` | `RUN_ID`, `--repository-path PATH`, `--accepted-head-sha SHA`, `--evidence TEXT` | aliases: `accepted-head-reconcile`, `reconcile-head` |
 
 Run outcomes are `waiting_user`, `blocked`, `succeeded`, and `failed`. A successful run moves its
 task to `evaluating`, not final success.
 
-For a legacy finished team worker whose schema-upgraded writer row has no accepted head, use
-`run reconcile-accepted-head`. The command requires a finished successful team worker, the recorded
-repository/worktree/branch to match live Git, the supplied SHA to be the existing live current
-commit, and non-empty reconciliation evidence. It records that evidence in the worker task's
-event history and performs a one-time NULL-to-SHA assignment; an existing accepted head cannot be
-overwritten.
+For a legacy finished team worker whose schema-upgraded writer row has NULL `repository_path` and
+`accepted_head_sha`, use `run reconcile-accepted-head` with the supervisor-supplied live Git root.
+The command requires a finished successful team worker, the supplied repository root/common
+repository to contain the recorded linked worktree, the worktree/branch/current head to match live
+Git, the supplied SHA to be the existing live commit, and non-empty evidence. It records that
+evidence in the worker task's event history and atomically performs a one-time NULL-to-path-and-SHA
+assignment. An existing non-NULL repository path must match and is never overwritten; an existing
+accepted head cannot be overwritten. All three command aliases forward the repository path.
 
 ## Herdr bindings
 

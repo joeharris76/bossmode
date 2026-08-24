@@ -186,6 +186,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Reconcile a missing accepted head for a finished team worker",
     )
     run_reconcile_head.add_argument("run_id")
+    run_reconcile_head.add_argument("--repository-path", required=True)
     run_reconcile_head.add_argument("--accepted-head-sha", "--head-sha", required=True)
     run_reconcile_head.add_argument("--evidence", required=True)
 
@@ -587,6 +588,7 @@ def _run(args: argparse.Namespace) -> Any:
         }:
             return registry.reconcile_accepted_head(
                 args.run_id,
+                repository_path=args.repository_path,
                 accepted_head_sha=args.accepted_head_sha,
                 evidence=args.evidence,
             )

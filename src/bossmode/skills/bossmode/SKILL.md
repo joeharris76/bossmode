@@ -159,12 +159,16 @@ a child lacks a passing evaluation. Acceptance requires at least three
 overlapping workers under two managers and exact-head review of each accepted
 worker.
 
-For a legacy finished successful team worker whose schema-upgraded writer row lacks `accepted_head_sha`,
-use `bossmode run reconcile-accepted-head RUN_ID --accepted-head-sha SHA --evidence TEXT`. The
-registry revalidates the recorded repository, linked worktree, branch, live current head, worker
-identity, and exact commit existence before a conditional one-time assignment. Evidence is required
-and recorded in task history; active, wrong-identity, unrelated-repository, moved-branch/head,
-ambiguous-worktree, invalid-commit, and overwrite cases fail closed.
+For a legacy finished successful team worker whose schema-upgraded writer row has NULL
+`repository_path` and `accepted_head_sha`, use
+`bossmode run reconcile-accepted-head RUN_ID --repository-path PATH --accepted-head-sha SHA --evidence TEXT`.
+The supervisor must supply the live Git root/common repository. The registry revalidates that
+repository, the recorded linked worktree, branch, clean current head, worker identity, and exact
+commit existence before an atomic conditional one-time assignment of both fields. A pre-existing
+non-NULL repository path must match the supplied path and is never overwritten; an accepted head
+cannot be overwritten. Evidence is required and recorded in task history; active, wrong-identity,
+unrelated or non-root repositories, dirty/moved/ambiguous worktrees, invalid commits, and races
+fail closed. The `accepted-head-reconcile` and `reconcile-head` aliases forward the repository path.
 
 Claims are owned by a run and fenced by a unique token. Lease expiry changes
 `active` to `reconcile_required`; live owner evidence is required before the

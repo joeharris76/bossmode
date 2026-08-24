@@ -187,7 +187,8 @@ def _legacy_worker(registry: Registry, tmp_path: Path) -> tuple[dict, dict, dict
     )
     with registry._transaction() as connection:
         connection.execute(
-            "UPDATE writer_identities SET accepted_head_sha = NULL WHERE run_id = ?",
+            "UPDATE writer_identities SET repository_path = NULL, accepted_head_sha = NULL "
+            "WHERE run_id = ?",
             (worker["id"],),
         )
     return root, teams[0], children[0], registry.get_run(worker["id"])
@@ -199,14 +200,108 @@ def test_reconcile_accepted_head_repairs_a_legacy_team_worker(registry, tmp_path
 
     reconciled = registry.reconcile_accepted_head(
         worker["id"],
+        repository_path=registry.repository_path,
         accepted_head_sha=accepted_head,
         evidence="Repository, worktree, branch, and live current head verified",
     )
 
     assert reconciled["writer_identity"]["accepted_head_sha"] == accepted_head
+    assert reconciled["writer_identity"]["repository_path"] == str(registry.repository_path)
     event = registry.get_task(child["id"])["events"][-1]
     assert event["event_type"] == "accepted_head_reconciled"
     assert "live current head verified" in event["evidence"]
+
+
+def test_reconcile_accepted_head_requires_explicit_repository_path(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    with pytest.raises(RegistryError, match="requires a repository path"):
+        registry.reconcile_accepted_head(
+            worker["id"],
+            repository_path=None,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
+        )
+
+
+def test_reconcile_accepted_head_rejects_unrelated_supplied_repository(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    unrelated = _create_repository(tmp_path / "unrelated-supplied")
+    with pytest.raises(RegistryError, match="worktree is missing or ambiguous"):
+        registry.reconcile_accepted_head(
+            worker["id"],
+            repository_path=unrelated,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
+        )
+
+
+def test_reconcile_accepted_head_rejects_non_root_supplied_repository(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    nested = registry.repository_path / "nested"
+    nested.mkdir()
+    with pytest.raises(RegistryError, match="live Git root"):
+        registry.reconcile_accepted_head(
+            worker["id"],
+            repository_path=nested,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
+        )
+
+
+def test_reconcile_accepted_head_preserves_matching_non_null_repository(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    recorded = str(registry.repository_path)
+    supplied = registry.repository_path / ".." / registry.repository_path.name
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE writer_identities SET repository_path = ? WHERE run_id = ?",
+            (recorded, worker["id"]),
+        )
+    reconciled = registry.reconcile_accepted_head(
+        worker["id"],
+        repository_path=supplied,
+        accepted_head_sha=_head(worker["writer_identity"]),
+        evidence="matching recorded repository verified",
+    )
+    assert reconciled["writer_identity"]["repository_path"] == recorded
+
+
+def test_reconcile_accepted_head_rejects_dirty_worktree(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    worktree = Path(worker["writer_identity"]["worktree_path"])
+    (worktree / "dirty").write_text("uncommitted\n")
+    with pytest.raises(RegistryError, match="worktree is dirty"):
+        registry.reconcile_accepted_head(
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
+        )
+
+
+def test_reconcile_accepted_head_race_has_one_winner(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    barrier = Barrier(2)
+
+    def attempt(index: int):
+        barrier.wait()
+        try:
+            return registry.reconcile_accepted_head(
+                worker["id"],
+                repository_path=registry.repository_path,
+                accepted_head_sha=_head(worker["writer_identity"]),
+                evidence=f"race attempt {index}",
+            )
+        except RegistryError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, (0, 1)))
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert sum(isinstance(result, RegistryError) for result in results) == 1
+    persisted = registry.get_run(worker["id"])["writer_identity"]
+    assert persisted["repository_path"] == str(registry.repository_path)
+    assert persisted["accepted_head_sha"] == _head(worker["writer_identity"])
 
 
 def test_cli_run_finish_records_exact_accepted_head_for_team_worker(
@@ -255,11 +350,17 @@ def test_reconcile_accepted_head_rejects_active_and_wrong_identity(registry, tmp
     )
     with pytest.raises(RegistryError, match="finished successful worker"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=_head(worker["writer_identity"]), evidence="checked"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
         )
     with pytest.raises(RegistryError, match="team worker run"):
         registry.reconcile_accepted_head(
-            managers[0]["id"], accepted_head_sha=_repo_head(registry), evidence="checked"
+            managers[0]["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=_repo_head(registry),
+            evidence="checked",
         )
 
 
@@ -271,9 +372,12 @@ def test_reconcile_accepted_head_rejects_unrelated_repository(registry, tmp_path
             "UPDATE writer_identities SET repository_path = ? WHERE run_id = ?",
             (str(unrelated), worker["id"]),
         )
-    with pytest.raises(RegistryError, match="recorded writer repository"):
+    with pytest.raises(RegistryError, match="recorded writer repository does not match"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=_head(worker["writer_identity"]), evidence="checked"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
         )
 
 
@@ -284,7 +388,10 @@ def test_reconcile_accepted_head_rejects_missing_or_inconsistent_identity(regist
         connection.execute("UPDATE runs SET identity_source = NULL WHERE id = ?", (worker["id"],))
     with pytest.raises(RegistryError, match="identity is missing"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=accepted_head, evidence="checked"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=accepted_head,
+            evidence="checked",
         )
     with registry._transaction() as connection:
         connection.execute(
@@ -294,7 +401,10 @@ def test_reconcile_accepted_head_rejects_missing_or_inconsistent_identity(regist
         )
     with pytest.raises(RegistryError, match="identity is inconsistent"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=accepted_head, evidence="checked"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=accepted_head,
+            evidence="checked",
         )
 
 
@@ -320,7 +430,10 @@ def test_reconcile_accepted_head_rejects_moved_branch_or_head(registry, tmp_path
         )
     with pytest.raises(RegistryError, match="branch|current head"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=accepted_head, evidence="checked"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=accepted_head,
+            evidence="checked",
         )
 
 
@@ -333,7 +446,10 @@ def test_reconcile_accepted_head_rejects_ambiguous_live_worktree(registry, tmp_p
     monkeypatch.setattr(registry_module, "_live_worktrees", ambiguous)
     with pytest.raises(RegistryError, match="ambiguous"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=_head(worker["writer_identity"]), evidence="checked"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=_head(worker["writer_identity"]),
+            evidence="checked",
         )
 
 
@@ -342,14 +458,23 @@ def test_reconcile_accepted_head_is_one_time_and_requires_evidence(registry, tmp
     accepted_head = _head(worker["writer_identity"])
     with pytest.raises(RegistryError, match="evidence"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha=accepted_head, evidence=" "
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha=accepted_head,
+            evidence=" ",
         )
     registry.reconcile_accepted_head(
-        worker["id"], accepted_head_sha=accepted_head, evidence="first reconciliation"
+        worker["id"],
+        repository_path=registry.repository_path,
+        accepted_head_sha=accepted_head,
+        evidence="first reconciliation",
     )
     with pytest.raises(RegistryError, match="cannot be overwritten"):
         registry.reconcile_accepted_head(
-            worker["id"], accepted_head_sha="0" * 40, evidence="second reconciliation"
+            worker["id"],
+            repository_path=registry.repository_path,
+            accepted_head_sha="0" * 40,
+            evidence="second reconciliation",
         )
 
 
