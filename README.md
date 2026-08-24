@@ -34,31 +34,35 @@ The parallel safety contract is fail-closed:
 - Every claim has an owner run, a unique fence token, a lease, and live
   reconciliation evidence. Expiry becomes `reconcile_required`; it is not
   reusable until the observed owner is reconciled and the owner presents the
-  matching fence token for explicit release. Bossmode never auto-steals a
-  claim.
+  matching fence token and evidence to `resource release`. Bossmode never
+  auto-steals a claim.
 - Before `run worker-start` or `dispatch batch` can create a worker, admit the
-  live Git writer: reject protected branches (`main`, `master`, and `develop`),
-  the primary checkout, dirty worktrees, duplicate branch/path/worktree
-  identities, and a base SHA that is not a valid commit in the repository.
-  Record the dedicated branch, base SHA, worktree path, and worktree ID in the
-  writer reservation.
+  live Git writer against the registry's repository: reject protected branches
+  (`main`, `master`, and `develop`), the primary checkout, dirty worktrees,
+  duplicate branch/path/worktree identities, an unrelated repository, and a
+  base SHA that is not a valid commit in that repository. Record the dedicated
+  branch, base SHA, worktree path, and worktree ID in the writer reservation;
+  caller-supplied repository paths cannot redirect admission elsewhere.
 - A team worker reaches acceptance only through its own successful run and a
   separate, finished, successful reviewer run linked by worker-run ID. A
+  failed, unfinished, or unlinked reviewer is not evaluation evidence. A
   reviewer string without that link is supported only for legacy singleton
   `run start` compatibility.
 - Finalize a team deterministically: all workers and reviewers are terminal,
-  every claim is released, each accepted worker is reviewed at its exact Git
-  head, and only then may the manager finish and the root task be accepted.
+  every claim is released, every child task has a recorded passing evaluation,
+  each accepted worker is reviewed at its exact Git head, and only then may the
+  manager finish and the root task be accepted.
 
 Use `bossmode status executive TASK_ID` for the redacted management view. It
 contains outcomes, decisions, blockers, approvals, and team progress, never
 prompts, transcripts, turn artifacts, or low-level worker activity. See [ADR
 0004](docs/adr/0004-parallel-manager-teams.md) for the full contract.
 
-Give every team exactly one unique named Herdr tab. Create and reconcile that
-tab before the first agent. Keep the manager/control pane at the top and stack
-every worker/reviewer pane below it with horizontal dividers. For every agent,
-split an explicit anchor in that tab before starting the agent:
+Give every team exactly one unique named Herdr tab, with no fallback or second
+team tab. Create and reconcile that tab before the first agent. Keep the
+manager/control pane at the top and stack every worker/reviewer pane below it
+vertically with horizontal dividers. For every agent, split an explicit anchor
+in that tab before starting the agent:
 
 ```bash
 herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus

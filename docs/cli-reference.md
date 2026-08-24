@@ -37,7 +37,7 @@ skill directory.
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `task create` (`task add`) | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action` |
+| `task create` (`task add`) | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action`, `--parent-task-id`, `--team-id`, `--task-kind`, `--scope-json OBJECT` |
 | `task list` | — | repeatable `--state STATE` |
 | `task show TASK_ID` | `TASK_ID` | — |
 | `task transition TASK_ID STATE` | `TASK_ID`, `STATE`, `--actor`, `--reason` | `--evidence`, `--next-action`, `--blocked-on` |
@@ -73,13 +73,14 @@ evaluation moves `evaluating` to `succeeded` or `failed`.
 | `team list` | — | `--root-task-id` |
 | `team show TEAM_ID` | `TEAM_ID` | — |
 | `run manager-start TEAM_ID` | `--identity-json` | `--model`, `--reasoning-effort` |
-| `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
+| `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--repository-path PATH`, `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
 | `run reviewer-start TASK_ID` | `--worker-run-id`, `--identity-json` | `--model`, `--reasoning-effort` |
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
 | `dispatch batch ROOT_TASK_ID` | `--managers-json`, `--workers-json` | — |
 | `resource reconcile` | — | `--now ISO_TIMESTAMP` |
+| `resource release CLAIM_ID` | `--run-id`, `--fence-token`, `--evidence` | — |
 | `status executive TASK_ID` | `TASK_ID` | — |
 | `signal TASK_ID KIND` | `TASK_ID`, `KIND {decision,blocker,approval}`, `--content` | `--source-run-id`, `--team-id`, `--redacted` |
 
@@ -92,22 +93,24 @@ does not require a team tab.
 
 `run worker-start` and `dispatch batch` are admission points, not worker
 creation shortcuts. Before invoking either command, the supervisor must
-reconcile live Git evidence: the branch is dedicated and not protected
+reconcile live Git evidence against the registry's repository: the branch is dedicated and not protected
 (`main`, `master`, `develop`, or repository-configured protected branches); the
 worktree is a clean linked worktree and not the primary checkout; the branch,
 canonical real path, and worktree ID are not duplicates; and the base SHA is an
-existing commit in this repository. A failed check rejects the worker before
-its run, writer, or claims are persisted. `--writer-json` records the branch,
-base SHA, worktree path, and worktree ID; it does not bypass live admission.
+existing commit in that same repository. A supplied `--repository-path` cannot
+redirect admission to an unrelated repository. A failed check rejects the
+worker before its run, writer, or claims are persisted. `--writer-json` records
+the branch, base SHA, worktree path, and worktree ID; it does not bypass live
+admission.
 
-Hierarchy validation is also before persistence: root, parent, team, manager,
-child, and reviewer links must all belong to the same valid hierarchy. Batch
-dispatch is atomic and leaves no partial team or worker records after a failed
-check.
+Hierarchy validation is also before persistence: root, every parent in the
+ancestor chain, team, manager, child, and reviewer links must all belong to the
+same valid hierarchy. Batch dispatch is atomic and leaves no partial team or
+worker records after a failed check.
 
-For every team agent invocation, create a pane inside that tab before starting
-the agent. Keep the manager/control pane at the top and stack worker/reviewer
-panes below it with horizontal dividers:
+For every team agent invocation, create a pane inside that one named tab before
+starting the agent. Keep the manager/control pane at the top and stack
+worker/reviewer panes vertically below it with horizontal dividers:
 
 ```bash
 herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
@@ -117,7 +120,8 @@ herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
 The anchor must already be in the reconciled team tab. The `--current`
 focused-pane option and rightward splits are mechanically forbidden; an unrelated pane or tab is
 not a valid parent. If the tab or anchor is missing or ambiguous, stop and
-reconcile it rather than moving or closing panes.
+reconcile it rather than moving or closing panes. Do not create a second team
+tab to work around an ambiguity.
 
 ## Runs
 
@@ -206,17 +210,19 @@ user authorization.
 - For singleton work, dispatch only the task returned in `dispatch`; use
   `dispatch batch` for disjoint team children.
 - Reserve an external run before creating its Herdr worker.
-- Admit live Git writer state before creating a team worker; reject protected,
-  primary, dirty, duplicate, or invalid-base worktrees.
+- Admit live Git writer state from the registry's repository before creating a
+  team worker; reject unrelated, protected, primary, dirty, duplicate, or
+  invalid-base worktrees.
 - Claims are owned and fenced. Expiry is `reconcile_required`, not availability;
-  release requires live owner evidence and the matching owner/fence pair, and
-  claims are never auto-stolen.
+  `resource release` requires live owner evidence and the matching owner/fence
+  pair, and claims are never auto-stolen.
 - Treat live native-runtime or Herdr identity as authoritative; stored IDs are indexes.
 - Preserve `blocked`, `failed`, `unknown`, and `waiting_user` as distinct outcomes.
 - Require an independent evaluation before a task reaches `succeeded`.
 - Finalize a team only after all workers and reviewers are terminal, claims are
-  released, and every accepted worker has an exact-head review. The manager
-  cannot finish while child workers are active.
+  released, every child has a passing exact-head evaluation, and every linked
+  reviewer finished successfully. The manager cannot finish while child
+  workers or reviewers are active or while any child lacks that evaluation.
 - Acceptance evidence must show at least three overlapping workers under two
   managers and exact-head review.
 - Treat promotion acceptance and verified artifact application as separate actions.

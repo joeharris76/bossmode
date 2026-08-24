@@ -22,9 +22,11 @@ boundary.
 - A root task may have child tasks. Teams belong to a root task, carry a
   manager identity and scope, and own child task slices.
 - Before persistence, validate every parent task, root task, parent team, team
-  assignment, manager run, worker child, and reviewer link. A child from one
-  team cannot be attached to another team's manager. A failed hierarchy check
-  rolls back the transaction; no partial team, run, writer, or claim survives.
+  assignment, manager run, worker child, and reviewer link. Walk the complete
+  ancestor chain: a child, its parent task, its team, and its manager must stay
+  in one root/team hierarchy; a child from one team cannot be attached to
+  another team's manager. A failed hierarchy check rolls back the transaction;
+  no partial team, run, writer, or claim survives.
 - Runs have a durable type (`manager`, `worker`, or `reviewer`), parent run,
   team, and identity. A reviewer run is linked to the worker run it evaluates.
 - `dispatch batch` creates manager and worker reservations atomically. A
@@ -40,10 +42,11 @@ boundary.
   activity. Lease expiry changes `active` to `reconcile_required`; that state
   is still held and cannot be reused.
 - Release requires explicit live evidence that the owner no longer writes,
-  the owning run ID, and the exact fence token. A mismatched owner or fence is
-  rejected. Reconciliation never auto-steals a claim. Normal successful run
-  finalization releases its still-active claims; an expired claim still needs
-  explicit reconciliation and release.
+  the owning run ID, and the exact fence token, through
+  `bossmode resource release`. A mismatched owner or fence is rejected.
+  Reconciliation never auto-steals a claim. Normal successful run finalization
+  releases its still-active claims; an expired claim still needs explicit
+  reconciliation and release.
 
 ### Live Git writer admission
 
@@ -57,15 +60,17 @@ these are true:
   worktree is clean, including untracked files;
 - no active writer owns the branch, canonical real worktree path, or worktree
   ID; and
-- the base SHA names an existing commit in the same repository and is the
-  approved base for the task.
+- the worktree and base SHA belong to the registry's repository, the base SHA
+  names an existing commit there, and it is the approved base for the task.
 
 The reservation records the branch, base SHA, worktree path, and worktree ID.
-Invalid base SHAs, primary or dirty worktrees, protected branches, and
-duplicate writer identities are admission failures, not reasons to create a
-worker and repair state later. The registry's `--writer-json` carries these
-four fields; the live Git evidence is a prerequisite supplied by the
-supervisor, not a substitute for the reservation.
+Invalid base SHAs, unrelated repositories, primary or dirty worktrees,
+protected branches, and duplicate writer identities are admission failures,
+not reasons to create a worker and repair state later. A caller-supplied
+repository path cannot redirect admission away from the registry repository.
+The registry's `--writer-json` carries these four fields; the live Git evidence
+is a prerequisite supplied by the supervisor, not a substitute for the
+reservation.
 
 ### Review and deterministic finalization
 
@@ -75,28 +80,30 @@ supervisor, not a substitute for the reservation.
   string alone is not valid for team workers; it remains bounded compatibility
   only for a legacy singleton `run start` evaluation.
 - A worker's accepted result names its exact Git head SHA. The linked reviewer
-  checks that exact head and records evidence tied to that SHA; reviewing a
-  moving branch name or a different head is not acceptance.
+  must finish successfully, check that exact head, and record evidence tied to
+  that SHA; a failed or unfinished reviewer, a moving branch name, or a
+  different head is not acceptance.
 - Finalize a team in a deterministic order: settle every worker turn, finish
   every worker, release or reconcile every claim, finish every linked reviewer,
-  record each exact-head evaluation, then finish the manager. The manager
-  cannot finish while child workers are active. The root task is accepted only
-  after all required worker evaluations pass; no transcript or timing race may
-  decide completion.
+  record each exact-head evaluation for every child, then finish the manager.
+  The manager cannot finish while child workers or reviewers are active, while
+  claims remain held, or while a child lacks a passing evaluation. The root
+  task is accepted only after all required worker evaluations pass; no
+  transcript or timing race may decide completion.
 - Acceptance evidence must demonstrate at least three overlapping workers under
   two managers and exact-head review for each accepted worker. This is the
   minimum concurrency and soundness test for the parallel contract.
 
 ### Herdr topology and executive reporting
 
-- Each team owns one unique expected Herdr tab label and one reconciled live
+- Each team owns exactly one unique expected Herdr tab label and one reconciled live
   workspace/tab location. Create and reconcile that tab before the first
   agent. Manager, worker, and reviewer bindings are admitted only when their
   observed Herdr session, workspace, and tab match that location. Singleton
   runs retain the legacy binding contract.
 - The manager/control pane stays at the top; every worker and reviewer is stacked
-  below it with horizontal dividers. Every invocation splits an
-  explicit anchor already in that team tab with a down split using
+  vertically below it with horizontal dividers. Every invocation splits an
+  explicit anchor already in that one team tab with a down split using
   `herdr pane split TEAM_ANCHOR_PANE_ID --direction down` before starting the
   agent. The `--current` focused-pane option and rightward splits are
   mechanically forbidden. Missing, foreign, or ambiguous tabs and anchors block admission;

@@ -119,10 +119,11 @@ herdr agent start worker_1234abcd --kind claude --pane NEW_PANE_ID
 
 `TEAM_ANCHOR_PANE_ID` must have the same `workspace_id` and `tab_id` recorded by
 `team bind-tab`. Keep the manager/control pane at the top and stack every
-worker/reviewer pane below it with horizontal dividers. Never use `--current`,
-the focused tab, or a pane from another tab as the parent. Repeat the
-down-split-before-start sequence for manager, worker, and reviewer agents; the
-first `tab create` is the only tab creation.
+worker/reviewer pane vertically below it with horizontal dividers. Never use
+`--current`, a rightward split, the focused tab, or a pane from another tab as
+the parent. Repeat the down-split-before-start sequence for manager, worker,
+and reviewer agents; the first `tab create` is the only tab creation for that
+team.
 
 Do not start a second worker if either command returns an uncertain result. Reconcile the
 deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
@@ -246,28 +247,34 @@ identity against live native runtime (AGY, Codex) or Herdr state before continui
 When a task has disjoint bounded slices, use the team workflow:
 
 1. Record the root task and child tasks with `parent_task_id`, `team_id`, and a
-   declarative scope. Validate every hierarchy relation before persistence.
+   declarative scope. Validate every hierarchy relation and the complete
+   ancestor chain before persistence.
    Give each team one unique `--tab-label`.
 2. Create and reconcile one named Herdr tab per team. Reserve one manager
    identity per team. Start manager runs before dispatching
    workers.
 3. Dispatch workers through `dispatch batch` or `run worker-start` only after
-   live Git admission. Every writer must provide a dedicated branch, base SHA,
-   worktree path, and worktree ID. Every file or non-file resource must be
-   claimed atomically before the worker is created.
+   live Git admission against the registry's repository. Every writer must
+   provide a dedicated branch, base SHA, worktree path, and worktree ID from
+   that same repository; a caller-supplied repository path cannot redirect the
+   check. Every file or non-file resource must be claimed atomically before the
+   worker is created.
    Before each manager, worker, or reviewer start, create its pane with
    `herdr pane split TEAM_ANCHOR_PANE_ID --direction down` and start it in
    that pane, keeping all worker/reviewer panes below the manager/control pane.
 4. If a claim lease expires, stop and reconcile it with live owner evidence.
-   The claim is not available for reuse until the owner and exact fence token
-   explicitly release it; never auto-steal it. Normal successful run
-   finalization releases still-active claims.
-5. Start a reviewer run linked to the worker run. It must finish successfully,
-   and its evaluator run ID must be supplied to the evaluation. The reviewer
-   checks the worker's exact Git head SHA; a worker cannot evaluate itself.
+   The claim is not available for reuse until `resource release` receives the
+   owner, exact fence token, and evidence; never auto-steal it. Normal
+   successful run finalization releases still-active claims.
+5. Start a reviewer run linked to the worker run. It must finish successfully;
+   a failed or unfinished reviewer is not evidence, and its evaluator run ID
+   must be supplied to the evaluation. The reviewer checks the worker's exact
+   Git head SHA; a worker cannot evaluate itself.
 6. Finalize deterministically: settle turns, finish workers, release claims,
-   finish linked reviewers, record exact-head evaluations, then finish the
-   manager. The manager cannot finish while child workers are active.
+   finish linked reviewers, record a passing exact-head evaluation for every
+   child, then finish the manager. The manager cannot finish while child
+   workers or reviewers are active, while claims remain held, or while any
+   child lacks a passing evaluation.
 7. Report `status executive TASK_ID` to leadership. This view contains only
    aggregate outcomes, signals, approvals, blockers, and team progress; it
    excludes prompts, transcripts, turn artifacts, and low-level worker activity.
