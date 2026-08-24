@@ -1,6 +1,6 @@
 # ADR 0002: Agent Organizational Topologies and Conway's Law
 
-**Status:** Under consideration (deferred post-MVP)
+**Status:** Superseded by ADR 0003
 
 ---
 
@@ -69,7 +69,9 @@ Single workers implement vertical feature slices within bounded contexts, while 
 
 ## 4. Decision & Future Guidance
 
-1. **Retain Current MVP Architecture:** For the current spike, keep Bossmode's lightweight, single-flight coordinator model (`.bossmode/control.db`). Do not add multi-tiered agent hierarchies or background management loops at this stage.
+1. The original single-flight MVP and its deferral are superseded by
+   [ADR 0003](0003-parallel-manager-teams.md), which implements the bounded
+   hybrid team architecture with durable claims and identities.
 2. **Post-MVP Scaling Model:** When multi-agent concurrency is implemented, adopt **Option C (Hybrid Matrix)**:
    * **Declarative Bounded Contexts:** Define team boundaries via path permissions in task definitions rather than through interactive manager chat trees.
    * **Contract-First Inter-Team Dependencies:** Require cross-team dependencies to be expressed as mockable interface contracts (e.g., OpenAPI, Protobuf, TypeScript types).
@@ -79,4 +81,5 @@ Single workers implement vertical feature slices within bounded contexts, while 
 
 ## 5. Implementation Status
 
-**No modifications have been applied to the MVP implementation.** The code, SQLite schema, CLI interface, and supervisor harness remain unchanged in their minimal single-flight state.
+The original document remains as the topology analysis and rationale. Its
+concurrency and manager deferral are no longer current implementation guidance.

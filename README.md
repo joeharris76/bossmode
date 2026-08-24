@@ -17,6 +17,24 @@ efficiency, and enforces critical rules in deterministic code.
 > Bossmode is a control plane, not a background agent or provider router. Your supervisor agent
 > performs the work and uses the Bossmode CLI for durable bookkeeping.
 
+## Parallel manager teams
+
+For work that can be split safely, create a root task, one team per bounded
+scope, and child tasks for each slice. Start managers, then use an atomic batch
+dispatch so branch, base SHA, worktree, and resource conflicts are rejected
+before workers are created:
+
+```text
+team -> manager run -> child task -> fenced worker run -> independent reviewer run
+```
+
+File and non-file resources share one canonical claim registry. Leases that
+expire become `reconcile_required`; Bossmode never auto-steals them. Use
+`bossmode status executive TASK_ID` for the redacted management view. It
+contains outcomes, decisions, blockers, approvals, and team progress, not
+prompts or transcripts. See [ADR 0003](docs/adr/0003-parallel-manager-teams.md)
+for the design and migration boundary.
+
 ## Install and start with a prompt
 
 Install the v0.1.0 wheel as an isolated command-line tool, then install its version-matched

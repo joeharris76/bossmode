@@ -18,8 +18,13 @@ bossmode                        # Default: Reconcile project session and return 
 │   ├── list                    # List tasks by state
 │   ├── show <id>               # Show task details and event history
 │   └── transition <id> <state> # Move task between lifecycle states
+├── team
+│   ├── create/list/show         # Manage bounded manager teams
 ├── run
-│   ├── start <task_id>         # Start an execution run for a worker
+│   ├── start <task_id>          # Start a singleton execution run
+│   ├── manager-start <team_id>  # Start a durable manager run
+│   ├── worker-start <task_id>   # Start a fenced writer run
+│   ├── reviewer-start <task_id> # Start an independent reviewer run
 │   ├── finish <run_id>         # Complete a run (moves task to evaluating or error)
 │   └── show <run_id>           # Show run details and turn records
 ├── herdr
@@ -30,6 +35,9 @@ bossmode                        # Default: Reconcile project session and return 
 │   ├── finish <turn_id>        # Validate turn JSON artifact and mark completed
 │   └── show <turn_id>          # Show prompt text, digest, and validated result
 ├── evaluate <task_id>          # Record independent evaluation (reviewer != worker)
+├── dispatch batch <task_id>    # Atomically dispatch multiple bounded workers
+├── resource reconcile          # Expire leases into reconcile_required
+├── status executive <task_id>  # Redacted executive aggregation
 ├── feedback <task_id>          # Record user or system feedback with recurrence key
 ├── promotion
 │   ├── propose                 # Scan feedback and generate candidate proposals
@@ -85,6 +93,23 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 6. Use Herdr only when the task explicitly requests an external interactive agent. Do not add an
    agent router or choose providers from historical scores in this spike.
 7. Do not run parallel writers against the same paths.
+
+### Parallel manager teams
+
+Use `dispatch batch` only for child tasks with disjoint declared scopes. A
+manager run must be created and identified before a worker is created. A
+worker writer reservation includes a dedicated branch, base SHA, worktree path,
+and worktree ID. Resource claims cover both files and named external resources,
+carry fence tokens, and are atomic with worker creation. Expired leases become
+`reconcile_required` and are never automatically stolen.
+
+Reviewer runs have their own durable identity and link to the worker run they
+evaluate. Pass that reviewer run ID to `evaluate`; a reviewer string alone is
+only supported for legacy singleton compatibility.
+
+Use `status executive` for leadership reporting. It mechanically includes task
+outcomes, decisions, blockers, approvals, and per-team progress while excluding
+prompts, transcripts, turn artifacts, and low-level worker activity.
 
 ## 4. Correlate Herdr Turns
 

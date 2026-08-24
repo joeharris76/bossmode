@@ -205,6 +205,27 @@ identity against live native runtime (AGY, Codex) or Herdr state before continui
 
 ## Reconciliation and failure rules
 
+### Parallel manager teams
+
+When a task has disjoint bounded slices, use the team workflow:
+
+1. Record the root task and child tasks with `parent_task_id`, `team_id`, and a
+   declarative scope.
+2. Reserve one manager identity per team. Start manager runs before dispatching
+   workers.
+3. Dispatch workers through `dispatch batch` or `run worker-start`. Every
+   writer must provide a dedicated branch, base SHA, worktree path, and
+   worktree ID. Every file or non-file resource must be claimed atomically.
+4. If a claim lease expires, stop and reconcile it. The claim is not available
+   for reuse until it is explicitly released; never auto-steal it.
+5. Start a reviewer run linked to the worker run. Record its evaluator run ID
+   with the evaluation; a worker cannot evaluate itself.
+6. Report `status executive TASK_ID` to leadership. This view contains only
+   aggregate outcomes, signals, approvals, blockers, and team progress.
+
+Use the legacy `run start` path for singleton tasks. It remains compatible and
+does not require team or writer metadata.
+
 - Missing, duplicate, foreign, or ambiguous live identity: stop and report `blocked`; do not adopt
   or close anything.
 - Trust or permission dialog: ask the user. Neither the supervisor nor worker may approve it from a
