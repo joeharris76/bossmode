@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bossmode.cli import _parser as cli_parser
 from bossmode.cli import main as cli_main
 from bossmode.registry import MAX_TURN_RESULT_BYTES, SCHEMA_VERSION, Registry, RegistryError
 
@@ -53,6 +54,7 @@ EXPECTED_UAT_CHECKS = (
     "5.1 Verify single-flight pause during active execution",
     "5.2 Dispatch selects highest priority ready task when queue clears",
     "5.3 Exercise naked CLI and subcommands against in-process registry",
+    "5.4 Enforce CLI approval and pane-safety input boundaries",
 )
 
 
@@ -901,6 +903,71 @@ class UATHarness:
             scenario,
             "5.3 Exercise naked CLI and subcommands against in-process registry",
             step_cli_execution,
+        )
+
+        # Step 5.4: CLI approval and topology safety boundaries
+        def step_cli_safety_boundaries() -> str:
+            accepted_head = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+            parsed_finish = cli_parser().parse_args(
+                [
+                    "run",
+                    "finish",
+                    "run-accepted",
+                    "--outcome",
+                    "succeeded",
+                    "--summary",
+                    "accepted",
+                    "--accepted-head-sha",
+                    accepted_head,
+                ]
+            )
+            assert parsed_finish.accepted_head_sha == accepted_head
+
+            parsed_worker = cli_parser().parse_args(
+                [
+                    "run",
+                    "worker-start",
+                    "task-worker",
+                    "--manager-run-id",
+                    "run-manager",
+                    "--identity-json",
+                    '{"source":"native","value":"worker"}',
+                    "--writer-json",
+                    json.dumps(
+                        {
+                            "branch_name": "feature/worker",
+                            "base_sha": accepted_head,
+                            "worktree_path": "/tmp/worktree",
+                            "worktree_id": "uat-worker",
+                        }
+                    ),
+                    "--approved-repository-path",
+                    "/tmp/repository",
+                    "--approved-base-sha",
+                    accepted_head,
+                    "--protected-branches-json",
+                    '["main", "release"]',
+                ]
+            )
+            assert parsed_worker.approved_repository_path == "/tmp/repository"
+            assert parsed_worker.approved_base_sha == accepted_head
+
+            for forbidden in (
+                ["--current"],
+                ["--direction", "right"],
+            ):
+                try:
+                    cli_parser().parse_args(["run", "worker-start", "task-worker", *forbidden])
+                except SystemExit as error:
+                    assert error.code == 2
+                else:
+                    raise AssertionError(f"forbidden pane input was accepted: {forbidden}")
+            return "Accepted head and writer approvals parse; forbidden pane inputs reject"
+
+        self.run_step(
+            scenario,
+            "5.4 Enforce CLI approval and pane-safety input boundaries",
+            step_cli_safety_boundaries,
         )
 
     def _print_summary(self) -> None:

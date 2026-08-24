@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from bossmode import registry as registry_module
-from bossmode.cli import main
+from bossmode.cli import (
+    _approved_batch_workers,
+    _approved_writer,
+    _parser,
+    _protected_branches,
+    _run_artifacts,
+    main,
+)
 
 
 def test_cli_smoke(tmp_path, capsys):
@@ -482,3 +489,248 @@ def test_cli_schedule_subcommands(tmp_path, capsys, monkeypatch):
     status = json.loads(capsys.readouterr().out)
     assert "status" in status
     assert "platform" in status
+
+
+def test_cli_run_finish_records_exact_accepted_head(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Accepted head",
+                "--goal",
+                "Record the accepted Git head",
+                "--success-criteria",
+                "The accepted head is durable",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+    assert main(["--db", str(database), "run", "start", task["id"], "--role", "worker"]) == 0
+    run = json.loads(capsys.readouterr().out)
+
+    accepted_head = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "finish",
+                run["id"],
+                "--outcome",
+                "succeeded",
+                "--summary",
+                "Accepted exact head",
+                "--accepted-head-sha",
+                accepted_head,
+            ]
+        )
+        == 0
+    )
+    finished = json.loads(capsys.readouterr().out)
+    assert {"kind": "accepted-head", "sha": accepted_head} in finished["artifacts"]
+
+
+def test_cli_worker_start_forwards_approval_inputs(tmp_path, capsys, monkeypatch):
+    captured = {}
+
+    def fake_start_worker_run(self, task_id, **kwargs):
+        captured["task_id"] = task_id
+        captured.update(kwargs)
+        return {"id": "run_worker", "status": "running"}
+
+    monkeypatch.setattr(registry_module.Registry, "start_worker_run", fake_start_worker_run)
+    approved_repository = tmp_path / "repository"
+    approved_base = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+    writer = {
+        "branch_name": "feature/worker",
+        "base_sha": approved_base,
+        "worktree_path": str(tmp_path / "worktree"),
+        "worktree_id": "wt-worker",
+    }
+
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "run",
+                "worker-start",
+                "task-1",
+                "--manager-run-id",
+                "run-manager",
+                "--identity-json",
+                '{"source":"native","value":"worker"}',
+                "--writer-json",
+                json.dumps(writer),
+                "--repository-path",
+                str(approved_repository),
+                "--approved-repository-path",
+                str(approved_repository),
+                "--approved-base-sha",
+                approved_base,
+                "--protected-branches-json",
+                '["main", "release"]',
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["id"] == "run_worker"
+    assert captured["repository_path"] == str(approved_repository)
+    assert captured["writer"]["approved_base_sha"] == approved_base
+    assert captured["writer"]["protected_branches"] == ["main", "release"]
+
+
+def test_cli_rejects_unapproved_writer_inputs(tmp_path, capsys, monkeypatch):
+    called = False
+
+    def fake_start_worker_run(self, task_id, **kwargs):
+        nonlocal called
+        called = True
+        return {"id": "unexpected"}
+
+    monkeypatch.setattr(registry_module.Registry, "start_worker_run", fake_start_worker_run)
+    writer = {
+        "branch_name": "release",
+        "base_sha": "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d",
+        "worktree_path": str(tmp_path / "worktree"),
+        "worktree_id": "wt-worker",
+    }
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "run",
+                "worker-start",
+                "task-1",
+                "--manager-run-id",
+                "run-manager",
+                "--identity-json",
+                '{"source":"native","value":"worker"}',
+                "--writer-json",
+                json.dumps(writer),
+                "--approved-base-sha",
+                "b" * 40,
+                "--protected-branches-json",
+                '["release"]',
+            ]
+        )
+        == 2
+    )
+    assert called is False
+    assert "does not match the approved base SHA" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_cli_approval_helpers_fail_closed(tmp_path):
+    writer = {
+        "branch_name": "feature/worker",
+        "base_sha": "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d",
+        "worktree_path": str(tmp_path / "worktree"),
+        "worktree_id": "wt-worker",
+    }
+    with pytest.raises(registry_module.RegistryError, match="expected JSON object"):
+        _approved_writer(
+            None,
+            repository_path=None,
+            approved_repository_path=None,
+            approved_base_sha=None,
+            protected_branches=set(),
+        )
+    with pytest.raises(registry_module.RegistryError, match="hexadecimal Git SHA"):
+        _run_artifacts("[]", "not-a-sha")
+    with pytest.raises(registry_module.RegistryError, match="declared more than once"):
+        _run_artifacts('[{"kind":"accepted-head","sha":"a"}]', "a57b1d4")
+    with pytest.raises(registry_module.RegistryError, match="protected-branch set"):
+        _approved_writer(
+            {**writer, "branch_name": "refs/heads/release"},
+            repository_path=None,
+            approved_repository_path=None,
+            approved_base_sha=None,
+            protected_branches={"release"},
+        )
+    with pytest.raises(registry_module.RegistryError, match="approved repository path"):
+        _approved_writer(
+            writer,
+            repository_path=str(tmp_path / "repository-a"),
+            approved_repository_path=str(tmp_path / "repository-b"),
+            approved_base_sha=None,
+            protected_branches=set(),
+        )
+    with pytest.raises(registry_module.RegistryError, match="non-empty strings"):
+        _protected_branches('["main", ""]')
+    with pytest.raises(registry_module.RegistryError, match="batch workers"):
+        _approved_batch_workers(
+            ["not-an-object"],
+            approved_repository_path=None,
+            approved_base_sha=None,
+            protected_branches=set(),
+        )
+
+
+def test_cli_dispatch_forwards_approval_inputs(tmp_path, capsys, monkeypatch):
+    captured = {}
+
+    def fake_dispatch_batch(self, root_task_id, **kwargs):
+        captured["root_task_id"] = root_task_id
+        captured.update(kwargs)
+        return {"manager_runs": [], "worker_runs": []}
+
+    monkeypatch.setattr(registry_module.Registry, "dispatch_batch", fake_dispatch_batch)
+    base_sha = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
+    worker = {
+        "task_id": "task-worker",
+        "manager_index": 0,
+        "identity": {"source": "native", "value": "worker"},
+        "writer": {
+            "branch_name": "feature/worker",
+            "base_sha": base_sha,
+            "worktree_path": str(tmp_path / "worktree"),
+            "worktree_id": "wt-worker",
+        },
+    }
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "control.db"),
+                "dispatch",
+                "batch",
+                "root-task",
+                "--managers-json",
+                "[]",
+                "--workers-json",
+                json.dumps([worker]),
+                "--repository-path",
+                str(tmp_path / "repository"),
+                "--approved-base-sha",
+                base_sha,
+                "--protected-branches-json",
+                '["main"]',
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["worker_runs"] == []
+    assert captured["root_task_id"] == "root-task"
+    assert captured["workers"][0]["repository_path"] == str(tmp_path / "repository")
+    assert captured["workers"][0]["writer"]["approved_base_sha"] == base_sha
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        ["--current"],
+        ["--direction", "right"],
+    ],
+)
+def test_cli_parser_rejects_forbidden_pane_inputs(forbidden):
+    with pytest.raises(SystemExit) as exc_info:
+        _parser().parse_args(["run", "worker-start", "task-1", *forbidden])
+    assert exc_info.value.code == 2
