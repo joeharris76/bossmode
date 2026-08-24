@@ -1,4 +1,17 @@
-# Agent interaction workflow
+# Supervisor protocol
+
+This is the canonical implementation guide for supervisor agents and operators. It is intentionally
+precise about commands and state transitions. Most users should start with the
+[prompt guide](prompt-guide.md) and let their supervisor perform this protocol.
+
+| User intent | Supervisor responsibility |
+|---|---|
+| Start bounded work | Record the goal, success criteria, permissions, and next action before delegation. |
+| Resume | Reconcile stored records against authoritative live runtime identity. |
+| Use an external agent | Reserve the run, create and bind one verified Herdr worker, and correlate each turn. |
+| Call work complete | Record the run result and obtain independent evaluation. |
+| Record a correction | Store sourced feedback and show any proposal without applying it. |
+| Approve a promotion | Implement and verify the accepted artifact before recording it as applied. |
 
 This MVP is a control record, not an agent transport. Any agent (such as Antigravity/AGY,
 Codex, Claude, Pi, Grok, or Muse) can act as the session coordinator/supervisor, talking to
