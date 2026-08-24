@@ -350,6 +350,41 @@ User Request
 
 ---
 
+## Turn 6: Routine Maintenance & OS Scheduling
+
+### 💬 User Prompt
+> "Run a maintenance check and set up hourly background checks."
+
+---
+
+### ⚙️ Behind the Scenes (Bossmode Engine)
+
+1. **Run Maintenance**:
+   ```bash
+   uv run bossmode maintenance
+   ```
+   *Returns database health, active run counts, zero orphaned turns, and token efficiency statistics.*
+
+2. **Register Native OS Scheduler**:
+   ```bash
+   uv run bossmode schedule install --interval 3600
+   ```
+   *Registers user LaunchAgent plist on macOS (`~/Library/LaunchAgents/com.bossmode.<repo_hash>.plist`) or fenced crontab entry on Linux.*
+
+3. **Check Scheduler Status**:
+   ```bash
+   uv run bossmode schedule status
+   ```
+
+---
+
+### 🖥️ User-Facing Response
+> **Supervisor:** "✅ **Maintenance & Scheduling Configured:**
+> * **Database Health:** Integrity OK, WAL mode active (0 orphaned turns, 0 stale bindings).
+> * **Background Scheduler:** Registered and loaded through the native OS adapter. No execution is claimed until `.bossmode/logs/schedule.log` shows activity."
+
+---
+
 ## Summary of Key Features Demonstrated
 
 | Feature | Where Demonstrated |
@@ -361,3 +396,4 @@ User Request
 | **Independent Evaluation Gate** | `evaluator != worker` gate prevents self-approval and caught the missing burst support. |
 | **Remediation Cycle** | Reused existing worker session with correction prompt without losing audit trail. |
 | **Gated Promotion Ladder** | Repeated corrections + passing evaluation promoted to a durable `skill` with human approval. |
+| **Maintenance & OS Schedule** | `bossmode maintenance` and `bossmode schedule install` manage telemetry and OS cron jobs safely. |

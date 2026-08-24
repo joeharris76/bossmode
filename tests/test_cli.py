@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
 
+from bossmode import registry as registry_module
 from bossmode.cli import main
 
 
@@ -70,18 +72,60 @@ def test_cli_returns_structured_error(tmp_path, capsys):
     assert error == {"error": "task not found: missing"}
 
 
-def test_cli_returns_structured_error_when_database_is_locked(tmp_path, capsys):
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (
+            [
+                "task",
+                "create",
+                "--title",
+                "Invalid JSON",
+                "--goal",
+                "Reject malformed input",
+                "--success-criteria",
+                "Structured error",
+                "--permissions-json",
+                "{",
+            ],
+            "invalid JSON",
+        ),
+        (
+            [
+                "run",
+                "finish",
+                "missing",
+                "--outcome",
+                "failed",
+                "--summary",
+                "invalid artifacts",
+                "--artifacts-json",
+                "{}",
+            ],
+            "expected JSON list",
+        ),
+    ],
+)
+def test_cli_rejects_invalid_json_boundaries(tmp_path, capsys, arguments, message):
+    assert main(["--db", str(tmp_path / "control.db"), *arguments]) == 2
+    assert message in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_cli_returns_structured_error_when_database_is_locked(tmp_path, capsys, monkeypatch):
     database = tmp_path / "control.db"
     assert main(["--db", str(database)]) == 0
     capsys.readouterr()
     lock = sqlite3.connect(database, isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
+    monkeypatch.setattr(registry_module, "SQLITE_BUSY_TIMEOUT_MS", 25)
+    started = time.perf_counter()
     try:
         exit_code = main(["--db", str(database)])
     finally:
         lock.rollback()
         lock.close()
 
+    assert time.perf_counter() - started < 1
     assert exit_code == 2
     error = json.loads(capsys.readouterr().err)
     assert error == {"error": "database error: database is locked"}
@@ -422,3 +466,19 @@ def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
     )
     binding = json.loads(capsys.readouterr().out)
     assert binding["agent_kind"] == kind
+
+
+def test_cli_maintenance_subcommand(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert main(["--db", str(database), "maintenance"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["database"]["integrity"] == "ok"
+    assert report["health"]["status"] == "healthy"
+
+
+def test_cli_schedule_subcommands(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["schedule", "status"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert "status" in status
+    assert "platform" in status

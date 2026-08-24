@@ -1,6 +1,8 @@
 # Bossmode
 
-Bossmode makes you the CEO of your agent fleet. A supervisor agent manages the specialist worker agents (such as Claude, Codex, Grok, Pi, or Muse) who carry out your coding tasks.
+Stop babysitting your agents. Bossmode makes you the CEO of your agent fleet. A supervisor agent
+manages specialist workers such as Claude, Codex, Grok, Pi, and Muse while they carry out bounded
+tasks.
 
 Instead of retraining models, Bossmode improves your agent fleet over time: it preserves context in memory, turns successful workflows into reusable skills, and enforces critical rules in deterministic code.
 
@@ -30,12 +32,17 @@ bossmode                        # Default: Reconcile project session and return 
 │   └── show <turn_id>          # Show prompt text, digest, and validated result
 ├── evaluate <task_id>          # Record independent evaluation (reviewer != worker)
 ├── feedback <task_id>          # Record user or system feedback with recurrence key
-└── promotion
-    ├── propose                 # Scan feedback and generate candidate proposals
-    ├── list                    # List promotion proposals by status
-    ├── accept <id>             # Accept a proposal for implementation
-    ├── reject <id>             # Reject a proposal
-    └── apply <id>              # Mark an accepted proposal as verified and applied
+├── promotion
+│   ├── propose                 # Scan feedback and generate candidate proposals
+│   ├── list                    # List promotion proposals by status
+│   ├── accept <id>             # Accept a proposal for implementation
+│   ├── reject <id>             # Reject a proposal
+│   └── apply <id>              # Mark an accepted proposal as verified and applied
+├── maintenance                 # Run telemetry analytics, health checks, & promotion scan
+└── schedule
+    ├── install                 # Register OS scheduler job (launchd on macOS, crontab on Linux)
+    ├── status                  # Inspect registration and available log activity
+    └── uninstall               # Cleanly remove OS scheduler job
 ```
 
 ---
@@ -46,14 +53,14 @@ bossmode                        # Default: Reconcile project session and return 
 - **Single-Flight Dispatch**: Schedules one ready task at a time (`bossmode`), preventing conflicting edits and race conditions.
 - **Flexible Multi-Agent Roles**: Any supported agent (Antigravity/AGY, Codex, Claude, Pi, Grok, Muse) can supervise workflows, execute worker tasks, or act as an independent reviewer.
 - **Dual Execution Options**:
-  - *Native subagents*: Dispatched directly through host runtime tools (such as Codex subagents or AGY `invoke_subagent`).
-  - *External workers*: Interactive CLI agents running in Herdr terminal panes with native session recovery.
+  - _Native subagents_: Dispatched directly through host runtime tools (such as Codex subagents or AGY `invoke_subagent`).
+  - _External workers_: Interactive CLI agents running in Herdr terminal panes with native session recovery.
 - **Verified Turn Results**: Validates structured JSON outputs at exact file paths (`.bossmode/turns/<turn_id>.json`) rather than guessing success from terminal text.
 - **Independent Evaluation**: Requires a separate reviewer (`evaluator != worker`) to verify results against task criteria before marking a task as succeeded.
 - **Safe Learning Ladder**:
-  - *Context & preferences* $\rightarrow$ **Memory** proposals.
-  - *Repeated corrections with passing evaluations* ($N \ge 2$) $\rightarrow$ **Skill** proposals.
-  - *Repeated operational failures* ($N \ge 2$) $\rightarrow$ **Code / Control** proposals.
+  - _Context & preferences_ $\rightarrow$ **Memory** proposals.
+  - _Repeated corrections with passing evaluations_ ($N \ge 2$) $\rightarrow$ **Skill** proposals.
+  - _Repeated operational failures_ ($N \ge 2$) $\rightarrow$ **Code / Control** proposals.
   - All proposals remain pending until the user explicitly accepts and applies them.
 
 ---
@@ -165,15 +172,15 @@ Supervisor Agent (AGY, Codex, Claude, Pi, Grok, or Muse)
 
 ### Roles and Boundaries
 
-| Role               | Responsibilities                                                         | Out of Scope                           |
-| ------------------ | ------------------------------------------------------------------------ | -------------------------------------- |
-| **User**           | Defines goals, expands permissions, makes trust decisions, approves promotions | Manual registry bookkeeping            |
-| **Supervisor**     | Reconciles state, dispatches single tasks, formats prompts, tracks evaluations | Modifying vendor session internals     |
-| **Registry**       | Stores task, run, turn, evaluation, and feedback records durably         | Managing live process lifecycles       |
-| **Native Runtime** | Manages subagent creation, messaging, and thread IDs                     | Storing task control state             |
-| **Herdr**          | Manages external agent processes, terminal panes, and session recovery   | Validating turn results or task criteria |
-| **Worker**         | Executes assigned tasks and produces declared artifacts                  | Self-approving work or changing policy |
-| **Reviewer**       | Checks task artifacts objectively against success criteria               | Editing failed results without authorization |
+| Role               | Responsibilities                                                               | Out of Scope                                 |
+| ------------------ | ------------------------------------------------------------------------------ | -------------------------------------------- |
+| **User**           | Defines goals, expands permissions, makes trust decisions, approves promotions | Manual registry bookkeeping                  |
+| **Supervisor**     | Reconciles state, dispatches single tasks, formats prompts, tracks evaluations | Modifying vendor session internals           |
+| **Registry**       | Stores task, run, turn, evaluation, and feedback records durably               | Managing live process lifecycles             |
+| **Native Runtime** | Manages subagent creation, messaging, and thread IDs                           | Storing task control state                   |
+| **Herdr**          | Manages external agent processes, terminal panes, and session recovery         | Validating turn results or task criteria     |
+| **Worker**         | Executes assigned tasks and produces declared artifacts                        | Self-approving work or changing policy       |
+| **Reviewer**       | Checks task artifacts objectively against success criteria                     | Editing failed results without authorization |
 
 ---
 
@@ -274,27 +281,31 @@ For full protocol details and fault-recovery rules, see [**`docs/agent-workflow.
 
 All CLI commands output structured JSON, exiting `0` on success and `2` on error.
 
-| Command Group | Subcommand   | Key Arguments                                                                                  | Description                                                           |
-| ------------- | ------------ | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `bossmode`    | *(default)*  | `[--db PATH]`                                                                                  | Reconciles session state, active work, and returns next action.       |
-| `task`        | `create`     | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`              | Creates a new task in `ready` or `backlog` (alias: `add`).            |
-| `task`        | `list`       | `[--state STATE]`                                                                              | Lists tasks filtered by state.                                        |
-| `task`        | `show`       | `<task_id>`                                                                                    | Shows task details with runs, events, feedback, and evaluations.      |
-| `task`        | `transition` | `<task_id>`, `<to_state>`, `--actor`, `--reason`, `[--evidence]`, `[--blocked-on]`             | Executes an explicit state transition.                                |
-| `run`         | `start`      | `<task_id>`, `--role`, `[--thread-id]`, `[--model]`, `[--reasoning-effort]`                    | Starts an execution run and sets task to `running`.                   |
-| `run`         | `finish`     | `<run_id>`, `--outcome`, `--summary`, `[--artifacts-json]`, `[--tokens]`, `[--duration-seconds]`| Completes a run and transitions task to `evaluating` or error state.  |
-| `run`         | `show`       | `<run_id>`                                                                                     | Shows run details, turn history, and Herdr bindings.                  |
-| `herdr`       | `bind`       | `<run_id>`, `--herdr-session`, `--worker`, `--kind`, `[--pane-id]`, `[--session-*]`            | Links a live Herdr worker and native session reference to a run.      |
-| `turn`        | `start`      | `<run_id>`, `--purpose`, `--prompt`                                                            | Opens a turn and allocates a result artifact path.                    |
-| `turn`        | `finish`     | `<turn_id>`, `--status`, `[--summary]`, `[--lifecycle-evidence]`                               | Validates the turn JSON result file and marks the turn finished.      |
-| `turn`        | `show`       | `<turn_id>`                                                                                    | Shows turn record details, prompt text, and validated result JSON.    |
-| `evaluate`    |              | `<task_id>`, `--run-id`, `--evaluator`, `--passed \| --failed`, `--evidence`, `[--score]`      | Records independent evaluation (required to reach `succeeded`).       |
-| `feedback`    |              | `<task_id>`, `--kind`, `--key`, `--content`, `[--run-id]`                                      | Ingests user or system feedback with a recurrence key.                |
-| `promotion`   | `propose`    |                                                                                                | Analyzes feedback history and generates promotion proposals.          |
-| `promotion`   | `list`       | `[--status STATUS]`                                                                            | Lists promotion proposals filtered by status.                         |
-| `promotion`   | `accept`     | `<promotion_id>`                                                                               | Accepts a proposal for implementation.                                |
-| `promotion`   | `reject`     | `<promotion_id>`                                                                               | Rejects a proposal.                                                   |
-| `promotion`   | `apply`      | `<promotion_id>`                                                                               | Marks an accepted proposal as verified and applied.                   |
+| Command Group | Subcommand   | Key Arguments                                                                                    | Description                                                            |
+| ------------- | ------------ | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `bossmode`    | _(default)_  | `[--db PATH]`                                                                                    | Reconciles session state, active work, and returns next action.        |
+| `task`        | `create`     | `--title`, `--goal`, `--success-criteria`, `[--priority]`, `[--permissions-json]`                | Creates a new task in `ready` or `backlog` (alias: `add`).             |
+| `task`        | `list`       | `[--state STATE]`                                                                                | Lists tasks filtered by state.                                         |
+| `task`        | `show`       | `<task_id>`                                                                                      | Shows task details with runs, events, feedback, and evaluations.       |
+| `task`        | `transition` | `<task_id>`, `<to_state>`, `--actor`, `--reason`, `[--evidence]`, `[--blocked-on]`               | Executes an explicit state transition.                                 |
+| `run`         | `start`      | `<task_id>`, `--role`, `[--thread-id]`, `[--model]`, `[--reasoning-effort]`                      | Starts an execution run and sets task to `running`.                    |
+| `run`         | `finish`     | `<run_id>`, `--outcome`, `--summary`, `[--artifacts-json]`, `[--tokens]`, `[--duration-seconds]` | Completes a run and transitions task to `evaluating` or error state.   |
+| `run`         | `show`       | `<run_id>`                                                                                       | Shows run details, turn history, and Herdr bindings.                   |
+| `herdr`       | `bind`       | `<run_id>`, `--herdr-session`, `--worker`, `--kind`, `[--pane-id]`, `[--session-*]`              | Links a live Herdr worker and native session reference to a run.       |
+| `turn`        | `start`      | `<run_id>`, `--purpose`, `--prompt`                                                              | Opens a turn and allocates a result artifact path.                     |
+| `turn`        | `finish`     | `<turn_id>`, `--status`, `[--summary]`, `[--lifecycle-evidence]`                                 | Validates the turn JSON result file and marks the turn finished.       |
+| `turn`        | `show`       | `<turn_id>`                                                                                      | Shows turn record details, prompt text, and validated result JSON.     |
+| `evaluate`    |              | `<task_id>`, `--run-id`, `--evaluator`, `--passed \| --failed`, `--evidence`, `[--score]`        | Records independent evaluation (required to reach `succeeded`).        |
+| `feedback`    |              | `<task_id>`, `--kind`, `--key`, `--content`, `[--run-id]`                                        | Ingests user or system feedback with a recurrence key.                 |
+| `promotion`   | `propose`    |                                                                                                  | Analyzes feedback history and generates promotion proposals.           |
+| `promotion`   | `list`       | `[--status STATUS]`                                                                              | Lists promotion proposals filtered by status.                          |
+| `promotion`   | `accept`     | `<promotion_id>`                                                                                 | Accepts a proposal for implementation.                                 |
+| `promotion`   | `reject`     | `<promotion_id>`                                                                                 | Rejects a proposal.                                                    |
+| `promotion`   | `apply`      | `<promotion_id>`                                                                                 | Marks an accepted proposal as verified and applied.                    |
+| `maintenance` |              | `[--db PATH]`                                                                                    | Runs telemetry analytics, database health check, and promotion scan.   |
+| `schedule`    | `install`    | `[--interval SECS]`, `[--cron EXPR]`, `[--target {maintenance,reconcile}]`                       | Registers native OS scheduler job (launchd on macOS, crontab on Linux) |
+| `schedule`    | `status`     |                                                                                                  | Inspects OS scheduler registration and available log activity.         |
+| `schedule`    | `uninstall`  |                                                                                                  | Cleanly unloads and removes the native OS scheduler job.               |
 
 ---
 
@@ -305,9 +316,18 @@ All CLI commands output structured JSON, exiting `0` on success and `2` on error
 uv run ruff check .
 uv run ruff format --check .
 
-# Run full unit and integration test suite (53 tests)
+# Run the full unit, concurrency, integration, and acceptance suite
 uv run pytest
 
-# Run automated end-to-end UAT evaluation loop (28 checks across 5 scenarios)
+# Run the in-process functional acceptance loop (28 named checks)
 uv run python scripts/run_uat.py
 ```
+
+`uv run pytest` enforces branch coverage of at least 90%, fails tests that exceed 30 seconds, and
+rejects unknown markers or configuration. CI repeats the suite on Python 3.12, 3.13, and 3.14 on
+macOS and Linux, then builds and executes the wheel in an isolated environment.
+
+The functional acceptance loop exercises registry and CLI behavior in process. It does not create
+or prompt live Herdr workers, approve trust dialogs, or install host scheduler entries. Those
+operations remain separate, user-authorized manual gates because live runtime identity and host
+state are authoritative.

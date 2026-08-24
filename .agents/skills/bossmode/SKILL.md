@@ -30,12 +30,17 @@ bossmode                        # Default: Reconcile project session and return 
 │   └── show <turn_id>          # Show prompt text, digest, and validated result
 ├── evaluate <task_id>          # Record independent evaluation (reviewer != worker)
 ├── feedback <task_id>          # Record user or system feedback with recurrence key
-└── promotion
-    ├── propose                 # Scan feedback and generate candidate proposals
-    ├── list                    # List promotion proposals by status
-    ├── accept <id>             # Accept a proposal for implementation
-    ├── reject <id>             # Reject a proposal
-    └── apply <id>              # Mark an accepted proposal as verified and applied
+├── promotion
+│   ├── propose                 # Scan feedback and generate candidate proposals
+│   ├── list                    # List promotion proposals by status
+│   ├── accept <id>             # Accept a proposal for implementation
+│   ├── reject <id>             # Reject a proposal
+│   └── apply <id>              # Mark an accepted proposal as verified and applied
+├── maintenance                 # Run telemetry analytics, health checks, & promotion scan
+└── schedule
+    ├── install                 # Register OS scheduler job (launchd on macOS, crontab on Linux)
+    ├── status                  # Inspect registration and available log activity
+    └── uninstall               # Cleanly remove OS scheduler job
 ```
 
 ## 1. Reconcile
@@ -112,7 +117,15 @@ are canonical.
    - `bossmode promotion apply PROMOTION_ID`
    - `bossmode promotion reject PROMOTION_ID`
 
-## 6. Report
+## 6. Maintenance and Scheduling
+
+1. Run `uv run bossmode maintenance` to audit database health, orphaned turns, and token telemetry across models and reasoning effort tiers.
+2. Configure native OS background scheduling when requested:
+   - `bossmode schedule install --interval 3600` (registers LaunchAgent on macOS, crontab on Linux).
+   - `bossmode schedule status` to inspect registration and available log activity.
+   - `bossmode schedule uninstall` to cleanly remove the OS background job.
+
+## 7. Report
 
 Return only material state changes: dispatched work, completed and evaluated results, user decisions,
 new blockers, and promotion proposals. Include exact task, run, turn, evaluation, and promotion IDs.
