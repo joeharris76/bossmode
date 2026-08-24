@@ -102,20 +102,18 @@ final success. Bossmode also keeps these decisions separate:
   applied.
 - Installing or removing a scheduler changes host state and requires an explicit request.
 
-## Supported agents
+## Agent integration status
 
-| Agent | Supervisor | Native subagent | Herdr worker | Independent reviewer |
-|---|:---:|:---:|:---:|:---:|
-| Antigravity (AGY) | Yes | Yes | Yes | Yes |
-| Codex | Yes | Yes | Yes | Yes |
-| Claude | Yes | — | Yes | Yes |
-| Pi | Yes | — | Yes | Yes |
-| Grok | Yes | — | Yes | Yes |
-| Muse | Yes | — | Yes | Yes |
+Bossmode has no provider-specific transport adapters. Its registry and CLI record generic agent
+roles and Herdr bindings. The deterministic test suite exercises those control records for AGY,
+Codex, Claude, Pi, Grok, and Muse, but it does not start those agents. The documented Herdr path
+uses the official Herdr CLI for all six named kinds; the current automated UAT has not certified any
+of them with a live Herdr canary.
 
-Use native subagents for work supported directly by the host runtime. Ask for Herdr when you need an
-external interactive agent, a visible pane, or durable detach and reattach behavior. Bossmode does
-not choose a provider from historical scores in this MVP.
+Use a native subagent only when the host runtime supports that agent. Ask for Herdr when you need an
+external interactive agent, a visible pane, or durable detach and reattach behavior, and verify the
+chosen kind against live Herdr state before relying on it. Bossmode does not choose a provider from
+historical scores in this MVP.
 
 ## Documentation
 

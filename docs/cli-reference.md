@@ -83,7 +83,9 @@ the binding against live Herdr state before prompting, interrupting, continuing,
 
 Turn purposes are `task`, `correction`, `clarification`, and `review_follow_up`. Terminal statuses
 are `blocked`, `succeeded`, `failed`, and `unknown`. A successful finish validates the exact bounded
-JSON result allocated by `turn start`; terminal text alone is not success evidence.
+JSON result allocated by `turn start`; terminal text alone is not success evidence. `--summary` is
+required when the status is `blocked`, `failed`, or `unknown`. For `succeeded`, the validated result
+file supplies the summary; an optional `--summary` must match that file exactly.
 
 ## Evaluation and feedback
 
@@ -93,7 +95,8 @@ JSON result allocated by `turn start`; terminal text alone is not success eviden
 | `feedback TASK_ID` | `TASK_ID`, `--kind`, `--key`, `--content` | `--run-id` |
 
 Feedback kinds are `preference`, `correction`, `failure`, and `observation`. The key should be a
-stable, narrowly scoped recurrence key. The evaluator must be independent of the worker.
+stable, narrowly scoped recurrence key. The evaluator must be independent of the worker. If
+provided, `--score` must be between `0` and `1`, inclusive.
 
 ## Promotions
 
@@ -118,9 +121,12 @@ instruction, or control artifact.
 | `schedule status` | — | `--repo-dir PATH`, `--log-path PATH` |
 | `schedule uninstall` | — | `--repo-dir PATH` |
 
-`--interval` works with launchd and crontab. Custom `--cron` expressions are Linux-only and override
-the interval there; launchd rejects them. Installation and removal mutate host state, so they
-require explicit user authorization.
+`--interval` works with launchd and crontab and must be at least 60 seconds. Linux crontab can
+represent only exact supported intervals: below one hour, use a whole number of minutes that
+divides evenly into an hour; from one hour through one day, use a whole number of hours that
+divides evenly into a day. Custom `--cron` expressions are Linux-only and override the interval
+there; launchd rejects them. Installation and removal mutate host state, so they require explicit
+user authorization.
 
 ## Operational rules
 
