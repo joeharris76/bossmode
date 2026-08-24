@@ -21,25 +21,31 @@ PyPI token.
 
 On 2026-08-24, the `joeharris76/bossmode` repository was configured with a
 `pypi` environment through the GitHub API. Joe Harris (`joeharris76`) is the
-required reviewer, and self-review is disabled. No deployment was approved.
+required reviewer, self-review is disabled, administrator bypass is disabled,
+and the environment accepts only tags matching `v*`. No deployment was
+approved.
 
-The repository currently has no branch protection or ruleset. The release
-workflow is therefore the enforcement point for the exact-tag test gate; this
-task did not broaden scope to change branch policy.
+The release workflow remains the enforcement point for the exact-tag test gate.
+The environment's custom deployment policy is an additional `v*` tag-only
+boundary; it does not replace repository branch protection or rulesets.
 
-PyPI currently returns HTTP 404 for the `bossmode` project, so there is no
-existing project publisher to verify or edit. Before the first publication, an
-authorized PyPI maintainer must configure a GitHub Actions Trusted Publisher (or
-the pending publisher flow for a new project) with:
+The user confirmed that PyPI has a pending Trusted Publisher for `bossmode` with
+the following claims:
 
 - owner: `joeharris76`
 - repository: `bossmode`
 - workflow: `.github/workflows/publish.yml`
 - environment: `pypi`
 
-That remains a protected manual gate. The first release must not be approved
-until the publisher is visible in PyPI's authoritative project settings and the
-tag-specific verification run has passed.
+PyPI's public project endpoint currently returns HTTP 404 for `bossmode`. That
+is expected for a pending or not-yet-public project, so the pending publisher is
+not publicly verifiable; the user-confirmed state is the authoritative evidence
+available for this task.
+
+Because `prevent_self_review` is enabled, Joe cannot approve a deployment for a
+workflow run that Joe initiated. A non-Joe release initiator must publish the
+GitHub release before Joe can approve the protected `pypi` deployment. The
+first release must also wait for the exact tag verification run to pass.
 
 Authoritative references:
 
