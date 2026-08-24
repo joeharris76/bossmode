@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Iterable
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,11 @@ TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+RUN_TYPES = {"manager", "worker", "reviewer"}
+RESOURCE_STATUSES = {"active", "reconcile_required", "released"}
+SIGNAL_KINDS = {"decision", "blocker", "approval"}
+DEFAULT_LEASE_SECONDS = 300
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -67,6 +71,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     )),
     priority INTEGER NOT NULL DEFAULT 0,
     owner_thread_id TEXT,
+    parent_task_id TEXT REFERENCES tasks(id),
+    team_id TEXT,
+    task_kind TEXT NOT NULL DEFAULT 'task',
+    scope_json TEXT NOT NULL DEFAULT '{}',
     permissions_json TEXT NOT NULL DEFAULT '{}',
     next_action TEXT,
     blocked_on TEXT,
@@ -91,6 +99,11 @@ CREATE TABLE IF NOT EXISTS runs (
     task_id TEXT NOT NULL REFERENCES tasks(id),
     thread_id TEXT,
     agent_role TEXT NOT NULL,
+    run_type TEXT NOT NULL DEFAULT 'worker' CHECK (run_type IN ('manager', 'worker', 'reviewer')),
+    parent_run_id TEXT REFERENCES runs(id),
+    team_id TEXT,
+    identity_source TEXT,
+    identity_value TEXT,
     model TEXT,
     reasoning_effort TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'finished')),
@@ -145,6 +158,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
     run_id TEXT REFERENCES runs(id),
+    evaluator_run_id TEXT REFERENCES runs(id),
     evaluator TEXT NOT NULL,
     passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
     score REAL CHECK (score IS NULL OR (score >= 0 AND score <= 1)),
@@ -188,6 +202,62 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_turn_per_run
     ON run_turns(run_id)
     WHERE status = 'running';
 
+CREATE TABLE IF NOT EXISTS teams (
+    id TEXT PRIMARY KEY,
+    root_task_id TEXT NOT NULL REFERENCES tasks(id),
+    parent_team_id TEXT REFERENCES teams(id),
+    name TEXT NOT NULL,
+    manager_identity_source TEXT NOT NULL,
+    manager_identity_value TEXT NOT NULL,
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    manager_run_id TEXT REFERENCES runs(id),
+    status TEXT NOT NULL CHECK (status IN ('planned', 'running', 'finished', 'blocked')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (root_task_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS writer_identities (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    branch_name TEXT NOT NULL UNIQUE,
+    base_sha TEXT NOT NULL,
+    worktree_path TEXT NOT NULL UNIQUE,
+    worktree_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS resource_claims (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    resource_kind TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    fence_token TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('active', 'reconcile_required', 'released')),
+    lease_expires_at TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    reconciled_at TEXT,
+    released_at TEXT,
+    UNIQUE (run_id, resource_kind, canonical_key)
+);
+
+CREATE TABLE IF NOT EXISTS task_signals (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    source_run_id TEXT REFERENCES runs(id),
+    kind TEXT NOT NULL CHECK (kind IN ('decision', 'blocker', 'approval')),
+    content TEXT NOT NULL,
+    redacted INTEGER NOT NULL DEFAULT 0 CHECK (redacted IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_team_type ON runs(team_id, run_type, started_at);
+CREATE INDEX IF NOT EXISTS idx_resource_claims_key
+    ON resource_claims(resource_kind, canonical_key, status);
+CREATE INDEX IF NOT EXISTS idx_task_signals_task ON task_signals(task_id, kind, created_at);
+
 CREATE TABLE IF NOT EXISTS maintenance_runs (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL,
@@ -217,6 +287,54 @@ def _json(value: Any) -> str:
 
 def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def _canonical_resource(resource_kind: str, value: str) -> tuple[str, str]:
+    kind = resource_kind.strip().lower()
+    if not kind or not value.strip():
+        raise RegistryError("resource kind and value are required")
+    if kind == "file":
+        key = os.path.realpath(os.path.abspath(value))
+    else:
+        key = re.sub(r"\s+", " ", value.strip())
+    return kind, key
+
+
+def _identity(identity: dict[str, Any] | None, *, label: str) -> tuple[str, str]:
+    if not isinstance(identity, dict):
+        raise RegistryError(f"{label} identity is required")
+    source = identity.get("source")
+    value = identity.get("value")
+    if (
+        not isinstance(source, str)
+        or not source.strip()
+        or not isinstance(value, str)
+        or not value.strip()
+    ):
+        raise RegistryError(f"{label} identity requires non-empty source and value")
+    return source.strip(), value.strip()
+
+
+def _writer_identity(writer: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(writer, dict):
+        raise RegistryError("writer identity is required")
+    required = ("branch_name", "base_sha", "worktree_path", "worktree_id")
+    if any(not isinstance(writer.get(key), str) or not writer[key].strip() for key in required):
+        raise RegistryError(
+            "writer identity requires branch, base SHA, worktree path, and worktree ID"
+        )
+    branch_name = writer["branch_name"].strip()
+    base_sha = writer["base_sha"].strip()
+    if branch_name in {"main", "master", "develop"}:
+        raise RegistryError("writer branch must be dedicated")
+    if not re.fullmatch(r"[0-9a-fA-F]{7,64}", base_sha):
+        raise RegistryError("writer base SHA is invalid")
+    return {
+        "branch_name": branch_name,
+        "base_sha": base_sha,
+        "worktree_path": os.path.realpath(os.path.abspath(writer["worktree_path"])),
+        "worktree_id": writer["worktree_id"].strip(),
+    }
 
 
 class Registry:
@@ -253,6 +371,7 @@ class Registry:
                     2: self._migrate_v2_to_v3,
                     3: self._migrate_v3_to_v4,
                     4: self._migrate_v4_to_v5,
+                    5: self._migrate_v5_to_v6,
                 }
                 while current < SCHEMA_VERSION:
                     migration = migrations.get(current)
@@ -420,6 +539,24 @@ class Registry:
             """
         )
 
+    @staticmethod
+    def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+        """Add parallel-team records without rewriting legacy lifecycle rows."""
+        for statement in (
+            "ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id)",
+            "ALTER TABLE tasks ADD COLUMN team_id TEXT",
+            "ALTER TABLE tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'task'",
+            "ALTER TABLE tasks ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE runs ADD COLUMN run_type TEXT NOT NULL DEFAULT 'worker'",
+            "ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id)",
+            "ALTER TABLE runs ADD COLUMN team_id TEXT",
+            "ALTER TABLE runs ADD COLUMN identity_source TEXT",
+            "ALTER TABLE runs ADD COLUMN identity_value TEXT",
+            "ALTER TABLE evaluations ADD COLUMN evaluator_run_id TEXT REFERENCES runs(id)",
+        ):
+            connection.execute(statement)
+        Registry._execute_schema(connection)
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -489,18 +626,33 @@ class Registry:
         priority: int = 0,
         permissions: dict[str, Any] | None = None,
         next_action: str | None = None,
+        parent_task_id: str | None = None,
+        team_id: str | None = None,
+        task_kind: str = "task",
+        scope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if state not in CREATE_TASK_STATES:
             raise RegistryError(f"invalid initial task state: {state}")
+        if not task_kind.strip():
+            raise RegistryError("task kind is required")
         task_id = _id("task")
         timestamp = _now()
         with self._transaction() as connection:
+            if (
+                parent_task_id is not None
+                and connection.execute(
+                    "SELECT 1 FROM tasks WHERE id = ?", (parent_task_id,)
+                ).fetchone()
+                is None
+            ):
+                raise RegistryError(f"parent task not found: {parent_task_id}")
             connection.execute(
                 """
                 INSERT INTO tasks(
                     id, title, goal, success_criteria, state, priority,
+                    parent_task_id, team_id, task_kind, scope_json,
                     permissions_json, next_action, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -509,6 +661,10 @@ class Registry:
                     success_criteria,
                     state,
                     priority,
+                    parent_task_id,
+                    team_id,
+                    task_kind,
+                    _json(scope or {}),
                     _json(permissions or {}),
                     next_action,
                     timestamp,
@@ -534,6 +690,7 @@ class Registry:
         if task is None:
             raise RegistryError(f"task not found: {task_id}")
         task["permissions"] = json.loads(task.pop("permissions_json"))
+        task["scope"] = json.loads(task.pop("scope_json"))
         task["events"] = [
             dict(row)
             for row in connection.execute(
@@ -582,6 +739,7 @@ class Registry:
         rows = [dict(row) for row in connection.execute(query, parameters)]
         for task in rows:
             task["permissions"] = json.loads(task.pop("permissions_json"))
+            task["scope"] = json.loads(task.pop("scope_json"))
         return rows
 
     def transition_task(
@@ -630,6 +788,645 @@ class Registry:
                 evidence=evidence,
             )
         return self.get_task(task_id)
+
+    def create_child_task(
+        self,
+        parent_task_id: str,
+        *,
+        title: str,
+        goal: str,
+        success_criteria: str,
+        team_id: str,
+        scope: dict[str, Any],
+        priority: int = 0,
+        permissions: dict[str, Any] | None = None,
+        state: str = "ready",
+    ) -> dict[str, Any]:
+        return self.create_task(
+            title=title,
+            goal=goal,
+            success_criteria=success_criteria,
+            state=state,
+            priority=priority,
+            permissions=permissions,
+            parent_task_id=parent_task_id,
+            team_id=team_id,
+            task_kind="child",
+            scope=scope,
+        )
+
+    def create_team(
+        self,
+        root_task_id: str,
+        *,
+        name: str,
+        manager_identity: dict[str, Any],
+        scope: dict[str, Any] | None = None,
+        parent_team_id: str | None = None,
+    ) -> dict[str, Any]:
+        source, value = _identity(manager_identity, label="manager")
+        if not name.strip():
+            raise RegistryError("team name is required")
+        team_id = _id("team")
+        timestamp = _now()
+        with self._transaction() as connection:
+            if (
+                connection.execute("SELECT 1 FROM tasks WHERE id = ?", (root_task_id,)).fetchone()
+                is None
+            ):
+                raise RegistryError(f"root task not found: {root_task_id}")
+            if (
+                parent_team_id is not None
+                and connection.execute(
+                    "SELECT 1 FROM teams WHERE id = ?", (parent_team_id,)
+                ).fetchone()
+                is None
+            ):
+                raise RegistryError(f"parent team not found: {parent_team_id}")
+            connection.execute(
+                """
+                INSERT INTO teams(
+                    id, root_task_id, parent_team_id, name,
+                    manager_identity_source, manager_identity_value, scope_json,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)
+                """,
+                (
+                    team_id,
+                    root_task_id,
+                    parent_team_id,
+                    name.strip(),
+                    source,
+                    value,
+                    _json(scope or {}),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        return self.get_team(team_id)
+
+    def get_team(self, team_id: str) -> dict[str, Any]:
+        with self._read_transaction() as connection:
+            team = _row(
+                connection.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+            )
+            if team is None:
+                raise RegistryError(f"team not found: {team_id}")
+            team["scope"] = json.loads(team.pop("scope_json"))
+            team["manager_run"] = (
+                self._get_run_impl(connection, team["manager_run_id"])["id"]
+                if team["manager_run_id"]
+                else None
+            )
+            team["tasks"] = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT id, title, state, task_kind, scope_json "
+                    "FROM tasks WHERE team_id = ? ORDER BY created_at, id",
+                    (team_id,),
+                )
+            ]
+            for task in team["tasks"]:
+                task["scope"] = json.loads(task.pop("scope_json"))
+            return team
+
+    def list_teams(self, root_task_id: str | None = None) -> list[dict[str, Any]]:
+        with self._read_transaction() as connection:
+            query = "SELECT * FROM teams"
+            parameters: tuple[Any, ...] = ()
+            if root_task_id is not None:
+                query += " WHERE root_task_id = ?"
+                parameters = (root_task_id,)
+            rows = []
+            for row in connection.execute(query + " ORDER BY created_at, id", parameters):
+                team = dict(row)
+                team["scope"] = json.loads(team.pop("scope_json"))
+                rows.append(team)
+            return rows
+
+    @staticmethod
+    def _expire_resource_claims(connection: sqlite3.Connection, now: str) -> int:
+        return connection.execute(
+            """
+            UPDATE resource_claims
+            SET status = 'reconcile_required', reconciled_at = ?
+            WHERE status = 'active' AND lease_expires_at <= ?
+            """,
+            (now, now),
+        ).rowcount
+
+    @staticmethod
+    def _claim_resources_in_connection(
+        connection: sqlite3.Connection,
+        *,
+        task_id: str,
+        run_id: str,
+        resources: Iterable[dict[str, str] | tuple[str, str] | str],
+        lease_seconds: int,
+        timestamp: str,
+    ) -> list[dict[str, Any]]:
+        if lease_seconds <= 0:
+            raise RegistryError("resource lease must be positive")
+        Registry._expire_resource_claims(connection, timestamp)
+        normalized: list[tuple[str, str]] = []
+        for resource in resources:
+            if isinstance(resource, str):
+                kind, value = "file", resource
+            elif isinstance(resource, tuple):
+                kind, value = resource
+            elif isinstance(resource, dict):
+                kind, value = resource.get("kind", "file"), resource.get("value", "")
+            else:
+                raise RegistryError("resource must be a path, pair, or object")
+            item = _canonical_resource(kind, value)
+            if item in normalized:
+                raise RegistryError(f"duplicate resource claim: {item[0]}:{item[1]}")
+            normalized.append(item)
+        expiry = datetime.fromisoformat(timestamp) + timedelta(seconds=lease_seconds)
+        expires_at = expiry.isoformat()
+        claims = []
+        for kind, key in normalized:
+            conflict = connection.execute(
+                """
+                SELECT id, run_id, status FROM resource_claims
+                WHERE resource_kind = ? AND canonical_key = ? AND status <> 'released'
+                """,
+                (kind, key),
+            ).fetchone()
+            if conflict is not None:
+                if conflict["status"] == "reconcile_required":
+                    raise RegistryError(
+                        f"resource requires reconciliation before reuse: {kind}:{key}"
+                    )
+                raise RegistryError(f"resource is already claimed by run: {conflict['run_id']}")
+            claim_id = _id("claim")
+            fence_token = _id("fence")
+            connection.execute(
+                """
+                INSERT INTO resource_claims(
+                    id, task_id, run_id, resource_kind, canonical_key, fence_token,
+                    status, lease_expires_at, claimed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (claim_id, task_id, run_id, kind, key, fence_token, expires_at, timestamp),
+            )
+            claims.append(
+                {
+                    "id": claim_id,
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "resource_kind": kind,
+                    "canonical_key": key,
+                    "fence_token": fence_token,
+                    "status": "active",
+                    "lease_expires_at": expires_at,
+                    "claimed_at": timestamp,
+                }
+            )
+        return claims
+
+    def claim_resources(
+        self,
+        run_id: str,
+        resources: Iterable[dict[str, str] | tuple[str, str] | str],
+        *,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    ) -> list[dict[str, Any]]:
+        timestamp = _now()
+        with self._transaction() as connection:
+            run = connection.execute(
+                "SELECT id, task_id, status FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["status"] != "running":
+                raise RegistryError("resource claims require a running run")
+            claims = self._claim_resources_in_connection(
+                connection,
+                task_id=run["task_id"],
+                run_id=run_id,
+                resources=resources,
+                lease_seconds=lease_seconds,
+                timestamp=timestamp,
+            )
+        return claims
+
+    def reconcile_resource_claims(self, *, now: str | None = None) -> dict[str, Any]:
+        timestamp = now or _now()
+        with self._transaction() as connection:
+            expired = self._expire_resource_claims(connection, timestamp)
+            claims = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM resource_claims "
+                    "WHERE status = 'reconcile_required' ORDER BY reconciled_at, id"
+                )
+            ]
+        return {"expired": expired, "claims": claims}
+
+    def renew_resource_claim(
+        self,
+        claim_id: str,
+        *,
+        run_id: str,
+        fence_token: str,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    ) -> dict[str, Any]:
+        timestamp = _now()
+        with self._transaction() as connection:
+            self._expire_resource_claims(connection, timestamp)
+            claim = connection.execute(
+                "SELECT * FROM resource_claims WHERE id = ?", (claim_id,)
+            ).fetchone()
+            if claim is None:
+                raise RegistryError(f"resource claim not found: {claim_id}")
+            if claim["run_id"] != run_id or claim["fence_token"] != fence_token:
+                raise RegistryError("resource fence token or owner does not match")
+            if claim["status"] != "active":
+                raise RegistryError(
+                    f"resource claim is {claim['status']}; resource requires reconciliation"
+                )
+            expiry = datetime.fromisoformat(timestamp) + timedelta(seconds=lease_seconds)
+            connection.execute(
+                "UPDATE resource_claims SET lease_expires_at = ? "
+                "WHERE id = ? AND status = 'active'",
+                (expiry.isoformat(), claim_id),
+            )
+        return self._get_record("resource_claims", claim_id)
+
+    def release_resource_claim(
+        self, claim_id: str, *, run_id: str, fence_token: str
+    ) -> dict[str, Any]:
+        with self._transaction() as connection:
+            claim = connection.execute(
+                "SELECT * FROM resource_claims WHERE id = ?", (claim_id,)
+            ).fetchone()
+            if claim is None:
+                raise RegistryError(f"resource claim not found: {claim_id}")
+            if claim["run_id"] != run_id or claim["fence_token"] != fence_token:
+                raise RegistryError("resource fence token or owner does not match")
+            if claim["status"] != "active":
+                raise RegistryError(f"resource claim is {claim['status']}")
+            connection.execute(
+                "UPDATE resource_claims SET status = 'released', released_at = ? WHERE id = ?",
+                (_now(), claim_id),
+            )
+        return self._get_record("resource_claims", claim_id)
+
+    def start_manager_run(
+        self,
+        team_id: str,
+        *,
+        identity: dict[str, Any],
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        source, value = _identity(identity, label="manager")
+        run_id = _id("run")
+        timestamp = _now()
+        with self._transaction() as connection:
+            team = connection.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+            if team is None:
+                raise RegistryError(f"team not found: {team_id}")
+            if team["manager_run_id"] is not None:
+                raise RegistryError(f"team already has a manager run: {team['manager_run_id']}")
+            if (team["manager_identity_source"], team["manager_identity_value"]) != (source, value):
+                raise RegistryError("manager identity does not match team reservation")
+            task = connection.execute(
+                "SELECT state FROM tasks WHERE id = ?", (team["root_task_id"],)
+            ).fetchone()
+            if task is None or task["state"] not in {"ready", "running"}:
+                raise RegistryError("manager requires a ready or running root task")
+            if task["state"] == "ready":
+                connection.execute(
+                    "UPDATE tasks SET state = 'running', updated_at = ? WHERE id = ?",
+                    (timestamp, team["root_task_id"]),
+                )
+            connection.execute(
+                """
+                INSERT INTO runs(id, task_id, agent_role, run_type, team_id, identity_source,
+                    identity_value, model, reasoning_effort, status, started_at)
+                VALUES (?, ?, ?, 'manager', ?, ?, ?, ?, ?, 'running', ?)
+                """,
+                (
+                    run_id,
+                    team["root_task_id"],
+                    value,
+                    team_id,
+                    source,
+                    value,
+                    model,
+                    reasoning_effort,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                "UPDATE teams SET manager_run_id = ?, status = 'running', updated_at = ? WHERE id = ?",  # noqa: E501
+                (run_id, timestamp, team_id),
+            )
+        return self.get_run(run_id)
+
+    def start_worker_run(
+        self,
+        task_id: str,
+        *,
+        manager_run_id: str,
+        identity: dict[str, Any],
+        writer: dict[str, Any],
+        resources: Iterable[dict[str, str] | tuple[str, str] | str] = (),
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        source, value = _identity(identity, label="worker")
+        writer_data = _writer_identity(writer)
+        run_id = _id("run")
+        timestamp = _now()
+        with self._transaction() as connection:
+            manager = connection.execute(
+                "SELECT * FROM runs WHERE id = ? AND run_type = 'manager' AND status = 'running'",
+                (manager_run_id,),
+            ).fetchone()
+            task = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if manager is None:
+                raise RegistryError("worker requires a running manager run")
+            if task is None:
+                raise RegistryError(f"task not found: {task_id}")
+            if task["state"] != "ready":
+                raise RegistryError(f"worker task must be ready; found {task['state']}")
+            if task["team_id"] != manager["team_id"]:
+                raise RegistryError("worker task is outside the manager team")
+            # All conflict checks happen in this write transaction before the run
+            # and writer rows are visible to a dispatcher or worker.
+            self._expire_resource_claims(connection, timestamp)
+            existing_writer = connection.execute(
+                "SELECT run_id FROM writer_identities WHERE branch_name = ? OR worktree_path = ? OR worktree_id = ?",  # noqa: E501
+                (
+                    writer_data["branch_name"],
+                    writer_data["worktree_path"],
+                    writer_data["worktree_id"],
+                ),
+            ).fetchone()
+            if existing_writer is not None:
+                raise RegistryError(
+                    f"writer identity is already reserved by run: {existing_writer['run_id']}"
+                )
+            connection.execute(
+                "INSERT INTO runs(id, task_id, agent_role, run_type, parent_run_id, team_id, identity_source, identity_value, model, reasoning_effort, status, started_at) VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, ?, 'running', ?)",  # noqa: E501
+                (
+                    run_id,
+                    task_id,
+                    value,
+                    manager_run_id,
+                    manager["team_id"],
+                    source,
+                    value,
+                    model,
+                    reasoning_effort,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO writer_identities(run_id, branch_name, base_sha, worktree_path, worktree_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: E501
+                (
+                    run_id,
+                    writer_data["branch_name"],
+                    writer_data["base_sha"],
+                    writer_data["worktree_path"],
+                    writer_data["worktree_id"],
+                    timestamp,
+                ),
+            )
+            claims = self._claim_resources_in_connection(
+                connection,
+                task_id=task_id,
+                run_id=run_id,
+                resources=resources,
+                lease_seconds=lease_seconds,
+                timestamp=timestamp,
+            )
+            connection.execute(
+                "UPDATE tasks SET state = 'running', updated_at = ? WHERE id = ? AND state = 'ready'",  # noqa: E501
+                (timestamp, task_id),
+            )
+        result = self.get_run(run_id)
+        result["resource_claims"] = claims
+        return result
+
+    def start_reviewer_run(
+        self,
+        task_id: str,
+        *,
+        worker_run_id: str,
+        identity: dict[str, Any],
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        source, value = _identity(identity, label="reviewer")
+        run_id = _id("run")
+        timestamp = _now()
+        with self._transaction() as connection:
+            worker = connection.execute(
+                "SELECT * FROM runs WHERE id = ? AND run_type = 'worker'", (worker_run_id,)
+            ).fetchone()
+            task = connection.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if worker is None or worker["task_id"] != task_id:
+                raise RegistryError("reviewer run must reference the task's worker run")
+            if worker["status"] != "finished" or worker["outcome"] != "succeeded":
+                raise RegistryError("reviewer run requires a succeeded worker run")
+            if task is None or task["state"] != "evaluating":
+                raise RegistryError("reviewer run requires an evaluating task")
+            if worker["identity_value"] == value and worker["identity_source"] == source:
+                raise RegistryError("reviewer identity must be independent of worker identity")
+            connection.execute(
+                "INSERT INTO runs(id, task_id, agent_role, run_type, parent_run_id, team_id, identity_source, identity_value, model, reasoning_effort, status, started_at) VALUES (?, ?, ?, 'reviewer', ?, ?, ?, ?, ?, ?, 'running', ?)",  # noqa: E501
+                (
+                    run_id,
+                    task_id,
+                    value,
+                    worker_run_id,
+                    worker["team_id"],
+                    source,
+                    value,
+                    model,
+                    reasoning_effort,
+                    timestamp,
+                ),
+            )
+        return self.get_run(run_id)
+
+    def dispatch_batch(
+        self,
+        root_task_id: str,
+        *,
+        managers: list[dict[str, Any]],
+        workers: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not managers or not workers:
+            raise RegistryError("batch dispatch requires managers and workers")
+        timestamp = _now()
+        manager_runs: list[dict[str, Any]] = []
+        worker_runs: list[dict[str, Any]] = []
+        with self._transaction() as connection:
+            root = connection.execute(
+                "SELECT state FROM tasks WHERE id = ?", (root_task_id,)
+            ).fetchone()
+            if root is None:
+                raise RegistryError(f"root task not found: {root_task_id}")
+            if root["state"] not in {"ready", "running"}:
+                raise RegistryError("batch root task must be ready or running")
+            for _index, spec in enumerate(managers):
+                team_id = spec.get("team_id")
+                source, value = _identity(spec.get("identity"), label="manager")
+                if team_id is None:
+                    name = spec.get("name")
+                    if not isinstance(name, str) or not name.strip():
+                        raise RegistryError("batch manager name is required")
+                    team_id = _id("team")
+                    connection.execute(
+                        "INSERT INTO teams(id, root_task_id, name, manager_identity_source, manager_identity_value, scope_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?)",  # noqa: E501
+                        (
+                            team_id,
+                            root_task_id,
+                            name.strip(),
+                            source,
+                            value,
+                            _json(spec.get("scope", {})),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                team = connection.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+                if team is None or team["root_task_id"] != root_task_id:
+                    raise RegistryError("batch manager team is outside the root task")
+                if team["manager_run_id"] is not None:
+                    raise RegistryError(f"team already has a manager run: {team['manager_run_id']}")
+                if (team["manager_identity_source"], team["manager_identity_value"]) != (
+                    source,
+                    value,
+                ):
+                    raise RegistryError("manager identity does not match team reservation")
+                run_id = _id("run")
+                connection.execute(
+                    "INSERT INTO runs(id, task_id, agent_role, run_type, team_id, identity_source, identity_value, model, reasoning_effort, status, started_at) VALUES (?, ?, ?, 'manager', ?, ?, ?, ?, ?, 'running', ?)",  # noqa: E501
+                    (
+                        run_id,
+                        root_task_id,
+                        value,
+                        team_id,
+                        source,
+                        value,
+                        spec.get("model"),
+                        spec.get("reasoning_effort"),
+                        timestamp,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE teams SET manager_run_id = ?, status = 'running', updated_at = ? WHERE id = ?",  # noqa: E501
+                    (run_id, timestamp, team_id),
+                )
+                manager_runs.append(
+                    {
+                        "id": run_id,
+                        "team_id": team_id,
+                        "identity": {"source": source, "value": value},
+                    }
+                )
+            connection.execute(
+                "UPDATE tasks SET state = 'running', updated_at = ? WHERE id = ? AND state = 'ready'",  # noqa: E501
+                (timestamp, root_task_id),
+            )
+            manager_lookup = {item["id"]: item for item in manager_runs}
+            for spec in workers:
+                manager_run_id = spec.get("manager_run_id")
+                if spec.get("manager_index") is not None:
+                    try:
+                        manager_run_id = manager_runs[int(spec["manager_index"])]["id"]
+                    except (IndexError, TypeError, ValueError) as error:
+                        raise RegistryError("invalid batch manager index") from error
+                manager = manager_lookup.get(manager_run_id)
+                if manager is None:
+                    raise RegistryError("batch worker must identify a manager run")
+                task_id = spec.get("task_id")
+                task = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                if task is None:
+                    raise RegistryError(f"task not found: {task_id}")
+                if task["team_id"] is None and task["parent_task_id"] == root_task_id:
+                    connection.execute(
+                        "UPDATE tasks SET team_id = ? WHERE id = ? AND team_id IS NULL",
+                        (manager["team_id"], task_id),
+                    )
+                    task = connection.execute(
+                        "SELECT * FROM tasks WHERE id = ?", (task_id,)
+                    ).fetchone()
+                if task["state"] != "ready" or task["team_id"] != manager["team_id"]:
+                    raise RegistryError("batch worker task is not ready in the manager team")
+                source, value = _identity(spec.get("identity"), label="worker")
+                writer_data = _writer_identity(spec.get("writer"))
+                existing_writer = connection.execute(
+                    "SELECT run_id FROM writer_identities WHERE branch_name = ? OR worktree_path = ? OR worktree_id = ?",  # noqa: E501
+                    (
+                        writer_data["branch_name"],
+                        writer_data["worktree_path"],
+                        writer_data["worktree_id"],
+                    ),
+                ).fetchone()
+                if existing_writer is not None:
+                    raise RegistryError(
+                        f"writer identity is already reserved by run: {existing_writer['run_id']}"
+                    )
+                run_id = _id("run")
+                connection.execute(
+                    "INSERT INTO runs(id, task_id, agent_role, run_type, parent_run_id, team_id, identity_source, identity_value, model, reasoning_effort, status, started_at) VALUES (?, ?, ?, 'worker', ?, ?, ?, ?, ?, ?, 'running', ?)",  # noqa: E501
+                    (
+                        run_id,
+                        task_id,
+                        value,
+                        manager_run_id,
+                        manager["team_id"],
+                        source,
+                        value,
+                        spec.get("model"),
+                        spec.get("reasoning_effort"),
+                        timestamp,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO writer_identities(run_id, branch_name, base_sha, worktree_path, worktree_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: E501
+                    (
+                        run_id,
+                        writer_data["branch_name"],
+                        writer_data["base_sha"],
+                        writer_data["worktree_path"],
+                        writer_data["worktree_id"],
+                        timestamp,
+                    ),
+                )
+                claims = self._claim_resources_in_connection(
+                    connection,
+                    task_id=task_id,
+                    run_id=run_id,
+                    resources=spec.get("resources", ()),
+                    lease_seconds=spec.get("lease_seconds", DEFAULT_LEASE_SECONDS),
+                    timestamp=timestamp,
+                )
+                connection.execute(
+                    "UPDATE tasks SET state = 'running', updated_at = ? WHERE id = ?",
+                    (timestamp, task_id),
+                )
+                worker_runs.append(
+                    {
+                        "id": run_id,
+                        "task_id": task_id,
+                        "manager_run_id": manager_run_id,
+                        "resource_claims": claims,
+                    }
+                )
+        return {
+            "root_task_id": root_task_id,
+            "manager_runs": manager_runs,
+            "worker_runs": worker_runs,
+        }
 
     def start_run(
         self,
@@ -705,6 +1502,24 @@ class Registry:
         if run is None:
             raise RegistryError(f"run not found: {run_id}")
         run["artifacts"] = json.loads(run.pop("artifacts_json"))
+        run["identity"] = (
+            {"source": run.pop("identity_source"), "value": run.pop("identity_value")}
+            if run.get("identity_source") and run.get("identity_value")
+            else None
+        )
+        writer = _row(
+            connection.execute(
+                "SELECT * FROM writer_identities WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        )
+        run["writer_identity"] = writer
+        run["resource_claims"] = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT * FROM resource_claims WHERE run_id = ? ORDER BY claimed_at, id",
+                (run_id,),
+            )
+        ]
         if binding is not None:
             binding["native_session"] = self._session_reference(binding)
             for key in (
@@ -1116,9 +1931,22 @@ class Registry:
             task = connection.execute(
                 "SELECT * FROM tasks WHERE id = ?", (run["task_id"],)
             ).fetchone()
-            if task is None or task["state"] != "running":
+            run_type = run["run_type"]
+            if task is None or (
+                task["state"] != "evaluating"
+                if run_type == "reviewer"
+                else task["state"] != "running"
+            ):
                 state = None if task is None else task["state"]
-                raise RegistryError(f"run task must be running; found {state}")
+                expected = "evaluating" if run_type == "reviewer" else "running"
+                raise RegistryError(f"{run_type} run task must be {expected}; found {state}")
+            if run_type == "manager" and outcome == "succeeded":
+                open_children = connection.execute(
+                    "SELECT 1 FROM runs WHERE parent_run_id = ? AND status = 'running' LIMIT 1",
+                    (run_id,),
+                ).fetchone()
+                if open_children is not None:
+                    raise RegistryError("manager cannot finish while worker runs are active")
             timestamp = _now()
             connection.execute(
                 """
@@ -1147,16 +1975,27 @@ class Registry:
                 (timestamp, run_id),
             )
             task_outcome = "evaluating" if outcome == "succeeded" else outcome
-            changed = connection.execute(
+            if run_type == "reviewer":
+                changed = 1
+            else:
+                changed = connection.execute(
+                    """
+                    UPDATE tasks
+                    SET state = ?, blocked_on = ?, updated_at = ?
+                    WHERE id = ? AND state = 'running'
+                    """,
+                    (task_outcome, blocked_on, timestamp, run["task_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise RegistryError(f"concurrent run completion detected: {run_id}")
+            connection.execute(
                 """
-                UPDATE tasks
-                SET state = ?, blocked_on = ?, updated_at = ?
-                WHERE id = ? AND state = 'running'
+                UPDATE resource_claims
+                SET status = 'released', released_at = ?
+                WHERE run_id = ? AND status = 'active'
                 """,
-                (task_outcome, blocked_on, timestamp, run["task_id"]),
-            ).rowcount
-            if changed != 1:
-                raise RegistryError(f"concurrent run completion detected: {run_id}")
+                (timestamp, run_id),
+            )
             self._record_event(
                 connection,
                 task_id=run["task_id"],
@@ -1175,6 +2014,7 @@ class Registry:
         *,
         run_id: str,
         evaluator: str,
+        evaluator_run_id: str | None = None,
         passed: bool,
         evidence: str,
         score: float | None = None,
@@ -1197,7 +2037,8 @@ class Registry:
                     f"found {task['state']}"
                 )
             run = connection.execute(
-                "SELECT task_id, agent_role, status, outcome FROM runs WHERE id = ?", (run_id,)
+                "SELECT task_id, agent_role, identity_source, identity_value, run_type, status, outcome FROM runs WHERE id = ?",  # noqa: E501
+                (run_id,),
             ).fetchone()
             if run is None:
                 raise RegistryError(f"run not found: {run_id}")
@@ -1208,7 +2049,7 @@ class Registry:
             latest_eval_run = connection.execute(
                 """
                 SELECT id FROM runs
-                WHERE task_id = ? AND outcome = 'succeeded'
+                WHERE task_id = ? AND outcome = 'succeeded' AND run_type = 'worker'
                 ORDER BY finished_at DESC LIMIT 1
                 """,
                 (task_id,),
@@ -1219,17 +2060,41 @@ class Registry:
                 )
             if run["agent_role"] == evaluator:
                 raise RegistryError("evaluation must be independent from the run agent role")
+            evaluator_run = None
+            if evaluator_run_id is not None:
+                evaluator_run = connection.execute(
+                    "SELECT * FROM runs WHERE id = ?", (evaluator_run_id,)
+                ).fetchone()
+                if evaluator_run is None:
+                    raise RegistryError(f"evaluator run not found: {evaluator_run_id}")
+                if evaluator_run["task_id"] != task_id or evaluator_run["run_type"] != "reviewer":
+                    raise RegistryError(
+                        "evaluator run must be an independent reviewer run for the task"
+                    )
+                if evaluator_run["status"] != "finished":
+                    raise RegistryError("evaluator run must be finished")
+                if evaluator_run["parent_run_id"] != run_id:
+                    raise RegistryError("evaluator run is not linked to the evaluated worker run")
+                if (
+                    evaluator_run["identity_source"] == run["identity_source"]
+                    and evaluator_run["identity_value"] == run["identity_value"]
+                ):
+                    raise RegistryError("evaluator run must be independent from the worker run")
+                if evaluator != evaluator_run["identity_value"]:
+                    raise RegistryError("evaluator identity does not match evaluator run")
             timestamp = _now()
             connection.execute(
                 """
                 INSERT INTO evaluations(
-                    id, task_id, run_id, evaluator, passed, score, evidence, notes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, task_id, run_id, evaluator_run_id, evaluator, passed,
+                    score, evidence, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     evaluation_id,
                     task_id,
                     run_id,
+                    evaluator_run_id,
                     evaluator,
                     int(passed),
                     score,
@@ -1296,6 +2161,179 @@ class Registry:
                 (feedback_id, task_id, run_id, kind, recurrence_key, content, _now()),
             )
         return self._get_record("feedback", feedback_id)
+
+    def record_signal(
+        self,
+        task_id: str,
+        *,
+        kind: str,
+        content: str,
+        source_run_id: str | None = None,
+        team_id: str | None = None,
+        redacted: bool = False,
+    ) -> dict[str, Any]:
+        if kind not in SIGNAL_KINDS:
+            raise RegistryError(f"invalid executive signal kind: {kind}")
+        if not content.strip():
+            raise RegistryError("executive signal content is required")
+        signal_id = _id("signal")
+        stored_content = "[redacted]" if redacted else content.strip()
+        with self._transaction() as connection:
+            if (
+                connection.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                is None
+            ):
+                raise RegistryError(f"task not found: {task_id}")
+            if source_run_id is not None:
+                source = connection.execute(
+                    "SELECT task_id FROM runs WHERE id = ?", (source_run_id,)
+                ).fetchone()
+                descendant = (
+                    None
+                    if source is None
+                    else connection.execute(
+                        """
+                    WITH RECURSIVE descendants(id) AS (
+                        SELECT ? UNION ALL
+                        SELECT t.id FROM tasks t JOIN descendants d ON t.parent_task_id = d.id
+                    )
+                    SELECT 1 FROM descendants WHERE id = ?
+                    """,
+                        (task_id, source["task_id"]),
+                    ).fetchone()
+                )
+                if descendant is None:
+                    raise RegistryError("signal source run does not belong to task")
+            if (
+                team_id is not None
+                and connection.execute("SELECT 1 FROM teams WHERE id = ?", (team_id,)).fetchone()
+                is None
+            ):
+                raise RegistryError(f"team not found: {team_id}")
+            connection.execute(
+                "INSERT INTO task_signals(id, task_id, team_id, source_run_id, kind, content, redacted, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: E501
+                (
+                    signal_id,
+                    task_id,
+                    team_id,
+                    source_run_id,
+                    kind,
+                    stored_content,
+                    int(redacted),
+                    _now(),
+                ),
+            )
+        return self._get_record("task_signals", signal_id)
+
+    def record_decision(self, task_id: str, content: str, **kwargs: Any) -> dict[str, Any]:
+        return self.record_signal(task_id, kind="decision", content=content, **kwargs)
+
+    def record_blocker(self, task_id: str, content: str, **kwargs: Any) -> dict[str, Any]:
+        return self.record_signal(task_id, kind="blocker", content=content, **kwargs)
+
+    def record_approval(self, task_id: str, content: str, **kwargs: Any) -> dict[str, Any]:
+        return self.record_signal(task_id, kind="approval", content=content, **kwargs)
+
+    def executive_status(self, task_id: str) -> dict[str, Any]:
+        """Return an intentionally small management view, never a transcript view."""
+        with self._read_transaction() as connection:
+            if (
+                connection.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                is None
+            ):
+                raise RegistryError(f"task not found: {task_id}")
+            task_ids = [
+                row[0]
+                for row in connection.execute(
+                    "WITH RECURSIVE descendants(id) AS (SELECT ? UNION ALL "
+                    "SELECT t.id FROM tasks t JOIN descendants d "
+                    "ON t.parent_task_id = d.id) SELECT id FROM descendants",
+                    (task_id,),
+                )
+            ]
+            placeholders = ",".join("?" for _ in task_ids)
+            signals = {}
+            for kind in SIGNAL_KINDS:
+                signals[kind] = [
+                    {
+                        "id": row["id"],
+                        "content": row["content"],
+                        "redacted": bool(row["redacted"]),
+                        "created_at": row["created_at"],
+                    }
+                    for row in connection.execute(
+                        f"SELECT id, content, redacted, created_at FROM task_signals "
+                        f"WHERE task_id IN ({placeholders}) AND kind = ? "
+                        "ORDER BY created_at, id",
+                        (*task_ids, kind),
+                    )
+                ]
+            outcome_counts = {
+                row["state"]: row["count"]
+                for row in connection.execute(
+                    f"SELECT state, COUNT(*) AS count FROM tasks "
+                    f"WHERE id IN ({placeholders}) GROUP BY state",
+                    task_ids,
+                )
+            }
+            run_outcomes = {
+                row["outcome"] or "running": row["count"]
+                for row in connection.execute(
+                    f"SELECT outcome, COUNT(*) AS count FROM runs "
+                    f"WHERE task_id IN ({placeholders}) GROUP BY outcome",
+                    task_ids,
+                )
+            }
+            team_rows = connection.execute(
+                f"SELECT id, name, status FROM teams "
+                f"WHERE root_task_id IN ({placeholders}) ORDER BY created_at, id",
+                task_ids,
+            ).fetchall()
+            teams = []
+            for team in team_rows:
+                counts = {
+                    row["state"]: row["count"]
+                    for row in connection.execute(
+                        "SELECT state, COUNT(*) AS count FROM tasks "
+                        "WHERE team_id = ? GROUP BY state",
+                        (team["id"],),
+                    )
+                }
+                runs = connection.execute(
+                    "SELECT run_type, status, COUNT(*) AS count FROM runs "
+                    "WHERE team_id = ? GROUP BY run_type, status",
+                    (team["id"],),
+                ).fetchall()
+                teams.append(
+                    {
+                        "team_id": team["id"],
+                        "name": team["name"],
+                        "status": team["status"],
+                        "task_counts": counts,
+                        "run_counts": [
+                            {
+                                "run_type": row["run_type"],
+                                "status": row["status"],
+                                "count": row["count"],
+                            }
+                            for row in runs
+                        ],
+                    }
+                )
+            root = connection.execute(
+                "SELECT state, title FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            return {
+                "task_id": task_id,
+                "title": root["title"],
+                "state": root["state"],
+                "outcome_counts": outcome_counts,
+                "run_outcomes": run_outcomes,
+                "decisions": signals["decision"],
+                "blockers": signals["blocker"],
+                "approvals": signals["approval"],
+                "teams": teams,
+            }
 
     def propose_promotions(self) -> list[dict[str, Any]]:
         self.initialize()
@@ -1737,7 +2775,7 @@ class Registry:
         )
 
     def _get_record(self, table: str, record_id: str) -> dict[str, Any]:
-        if table not in {"evaluations", "feedback", "run_turns"}:
+        if table not in {"evaluations", "feedback", "run_turns", "resource_claims", "task_signals"}:
             raise RegistryError(f"unsupported record table: {table}")
         with self._read_transaction() as connection:
             record = _row(

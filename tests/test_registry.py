@@ -195,7 +195,7 @@ def test_concurrent_fresh_initialization_is_singleton_and_error_free(tmp_path):
         registry = Registry(database)
         with closing(registry._connect()) as connection:
             assert connection.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 1
-            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
@@ -997,7 +997,7 @@ def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -1022,7 +1022,7 @@ def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
     assert migrated["turns"][0]["summary"] == "historical turn"
     assert migrated["turns"][0]["result"] is None
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(herdr_bindings)")}
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
@@ -1044,7 +1044,7 @@ def test_version_three_migration_preserves_turn_data(tmp_path):
         assert turn["summary"] == "preserved"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v3"
         assert turn["prompt"] == ""
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM promotions").fetchone()[0] == 1
@@ -1061,7 +1061,7 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         turn = connection.execute("SELECT * FROM run_turns WHERE id = 'turn_v4'").fetchone()
         assert turn["prompt"] == "historical prompt"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v4"

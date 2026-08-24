@@ -59,6 +59,10 @@ def _parser() -> argparse.ArgumentParser:
     task_create.add_argument("--priority", type=int, default=0)
     task_create.add_argument("--permissions-json", default="{}")
     task_create.add_argument("--next-action")
+    task_create.add_argument("--parent-task-id")
+    task_create.add_argument("--team-id")
+    task_create.add_argument("--task-kind", default="task")
+    task_create.add_argument("--scope-json", default="{}")
 
     task_list = task_commands.add_parser("list", help="List tasks by state")
     task_list.add_argument("--state", action="append", choices=sorted(TASK_STATES))
@@ -75,6 +79,19 @@ def _parser() -> argparse.ArgumentParser:
     task_transition.add_argument("--next-action")
     task_transition.add_argument("--blocked-on")
 
+    team = subparsers.add_parser("team", help="Create and inspect parallel manager teams")
+    team_commands = team.add_subparsers(dest="team_command", required=True)
+    team_create = team_commands.add_parser("create")
+    team_create.add_argument("root_task_id")
+    team_create.add_argument("--name", required=True)
+    team_create.add_argument("--manager-identity-json", required=True)
+    team_create.add_argument("--scope-json", default="{}")
+    team_create.add_argument("--parent-team-id")
+    team_list = team_commands.add_parser("list")
+    team_list.add_argument("--root-task-id")
+    team_show = team_commands.add_parser("show")
+    team_show.add_argument("team_id")
+
     run = subparsers.add_parser("run", help="Record delegated agent runs")
     run_commands = run.add_subparsers(dest="run_command", required=True)
     run_start = run_commands.add_parser("start", help="Start an execution run")
@@ -83,6 +100,31 @@ def _parser() -> argparse.ArgumentParser:
     run_start.add_argument("--thread-id")
     run_start.add_argument("--model")
     run_start.add_argument("--reasoning-effort")
+
+    manager_start = run_commands.add_parser("manager-start", help="Start a manager run")
+    manager_start.add_argument("team_id")
+    manager_start.add_argument("--identity-json", required=True)
+    manager_start.add_argument("--model")
+    manager_start.add_argument("--reasoning-effort")
+
+    worker_start = run_commands.add_parser("worker-start", help="Start a fenced writer run")
+    worker_start.add_argument("task_id")
+    worker_start.add_argument("--manager-run-id", required=True)
+    worker_start.add_argument("--identity-json", required=True)
+    worker_start.add_argument("--writer-json", required=True)
+    worker_start.add_argument("--resources-json", default="[]")
+    worker_start.add_argument("--lease-seconds", type=int, default=300)
+    worker_start.add_argument("--model")
+    worker_start.add_argument("--reasoning-effort")
+
+    reviewer_start = run_commands.add_parser(
+        "reviewer-start", help="Start an independent reviewer run"
+    )
+    reviewer_start.add_argument("task_id")
+    reviewer_start.add_argument("--worker-run-id", required=True)
+    reviewer_start.add_argument("--identity-json", required=True)
+    reviewer_start.add_argument("--model")
+    reviewer_start.add_argument("--reasoning-effort")
 
     run_show = run_commands.add_parser("show", help="Show run details")
     run_show.add_argument("run_id")
@@ -145,6 +187,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate = subparsers.add_parser("evaluate", help="Record an independent evaluation")
     evaluate.add_argument("task_id")
     evaluate.add_argument("--run-id", required=True)
+    evaluate.add_argument("--evaluator-run-id")
     evaluate.add_argument("--evaluator", required=True)
     result = evaluate.add_mutually_exclusive_group(required=True)
     result.add_argument("--passed", action="store_true")
@@ -180,6 +223,35 @@ def _parser() -> argparse.ArgumentParser:
     promotion_set = promotion_commands.add_parser("set", help="Set promotion status explicitly")
     promotion_set.add_argument("promotion_id")
     promotion_set.add_argument("status", choices=["accepted", "rejected", "applied"])
+
+    dispatch = subparsers.add_parser(
+        "dispatch", help="Atomically dispatch a parallel manager batch"
+    )
+    dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
+    batch = dispatch_commands.add_parser("batch")
+    batch.add_argument("root_task_id")
+    batch.add_argument("--managers-json", required=True)
+    batch.add_argument("--workers-json", required=True)
+
+    resource = subparsers.add_parser("resource", help="Reconcile fenced resource leases")
+    resource_commands = resource.add_subparsers(dest="resource_command", required=True)
+    resource_reconcile = resource_commands.add_parser("reconcile")
+    resource_reconcile.add_argument("--now")
+
+    status = subparsers.add_parser("status", help="Show redacted executive status")
+    status_commands = status.add_subparsers(dest="status_command", required=True)
+    executive = status_commands.add_parser("executive")
+    executive.add_argument("task_id")
+
+    signal = subparsers.add_parser(
+        "signal", help="Record an executive decision, blocker, or approval"
+    )
+    signal.add_argument("task_id")
+    signal.add_argument("kind", choices=["decision", "blocker", "approval"])
+    signal.add_argument("--content", required=True)
+    signal.add_argument("--source-run-id")
+    signal.add_argument("--team-id")
+    signal.add_argument("--redacted", action="store_true")
 
     supervisor = subparsers.add_parser(
         "supervisor", help="Supervisor actions (alias for default bossmode)"
@@ -255,6 +327,10 @@ def _run(args: argparse.Namespace) -> Any:
                 priority=args.priority,
                 permissions=_load_json(args.permissions_json, dict),
                 next_action=args.next_action,
+                parent_task_id=args.parent_task_id,
+                team_id=args.team_id,
+                task_kind=args.task_kind,
+                scope=_load_json(args.scope_json, dict),
             )
         if args.task_command == "list":
             return registry.list_tasks(args.state)
@@ -270,12 +346,51 @@ def _run(args: argparse.Namespace) -> Any:
             blocked_on=args.blocked_on,
         )
 
+    if args.command == "team":
+        if args.team_command == "create":
+            return registry.create_team(
+                args.root_task_id,
+                name=args.name,
+                manager_identity=_load_json(args.manager_identity_json, dict),
+                scope=_load_json(args.scope_json, dict),
+                parent_team_id=args.parent_team_id,
+            )
+        if args.team_command == "list":
+            return registry.list_teams(args.root_task_id)
+        return registry.get_team(args.team_id)
+
     if args.command == "run":
         if args.run_command == "start":
             return registry.start_run(
                 args.task_id,
                 agent_role=args.role,
                 thread_id=args.thread_id,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+            )
+        if args.run_command == "manager-start":
+            return registry.start_manager_run(
+                args.team_id,
+                identity=_load_json(args.identity_json, dict),
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+            )
+        if args.run_command == "worker-start":
+            return registry.start_worker_run(
+                args.task_id,
+                manager_run_id=args.manager_run_id,
+                identity=_load_json(args.identity_json, dict),
+                writer=_load_json(args.writer_json, dict),
+                resources=_load_json(args.resources_json, list),
+                lease_seconds=args.lease_seconds,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+            )
+        if args.run_command == "reviewer-start":
+            return registry.start_reviewer_run(
+                args.task_id,
+                worker_run_id=args.worker_run_id,
+                identity=_load_json(args.identity_json, dict),
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
             )
@@ -326,11 +441,35 @@ def _run(args: argparse.Namespace) -> Any:
         return registry.add_evaluation(
             args.task_id,
             run_id=args.run_id,
+            evaluator_run_id=args.evaluator_run_id,
             evaluator=args.evaluator,
             passed=args.passed,
             score=args.score,
             evidence=args.evidence,
             notes=args.notes,
+        )
+
+    if args.command == "dispatch":
+        return registry.dispatch_batch(
+            args.root_task_id,
+            managers=_load_json(args.managers_json, list),
+            workers=_load_json(args.workers_json, list),
+        )
+
+    if args.command == "resource":
+        return registry.reconcile_resource_claims(now=args.now)
+
+    if args.command == "status":
+        return registry.executive_status(args.task_id)
+
+    if args.command == "signal":
+        return registry.record_signal(
+            args.task_id,
+            kind=args.kind,
+            content=args.content,
+            source_run_id=args.source_run_id,
+            team_id=args.team_id,
+            redacted=args.redacted,
         )
 
     if args.command == "feedback":
