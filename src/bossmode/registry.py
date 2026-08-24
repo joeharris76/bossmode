@@ -532,6 +532,63 @@ def _validated_accepted_head(
     return live_head
 
 
+def _validated_reconciled_head(
+    run: sqlite3.Row,
+    writer: sqlite3.Row,
+    accepted_head_sha: str | None,
+    repository_path: str | Path,
+) -> str:
+    repository = os.path.realpath(os.path.abspath(str(repository_path)))
+    for field in ("repository_path", "worktree_path", "branch_name"):
+        if not isinstance(writer[field], str) or not writer[field].strip():
+            raise RegistryError(f"recorded writer {field} is missing")
+    recorded_repository = os.path.realpath(os.path.abspath(writer["repository_path"]))
+    if recorded_repository != repository:
+        raise RegistryError("recorded writer repository does not match the registry repository")
+    repository_root = os.path.realpath(
+        _git_command(["rev-parse", "--show-toplevel"], cwd=recorded_repository).stdout.strip()
+    )
+    if repository_root != recorded_repository:
+        raise RegistryError("recorded writer repository is not the live Git root")
+
+    worktrees = _live_worktrees(recorded_repository)
+    writer_path = os.path.realpath(os.path.abspath(writer["worktree_path"]))
+    matching = [item for item in worktrees if os.path.realpath(str(item["path"])) == writer_path]
+    if len(matching) != 1:
+        raise RegistryError("recorded writer worktree is missing or ambiguous in live Git")
+    live_worktree = matching[0]
+    if writer_path == recorded_repository:
+        raise RegistryError("recorded writer worktree cannot be the primary checkout")
+    recorded_branch = _canonical_branch(writer["branch_name"])
+    if live_worktree["branch"] != recorded_branch:
+        raise RegistryError("recorded writer branch does not match the live worktree branch")
+    live_branch = _git_command(["symbolic-ref", "--short", "HEAD"], cwd=writer_path).stdout.strip()
+    if _canonical_branch(live_branch) != recorded_branch:
+        raise RegistryError("recorded writer branch does not match the live branch")
+    status = _git_command(
+        ["status", "--porcelain", "--untracked-files=all"], cwd=writer_path
+    ).stdout
+    if status:
+        raise RegistryError("recorded writer worktree is dirty")
+    live_head = _git_command(["rev-parse", "HEAD"], cwd=writer_path).stdout.strip()
+    if live_head != str(live_worktree["head"]):
+        raise RegistryError(
+            "live writer worktree head is ambiguous or changed during reconciliation"
+        )
+
+    head = _validate_sha(accepted_head_sha, label="accepted head SHA")
+    resolved = _git_command(
+        ["rev-parse", "--verify", f"{head}^{{commit}}"], cwd=recorded_repository
+    ).stdout.strip()
+    if resolved != live_head:
+        raise RegistryError("accepted head SHA does not match the live current head")
+    if run["identity_source"] is None or run["identity_value"] is None:
+        raise RegistryError("finished worker identity is missing")
+    if run["agent_role"] != run["identity_value"]:
+        raise RegistryError("finished worker identity is inconsistent")
+    return resolved
+
+
 def _tab_label(label: str | None, *, fallback: str) -> str:
     value = fallback if label is None else label
     if not isinstance(value, str) or not value.strip():
@@ -2717,6 +2774,50 @@ class Registry:
                 to_state=task_outcome,
                 reason=summary,
                 evidence=_json(artifacts or []),
+            )
+        return self.get_run(run_id)
+
+    def reconcile_accepted_head(
+        self, run_id: str, *, accepted_head_sha: str, evidence: str
+    ) -> dict[str, Any]:
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise RegistryError("accepted head reconciliation evidence is required")
+        with self._transaction() as connection:
+            run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["run_type"] != "worker" or run["team_id"] is None:
+                raise RegistryError("accepted head reconciliation requires a team worker run")
+            if run["status"] != "finished" or run["outcome"] != "succeeded":
+                raise RegistryError(
+                    "accepted head reconciliation requires a finished successful worker"
+                )
+            writer = connection.execute(
+                "SELECT * FROM writer_identities WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if writer is None:
+                raise RegistryError("accepted head reconciliation requires a writer identity")
+            if writer["accepted_head_sha"] is not None:
+                raise RegistryError("accepted head is already assigned and cannot be overwritten")
+            resolved_head = _validated_reconciled_head(
+                run, writer, accepted_head_sha, self.repository_path
+            )
+            changed = connection.execute(
+                "UPDATE writer_identities SET accepted_head_sha = ? "
+                "WHERE run_id = ? AND accepted_head_sha IS NULL",
+                (resolved_head, run_id),
+            ).rowcount
+            if changed != 1:
+                raise RegistryError(
+                    "accepted head was assigned concurrently and cannot be overwritten"
+                )
+            self._record_event(
+                connection,
+                task_id=run["task_id"],
+                event_type="accepted_head_reconciled",
+                actor="supervisor",
+                reason=f"accepted head reconciled for worker {run_id}",
+                evidence=evidence.strip(),
             )
         return self.get_run(run_id)
 

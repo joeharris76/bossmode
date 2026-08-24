@@ -37,7 +37,7 @@ skill directory.
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `task create` (`task add`) | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action`, `--parent-task-id`, `--team-id`, `--task-kind`, `--scope-json OBJECT` |
+| `task create` (`task add`) | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action`, `--parent-task-id`, `--team-id`, `--task-kind`, `--scope-json OBJECT`, `--approved-base-sha SHA` |
 | `task list` | — | repeatable `--state STATE` |
 | `task show TASK_ID` | `TASK_ID` | — |
 | `task transition TASK_ID STATE` | `TASK_ID`, `STATE`, `--actor`, `--reason` | `--evidence`, `--next-action`, `--blocked-on` |
@@ -129,10 +129,18 @@ tab to work around an ambiguity.
 |---|---|---|
 | `run start TASK_ID` | `TASK_ID`, `--role` | `--thread-id`, `--model`, `--reasoning-effort` |
 | `run show RUN_ID` | `RUN_ID` | — |
-| `run finish RUN_ID` | `RUN_ID`, `--outcome`, `--summary` | `--artifacts-json ARRAY`, `--tokens`, `--duration-seconds`, `--retries`, `--blocked-on` |
+| `run finish RUN_ID` | `RUN_ID`, `--outcome`, `--summary` | `--artifacts-json ARRAY`, `--tokens`, `--duration-seconds`, `--retries`, `--blocked-on`, `--accepted-head-sha SHA` |
+| `run reconcile-accepted-head RUN_ID` | `RUN_ID`, `--accepted-head-sha SHA`, `--evidence TEXT` | aliases: `accepted-head-reconcile`, `reconcile-head` |
 
 Run outcomes are `waiting_user`, `blocked`, `succeeded`, and `failed`. A successful run moves its
 task to `evaluating`, not final success.
+
+For a legacy finished team worker whose schema-upgraded writer row has no accepted head, use
+`run reconcile-accepted-head`. The command requires a finished successful team worker, the recorded
+repository/worktree/branch to match live Git, the supplied SHA to be the existing live current
+commit, and non-empty reconciliation evidence. It records that evidence in the worker task's
+event history and performs a one-time NULL-to-SHA assignment; an existing accepted head cannot be
+overwritten.
 
 ## Herdr bindings
 

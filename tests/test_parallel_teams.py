@@ -170,6 +170,189 @@ def _complete_worker(
     return worker, reviewer
 
 
+def _legacy_worker(registry: Registry, tmp_path: Path) -> tuple[dict, dict, dict, dict]:
+    root, teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "legacy-worker"},
+        writer=_writer(registry, "legacy/worker", "legacy-worker", "legacy-worker"),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="legacy worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE writer_identities SET accepted_head_sha = NULL WHERE run_id = ?",
+            (worker["id"],),
+        )
+    return root, teams[0], children[0], registry.get_run(worker["id"])
+
+
+def test_reconcile_accepted_head_repairs_a_legacy_team_worker(registry, tmp_path):
+    _root, _team, child, worker = _legacy_worker(registry, tmp_path)
+    accepted_head = _head(worker["writer_identity"])
+
+    reconciled = registry.reconcile_accepted_head(
+        worker["id"],
+        accepted_head_sha=accepted_head,
+        evidence="Repository, worktree, branch, and live current head verified",
+    )
+
+    assert reconciled["writer_identity"]["accepted_head_sha"] == accepted_head
+    event = registry.get_task(child["id"])["events"][-1]
+    assert event["event_type"] == "accepted_head_reconciled"
+    assert "live current head verified" in event["evidence"]
+
+
+def test_cli_run_finish_records_exact_accepted_head_for_team_worker(
+    registry, tmp_path, capsys, monkeypatch
+):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "cli-finish-worker"},
+        writer=_writer(registry, "cli/finish", "cli-finish", "cli-finish"),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    monkeypatch.chdir(registry.repository_path)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(registry.path),
+                "run",
+                "finish",
+                worker["id"],
+                "--outcome",
+                "succeeded",
+                "--summary",
+                "CLI finished team worker",
+                "--accepted-head-sha",
+                accepted_head,
+            ]
+        )
+        == 0
+    )
+    finished = json.loads(capsys.readouterr().out)
+    assert finished["writer_identity"]["accepted_head_sha"] == accepted_head
+    assert registry.get_run(worker["id"])["writer_identity"]["accepted_head_sha"] == accepted_head
+
+
+def test_reconcile_accepted_head_rejects_active_and_wrong_identity(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "active-worker"},
+        writer=_writer(registry, "reconcile/active", "reconcile-active", "reconcile-active"),
+    )
+    with pytest.raises(RegistryError, match="finished successful worker"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=_head(worker["writer_identity"]), evidence="checked"
+        )
+    with pytest.raises(RegistryError, match="team worker run"):
+        registry.reconcile_accepted_head(
+            managers[0]["id"], accepted_head_sha=_repo_head(registry), evidence="checked"
+        )
+
+
+def test_reconcile_accepted_head_rejects_unrelated_repository(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    unrelated = _create_repository(tmp_path / "unrelated")
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE writer_identities SET repository_path = ? WHERE run_id = ?",
+            (str(unrelated), worker["id"]),
+        )
+    with pytest.raises(RegistryError, match="recorded writer repository"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=_head(worker["writer_identity"]), evidence="checked"
+        )
+
+
+def test_reconcile_accepted_head_rejects_missing_or_inconsistent_identity(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    accepted_head = _head(worker["writer_identity"])
+    with registry._transaction() as connection:
+        connection.execute("UPDATE runs SET identity_source = NULL WHERE id = ?", (worker["id"],))
+    with pytest.raises(RegistryError, match="identity is missing"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=accepted_head, evidence="checked"
+        )
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE runs SET identity_source = 'native', agent_role = 'different-worker' "
+            "WHERE id = ?",
+            (worker["id"],),
+        )
+    with pytest.raises(RegistryError, match="identity is inconsistent"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=accepted_head, evidence="checked"
+        )
+
+
+@pytest.mark.parametrize("change", ["branch", "head"])
+def test_reconcile_accepted_head_rejects_moved_branch_or_head(registry, tmp_path, change):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    accepted_head = _head(worker["writer_identity"])
+    if change == "branch":
+        with registry._transaction() as connection:
+            connection.execute(
+                "UPDATE writer_identities SET branch_name = ? WHERE run_id = ?",
+                ("legacy/moved", worker["id"]),
+            )
+    else:
+        worktree = Path(worker["writer_identity"]["worktree_path"])
+        (worktree / "moved").write_text("head moved\n")
+        subprocess.run(["git", "-C", str(worktree), "add", "moved"], check=True)
+        subprocess.run(
+            ["git", "-C", str(worktree), "commit", "-m", "move head"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    with pytest.raises(RegistryError, match="branch|current head"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=accepted_head, evidence="checked"
+        )
+
+
+def test_reconcile_accepted_head_rejects_ambiguous_live_worktree(registry, tmp_path, monkeypatch):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+
+    def ambiguous(_repository):
+        raise RegistryError("live Git worktree inventory is ambiguous")
+
+    monkeypatch.setattr(registry_module, "_live_worktrees", ambiguous)
+    with pytest.raises(RegistryError, match="ambiguous"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=_head(worker["writer_identity"]), evidence="checked"
+        )
+
+
+def test_reconcile_accepted_head_is_one_time_and_requires_evidence(registry, tmp_path):
+    _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
+    accepted_head = _head(worker["writer_identity"])
+    with pytest.raises(RegistryError, match="evidence"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha=accepted_head, evidence=" "
+        )
+    registry.reconcile_accepted_head(
+        worker["id"], accepted_head_sha=accepted_head, evidence="first reconciliation"
+    )
+    with pytest.raises(RegistryError, match="cannot be overwritten"):
+        registry.reconcile_accepted_head(
+            worker["id"], accepted_head_sha="0" * 40, evidence="second reconciliation"
+        )
+
+
 def test_batch_dispatch_supports_three_workers_and_two_managers(registry, tmp_path):
     root, teams, children, _ = _setup(registry, tmp_path, start_managers=False)
     result = registry.dispatch_batch(

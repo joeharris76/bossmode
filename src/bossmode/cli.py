@@ -64,6 +64,12 @@ def _parser() -> argparse.ArgumentParser:
     task_create.add_argument("--team-id")
     task_create.add_argument("--task-kind", default="task")
     task_create.add_argument("--scope-json", default="{}")
+    task_create.add_argument(
+        "--approved-base-sha",
+        "--base-sha",
+        dest="approved_base_sha",
+        help="Supervisor-approved base SHA for the task",
+    )
 
     task_list = task_commands.add_parser("list", help="List tasks by state")
     task_list.add_argument("--state", action="append", choices=sorted(TASK_STATES))
@@ -174,6 +180,14 @@ def _parser() -> argparse.ArgumentParser:
         dest="accepted_head_sha",
         help="Exact Git head SHA accepted for this run",
     )
+    run_reconcile_head = run_commands.add_parser(
+        "reconcile-accepted-head",
+        aliases=["accepted-head-reconcile", "reconcile-head"],
+        help="Reconcile a missing accepted head for a finished team worker",
+    )
+    run_reconcile_head.add_argument("run_id")
+    run_reconcile_head.add_argument("--accepted-head-sha", "--head-sha", required=True)
+    run_reconcile_head.add_argument("--evidence", required=True)
 
     herdr = subparsers.add_parser("herdr", help="Bind a run to an official Herdr session")
     herdr_commands = herdr.add_subparsers(dest="herdr_command", required=True)
@@ -483,6 +497,7 @@ def _run(args: argparse.Namespace) -> Any:
                 team_id=args.team_id,
                 task_kind=args.task_kind,
                 scope=_load_json(args.scope_json, dict),
+                approved_base_sha=args.approved_base_sha,
             )
         if args.task_command == "list":
             return registry.list_tasks(args.state)
@@ -565,11 +580,22 @@ def _run(args: argparse.Namespace) -> Any:
             )
         if args.run_command == "show":
             return registry.get_run(args.run_id)
+        if args.run_command in {
+            "reconcile-accepted-head",
+            "accepted-head-reconcile",
+            "reconcile-head",
+        }:
+            return registry.reconcile_accepted_head(
+                args.run_id,
+                accepted_head_sha=args.accepted_head_sha,
+                evidence=args.evidence,
+            )
         return registry.finish_run(
             args.run_id,
             outcome=args.outcome,
             summary=args.summary,
             artifacts=_run_artifacts(args.artifacts_json, args.accepted_head_sha),
+            accepted_head_sha=args.accepted_head_sha,
             tokens=args.tokens,
             duration_seconds=args.duration_seconds,
             retries=args.retries,

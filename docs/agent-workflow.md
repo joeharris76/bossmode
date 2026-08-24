@@ -49,7 +49,9 @@ indexes that must be reconciled before every prompt, interruption, continuation,
 ## Common task lifecycle
 
 1. The supervisor runs `uv run bossmode` to inspect session state and ready tasks.
-2. It records user requests with `bossmode task create`, including success criteria and permission limits.
+2. It records user requests with `bossmode task create`, including success criteria, permission
+   limits, and (for team Git work) the explicit `--approved-base-sha` input. Do not hide the
+   approved base only inside scope JSON.
 3. For singleton work it selects only the task returned in `dispatch` and
    starts one run. For team work it uses the atomic `dispatch batch` path for
    disjoint child tasks; singleton dispatch remains serialized while another
@@ -275,6 +277,25 @@ When a task has disjoint bounded slices, use the team workflow:
    child, then finish the manager. The manager cannot finish while child
    workers or reviewers are active, while claims remain held, or while any
    child lacks a passing evaluation.
+
+### Recover a legacy accepted head
+
+Schema upgrades can leave a finished successful team worker with a writer row whose
+`accepted_head_sha` is NULL. Reconcile it through the public CLI path only after inspecting the
+recorded run and live Git state:
+
+```bash
+uv run bossmode run reconcile-accepted-head RUN_ID \
+  --accepted-head-sha LIVE_CURRENT_HEAD_SHA \
+  --evidence "Recorded repository, clean linked worktree, branch, and exact current head verified"
+```
+
+The registry validates the recorded repository, worktree, branch, live current head, successful
+team-worker identity, and exact commit existence in one write transaction. Evidence is required
+and recorded in task history. The assignment is conditional on `accepted_head_sha IS NULL`, so it
+is immutable and cannot overwrite a prior accepted head. Active runs, non-workers, wrong identities,
+unrelated repositories, moved branches or heads, ambiguous worktrees, and invalid commits are
+rejected.
 7. Report `status executive TASK_ID` to leadership. This view contains only
    aggregate outcomes, signals, approvals, blockers, and team progress; it
    excludes prompts, transcripts, turn artifacts, and low-level worker activity.
