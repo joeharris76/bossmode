@@ -19,7 +19,7 @@ bossmode                        # Default: Reconcile project session and return 
 │   ├── show <id>               # Show task details and event history
 │   └── transition <id> <state> # Move task between lifecycle states
 ├── team
-│   ├── create/list/show         # Manage bounded manager teams
+│   ├── create/bind-tab/list/show # Manage teams and reconcile one named tab
 ├── run
 │   ├── start <task_id>          # Start a singleton execution run
 │   ├── manager-start <team_id>  # Start a durable manager run
@@ -79,7 +79,8 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 
 ## 3. Dispatch
 
-1. Select only the single task returned in `dispatch`.
+1. For singleton work, select only the task returned in `dispatch`; for team
+   work, use the atomic `dispatch batch` path for disjoint child tasks.
 2. Choose the narrowest role: `researcher` for read-heavy evidence, `worker` for authorized edits,
    or `reviewer` for independent evaluation.
 3. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
@@ -104,10 +105,21 @@ carry fence tokens, and are atomic with worker creation. Expired leases become
 `reconcile_required` and are never automatically stolen.
 
 Each team has one unique durable `expected_tab_label` and one reconciled live
-Herdr `(session, workspace, tab)` binding. Create the named tab first, reconcile
-it with `bossmode team bind-tab`, and reject every manager, worker, or reviewer
-binding whose observed workspace or tab differs. Singleton runs with no
-`team_id` remain compatible with the legacy binding path.
+Herdr `(session, workspace, tab)` binding. Validate the task/team hierarchy
+before persistence. Create the named tab first, reconcile it with `bossmode
+team bind-tab`, and reject every manager, worker, or reviewer binding whose
+observed workspace or tab differs. Singleton runs with no `team_id` remain
+bounded-compatible with the legacy binding path.
+
+Before creating a worker through `dispatch batch` or `run worker-start`, admit
+the live Git writer. Require a dedicated non-protected branch, a clean linked
+worktree that is not the primary checkout, unique branch/path/worktree identity,
+and a base SHA that resolves to an existing commit in the repository. Reject
+protected branches (`main`, `master`, `develop`, and repository-configured
+protected branches), dirty or primary worktrees, duplicate worktrees, and
+invalid base SHAs before persisting the worker. The writer reservation records
+branch, base SHA, worktree path, and worktree ID; it is not a substitute for
+live evidence.
 
 For every team agent invocation, split a pane from an explicit anchor already
 inside the reconciled team tab before starting the agent. Keep the manager or
@@ -119,13 +131,28 @@ herdr pane split TEAM_ANCHOR_PANE_ID --direction down --cwd "$PWD" --no-focus
 herdr agent start WORKER_NAME --kind claude --pane NEW_PANE_ID
 ```
 
-Never use the focused or an unrelated tab as the parent, and never use
-`--current` for a team agent. If the tab is missing or ambiguous, stop and
-reconcile it; do not move or close existing panes.
+The `--current` focused-pane option and rightward splits are mechanically forbidden. Never
+use the focused or an unrelated tab as the parent. If the tab is missing or
+ambiguous, stop and reconcile it; do not move or close existing panes.
 
 Reviewer runs have their own durable identity and link to the worker run they
-evaluate. Pass that reviewer run ID to `evaluate`; a reviewer string alone is
-only supported for legacy singleton compatibility.
+evaluate. Team workers require a finished successful reviewer run and its
+reviewer run ID passed to `evaluate`; a reviewer string alone is supported only
+for bounded legacy singleton compatibility. The reviewer must check the
+worker's exact Git head SHA.
+
+Finalize a team deterministically: settle turns, finish all workers, release or
+reconcile all claims, finish each linked reviewer, record every exact-head
+evaluation, then finish the manager. A manager cannot finish while child
+workers are active. Acceptance requires at least three overlapping workers
+under two managers and exact-head review of each accepted worker.
+
+Claims are owned by a run and fenced by a unique token. Lease expiry changes
+`active` to `reconcile_required`; live owner evidence is required before the
+owner and matching fence token can explicitly release the claim. Reconciliation
+never auto-steals a claim. Executive status contains only outcomes, decisions,
+blockers, approvals, and team progress; it excludes prompts, transcripts, turn
+artifacts, and low-level worker activity.
 
 Use `status executive` for leadership reporting. It mechanically includes task
 outcomes, decisions, blockers, approvals, and per-team progress while excluding
