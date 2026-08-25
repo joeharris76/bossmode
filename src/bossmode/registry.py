@@ -1793,6 +1793,18 @@ class Registry:
                 raise RegistryError("reviewer run requires an evaluating task")
             if worker["identity_value"] == value and worker["identity_source"] == source:
                 raise RegistryError("reviewer identity must be independent of worker identity")
+            active_reviewer = connection.execute(
+                """
+                SELECT id FROM runs
+                WHERE parent_run_id = ? AND run_type = 'reviewer' AND status = 'running'
+                ORDER BY started_at, id LIMIT 1
+                """,
+                (worker_run_id,),
+            ).fetchone()
+            if active_reviewer is not None:
+                raise RegistryError(
+                    f"worker already has an active reviewer: {active_reviewer['id']}"
+                )
             connection.execute(
                 "INSERT INTO runs(id, task_id, agent_role, run_type, parent_run_id, team_id, identity_source, identity_value, model, reasoning_effort, status, started_at) VALUES (?, ?, ?, 'reviewer', ?, ?, ?, ?, ?, ?, 'running', ?)",  # noqa: E501
                 (
@@ -1809,6 +1821,44 @@ class Registry:
                 ),
             )
         return self.get_run(run_id)
+
+    @staticmethod
+    def _reviewer_is_redundant(connection: sqlite3.Connection, run: sqlite3.Row) -> bool:
+        first_reviewer = connection.execute(
+            """
+            SELECT id FROM runs
+            WHERE parent_run_id = ? AND run_type = 'reviewer'
+            ORDER BY started_at, id LIMIT 1
+            """,
+            (run["parent_run_id"],),
+        ).fetchone()
+        return first_reviewer is not None and first_reviewer["id"] != run["id"]
+
+    @staticmethod
+    def _require_redundant_reviewer_evidence(
+        connection: sqlite3.Connection, run: sqlite3.Row, task: sqlite3.Row
+    ) -> None:
+        worker = connection.execute(
+            "SELECT id FROM runs WHERE id = ? AND run_type = 'worker'",
+            (run["parent_run_id"],),
+        ).fetchone()
+        writer = connection.execute(
+            "SELECT accepted_head_sha FROM writer_identities WHERE run_id = ?",
+            (run["parent_run_id"],),
+        ).fetchone()
+        if worker is None or writer is None or writer["accepted_head_sha"] is None:
+            raise RegistryError("redundant reviewer requires a passing exact-head evaluation")
+        evaluation = connection.execute(
+            """
+            SELECT id FROM evaluations
+            WHERE task_id = ? AND run_id = ? AND passed = 1
+              AND reviewed_head_sha = ?
+            LIMIT 1
+            """,
+            (task["id"], worker["id"], writer["accepted_head_sha"]),
+        ).fetchone()
+        if evaluation is None:
+            raise RegistryError("redundant reviewer requires a passing exact-head evaluation")
 
     def dispatch_batch(
         self,
@@ -2692,10 +2742,36 @@ class Registry:
                 "SELECT * FROM tasks WHERE id = ?", (run["task_id"],)
             ).fetchone()
             run_type = run["run_type"]
-            if task is None or (
-                task["state"] != "evaluating"
-                if run_type == "reviewer"
-                else task["state"] != "running"
+            redundant_reviewer = False
+            if run_type == "reviewer" and task is not None:
+                redundant_reviewer = self._reviewer_is_redundant(connection, run)
+                if task["state"] == "succeeded":
+                    if not redundant_reviewer:
+                        raise RegistryError(
+                            "reviewer run cannot finish after task success unless redundant"
+                        )
+                    if outcome != "succeeded":
+                        raise RegistryError(
+                            "redundant reviewer must finish with a succeeded outcome"
+                        )
+                    self._require_redundant_reviewer_evidence(connection, run, task)
+                elif task["state"] == "evaluating":
+                    if redundant_reviewer:
+                        raise RegistryError(
+                            "redundant reviewer must wait for a passing exact-head evaluation"
+                        )
+                else:
+                    raise RegistryError(
+                        f"reviewer run task must be evaluating or succeeded; found {task['state']}"
+                    )
+            if (
+                task is None
+                or (
+                    run_type == "reviewer"
+                    and not redundant_reviewer
+                    and task["state"] != "evaluating"
+                )
+                or (run_type != "reviewer" and task["state"] != "running")
             ):
                 state = None if task is None else task["state"]
                 expected = "evaluating" if run_type == "reviewer" else "running"
