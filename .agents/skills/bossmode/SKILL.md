@@ -95,17 +95,23 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 1. Select only the single task returned in `next_task`.
 2. Choose the narrowest role: `researcher` for read-heavy evidence, `worker` for authorized edits,
    or `reviewer` for independent evaluation.
-3. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
+3. Choose the executor explicitly from the task's required capabilities, permissions, interaction
+   mode, and current availability. Honor a user-requested agent when it is available and in scope.
+   Treat model and reasoning metadata as caller-supplied telemetry, not proof of the provider,
+   model family, or model that ran. Provider or model-family labels do not prove reviewer
+   independence.
+4. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
    required structured return format.
-4. For a native subagent (e.g. AGY, Codex), spawn it and record the returned thread or task ID with
+5. For a native subagent (e.g. AGY, Codex), spawn it and record the returned thread or task ID with
    `bossmode run start TASK_ID --role ROLE --thread-id NATIVE_ID`.
-5. For a Herdr worker, reserve the run with `bossmode run start` before creating any layout.
+6. For a Herdr worker, reserve the run with `bossmode run start` before creating any layout.
    Derive a unique worker name from the run ID, create it through the official Herdr CLI, then call
    `bossmode herdr bind --agent-kind KIND`. If binding fails after creation, reconcile the deterministic name;
    do not create another worker or close by a stored pane ID.
-6. Use Herdr only when the task explicitly requests an external interactive agent. Do not add an
-   agent router or choose providers from historical scores in this spike.
-7. Do not run parallel writers against the same paths.
+7. Use Herdr only when the task explicitly requests an external interactive agent. Verify the
+   selected kind against the live, release-matched Herdr command surface. Do not add an agent router
+   or choose providers from historical scores in this spike.
+8. Do not run parallel writers against the same paths.
 
 ## 4. Correlate Herdr Turns
 

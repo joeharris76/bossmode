@@ -127,7 +127,10 @@ of them with a live Herdr canary.
 Use a native subagent only when the host runtime supports that agent. Ask for Herdr when you need an
 external interactive agent, a visible pane, or durable detach and reattach behavior, and verify the
 chosen kind against live Herdr state before relying on it. Bossmode does not choose a provider from
-historical scores in this MVP.
+historical scores in this MVP. Choose explicitly by the task's required capabilities, permissions,
+interaction mode, and current availability. Stored model and reasoning metadata is telemetry, not
+proof of the provider, model family, or model that ran; different labels do not replace independent
+evaluation.
 
 ## Documentation
 
@@ -141,6 +144,8 @@ historical scores in this MVP.
 - [Agent organization design](docs/adr/0002-agent-organization-design.md): deferred scaling choices.
 - [Task intake and external sources](docs/adr/0003-task-intake-and-external-sources.md): how work
   reaches the registry.
+- [Deferred executor selection](docs/adr/0005-defer-executor-selection.md): why executor choice is
+  explicit and capability-based rather than automatic.
 - [Registry worktree ownership](docs/adr/0006-registry-worktree-ownership.md): why each checkout
   owns its own registry.
 

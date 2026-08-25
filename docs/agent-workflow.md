@@ -73,6 +73,22 @@ it migrates the schema, materialises promotion proposals, and reports task bucke
 stored worker identity against live Herdr or native runtime state is a separate supervisor
 responsibility that Bossmode never performs for you.
 
+## Select an executor explicitly
+
+Choose the task role and execution path as separate decisions. Use the narrowest role that can
+complete the bounded task: researcher for read-heavy evidence, worker for authorized changes, or
+reviewer for independent evaluation. Then choose an agent from current capabilities, permissions,
+interaction needs, and availability. Honor a user-requested agent when it is available and within
+scope.
+
+Use a native subagent only when the host runtime provides the required lifecycle and identity
+controls. Use Herdr when the task explicitly requests an external interactive agent or needs a
+visible pane and durable detach/reattach behavior, and verify the selected kind against live Herdr
+state. Do not route automatically from historical scores, model names, pricing, or provider labels.
+The registry's model and reasoning fields are caller-supplied telemetry, not proof of what ran. A
+different provider or model-family label does not replace independent evaluation and artifact
+evidence. ADR 0005 records the decision gates for reconsidering automatic selection.
+
 ## Common task lifecycle
 
 1. The supervisor runs `uv run bossmode` to converge the registry and read current state. The
