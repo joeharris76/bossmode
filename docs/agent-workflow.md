@@ -278,10 +278,12 @@ When a task has disjoint bounded slices, use the team workflow:
    `--reviewed-head-sha`; a worker cannot evaluate itself.
    Admission atomically allows only one active reviewer for a worker, so a
    reviewer started after an earlier reviewer settles is a legitimate
-   sequential retry. A redundant reviewer admitted concurrently before that
-   guard may finish only after the worker has a passing exact-head evaluation
-   and the task is `succeeded`; failed, mismatched, and unevaluated cases are
-   rejected while the succeeded state is preserved.
+   sequential retry. Any reviewer admitted while the task is `evaluating` may
+   settle after the task succeeds only when the same parent worker has a
+   passing evaluation whose reviewed head equals that worker's accepted head;
+   settlement preserves the succeeded task state and existing evaluation.
+   Reviewer admission after success remains impossible. Failed, mismatched,
+   and missing evaluation evidence rejects post-success settlement.
 6. Finalize deterministically: settle turns, finish workers, release claims,
    finish linked reviewers, record a passing exact-head evaluation for every
    child, then finish the manager. The manager cannot finish while child
