@@ -209,6 +209,8 @@ historical scores in this MVP.
 - [Herdr runtime boundary](docs/adr/0001-herdr-runtime-boundary.md): why live Herdr state remains
   authoritative.
 - [Agent organization design](docs/adr/0002-agent-organization-design.md): deferred scaling choices.
+- [Deferred executor selection](docs/adr/0005-defer-executor-selection.md): why model/provider
+  routing remains an explicit executive choice for now.
 
 ## Development and verification
 
