@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 
@@ -800,6 +801,249 @@ def test_team_evaluation_requires_a_successful_linked_reviewer(registry, tmp_pat
             evidence="failed reviewer must not pass",
         )
     assert registry.get_task(root["id"])["state"] == "running"
+
+
+def _admit_redundant_reviewer(registry: Registry, worker: dict) -> dict:
+    redundant_id = "run_redundant_reviewer"
+    with registry._transaction() as connection:
+        first_reviewer = connection.execute(
+            "SELECT started_at FROM runs WHERE parent_run_id = ? AND run_type = 'reviewer'",
+            (worker["id"],),
+        ).fetchone()
+        redundant_started_at = (
+            datetime.fromisoformat(first_reviewer["started_at"]) + timedelta(microseconds=1)
+        ).isoformat()
+        connection.execute(
+            """
+            INSERT INTO runs(
+                id, task_id, agent_role, run_type, parent_run_id, team_id,
+                identity_source, identity_value, status, started_at
+            ) VALUES (?, ?, ?, 'reviewer', ?, ?, ?, ?, 'running', ?)
+            """,
+            (
+                redundant_id,
+                worker["task_id"],
+                "redundant-reviewer",
+                worker["id"],
+                worker["team_id"],
+                "native",
+                "redundant-reviewer",
+                redundant_started_at,
+            ),
+        )
+    return registry.get_run(redundant_id)
+
+
+def test_failed_reviewer_allows_a_sequential_successful_retry(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "sequential-worker"},
+        writer=_writer(
+            registry, "reviewer-sequential/worker", "reviewer-sequential-worker", "sequential"
+        ),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+
+    failed_reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "sequential-reviewer-failed"},
+    )
+    registry.finish_run(failed_reviewer["id"], outcome="failed", summary="review failed")
+
+    retry = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "sequential-reviewer-retry"},
+    )
+    finished = registry.finish_run(retry["id"], outcome="succeeded", summary="retry passed")
+
+    assert finished["outcome"] == "succeeded"
+    assert registry.get_task(children[0]["id"])["state"] == "evaluating"
+
+
+def test_concurrent_reviewer_admission_allows_only_one_active_reviewer(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "race-worker"},
+        writer=_writer(registry, "reviewer-race/worker", "reviewer-race-worker", "race-worker"),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    barrier = Barrier(2)
+
+    def attempt(identity: str):
+        barrier.wait()
+        try:
+            return Registry(
+                registry.path, repository_path=registry.repository_path
+            ).start_reviewer_run(
+                children[0]["id"],
+                worker_run_id=worker["id"],
+                identity={"source": "native", "value": identity},
+            )
+        except RegistryError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(attempt, ("race-reviewer-a", "race-reviewer-b")))
+
+    assert sum(isinstance(result, dict) for result in results) == 1
+    errors = [result for result in results if isinstance(result, RegistryError)]
+    assert len(errors) == 1
+    assert "active reviewer" in str(errors[0])
+    reviewers = [
+        run for run in registry.get_task(children[0]["id"])["runs"] if run["run_type"] == "reviewer"
+    ]
+    assert len(reviewers) == 1
+
+
+def test_redundant_reviewer_cannot_finish_without_exact_head_acceptance(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "redundant-worker"},
+        writer=_writer(
+            registry,
+            "reviewer-redundant/worker",
+            "reviewer-redundant-worker",
+            "redundant-worker",
+        ),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "primary-reviewer"},
+    )
+    redundant = _admit_redundant_reviewer(registry, worker)
+    registry.finish_run(reviewer["id"], outcome="failed", summary="review failed")
+
+    with pytest.raises(RegistryError, match="passing exact-head evaluation"):
+        registry.finish_run(redundant["id"], outcome="succeeded", summary="redundant review")
+
+
+def test_redundant_reviewer_rejects_mismatched_head_evidence(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "mismatch-worker"},
+        writer=_writer(
+            registry,
+            "reviewer-mismatch/worker",
+            "reviewer-mismatch-worker",
+            "mismatch-worker",
+        ),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "mismatch-reviewer"},
+    )
+    redundant = _admit_redundant_reviewer(registry, worker)
+    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+
+    mismatch_file = Path(worker["writer_identity"]["worktree_path"]) / "mismatch.txt"
+    mismatch_file.write_text("mismatch\n")
+    subprocess.run(
+        ["git", "-C", str(mismatch_file.parent), "add", mismatch_file.name],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(mismatch_file.parent), "commit", "-m", "mismatch head"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    mismatched_head = _head(worker["writer_identity"])
+
+    with pytest.raises(RegistryError, match="does not match the accepted worker head"):
+        registry.add_evaluation(
+            children[0]["id"],
+            run_id=worker["id"],
+            evaluator="mismatch-reviewer",
+            evaluator_run_id=reviewer["id"],
+            passed=True,
+            evidence="wrong head",
+            reviewed_head_sha=mismatched_head,
+        )
+    with pytest.raises(RegistryError, match="passing exact-head evaluation"):
+        registry.finish_run(redundant["id"], outcome="succeeded", summary="redundant review")
+
+
+def test_redundant_reviewer_finishes_after_passing_exact_head_evaluation(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "accepted-worker"},
+        writer=_writer(
+            registry, "reviewer-accepted/worker", "reviewer-accepted-worker", "accepted-worker"
+        ),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "accepted-reviewer"},
+    )
+    redundant = _admit_redundant_reviewer(registry, worker)
+    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+    with pytest.raises(RegistryError, match="passing exact-head evaluation"):
+        registry.finish_run(redundant["id"], outcome="succeeded", summary="redundant review")
+
+    registry.add_evaluation(
+        children[0]["id"],
+        run_id=worker["id"],
+        evaluator="accepted-reviewer",
+        evaluator_run_id=reviewer["id"],
+        passed=True,
+        evidence="accepted exact head",
+        reviewed_head_sha=accepted_head,
+    )
+    finished = registry.finish_run(
+        redundant["id"], outcome="succeeded", summary="redundant review settled"
+    )
+    assert finished["outcome"] == "succeeded"
+    assert registry.get_task(children[0]["id"])["state"] == "succeeded"
 
 
 @pytest.mark.parametrize(

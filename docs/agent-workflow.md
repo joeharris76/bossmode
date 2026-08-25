@@ -276,6 +276,12 @@ When a task has disjoint bounded slices, use the team workflow:
    must be supplied to the evaluation. The reviewer checks the worker's exact
    Git head SHA, which must be passed to `evaluate` as
    `--reviewed-head-sha`; a worker cannot evaluate itself.
+   Admission atomically allows only one active reviewer for a worker, so a
+   reviewer started after an earlier reviewer settles is a legitimate
+   sequential retry. A redundant reviewer admitted concurrently before that
+   guard may finish only after the worker has a passing exact-head evaluation
+   and the task is `succeeded`; failed, mismatched, and unevaluated cases are
+   rejected while the succeeded state is preserved.
 6. Finalize deterministically: settle turns, finish workers, release claims,
    finish linked reviewers, record a passing exact-head evaluation for every
    child, then finish the manager. The manager cannot finish while child
