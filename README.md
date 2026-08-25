@@ -3,7 +3,7 @@
 Stop babysitting coding agents. Bossmode makes you the CEO of `Get-It-Done`.
 
 A `bossmode` supervisor agent manages teams of native subagents and external agents such as Pi,
-Claude, Codex, Grok, AGY, and Muse—so far—while they carry out bounded project tasks. You describe
+Claude, Codex, Grok, and AGY—so far—while they carry out bounded project tasks. You describe
 the outcome in a prompt. The supervisor handles task records, delegation, recovery, evidence, and
 independent evaluation.
 
@@ -121,8 +121,10 @@ final success. Bossmode also keeps these decisions separate:
 Bossmode has no provider-specific transport adapters. Its registry and CLI record generic agent
 roles and Herdr bindings. The deterministic test suite exercises those control records for AGY,
 Codex, Claude, Pi, Grok, and Muse, but it does not start those agents. The documented Herdr path
-uses the official Herdr CLI for all six named kinds; the current automated UAT has not certified any
-of them with a live Herdr canary.
+uses the official Herdr CLI only for Pi, Claude, Codex, AGY, and Grok, which are supported start
+kinds in the release-matched Herdr 0.8.2 command surface. Generic registry tests for another label,
+including Muse, do not certify that label as a launchable Herdr kind. The current automated UAT has
+not certified any agent kind with a live Herdr canary.
 
 Use a native subagent only when the host runtime supports that agent. Ask for Herdr when you need an
 external interactive agent, a visible pane, or durable detach and reattach behavior, and verify the

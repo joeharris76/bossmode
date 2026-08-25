@@ -1,6 +1,6 @@
 ---
 name: bossmode
-description: Manage, dispatch, and continue tasks using the Bossmode durable control plane. Reconcile runtime state, orchestrate native subagents (AGY, Codex) or external Herdr workers (pi, codex, claude, agy, grok, muse), enforce independent evaluation gates, and propose gated promotions.
+description: Manage, dispatch, and continue tasks using the Bossmode durable control plane. Reconcile runtime state, orchestrate native subagents (AGY, Codex) or external Herdr workers (pi, codex, claude, agy, grok), enforce independent evaluation gates, and propose gated promotions.
 ---
 
 # Bossmode
@@ -85,7 +85,7 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
    interruption. Use `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` for exact records.
 3. For every active registry task, reconcile its executor against live state before sending,
    interrupting, completing, or closing it. Use live runtime state for native subagents (AGY, Codex)
-   and `herdr agent get/list` for Herdr workers (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`).
+   and `herdr agent get/list` for Herdr workers (`pi`, `codex`, `claude`, `agy`, `grok`).
    Treat missing, foreign, or ambiguous identity as a blocker; stored IDs are indexes, not capabilities.
 4. Surface `waiting_user` and `blocked` items before starting new work when they affect priority
    or safety. Ask only for the decision the system cannot safely make.

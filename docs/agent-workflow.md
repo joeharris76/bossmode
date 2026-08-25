@@ -23,7 +23,7 @@ user
   -> supervisor (any coordinator: AGY, Codex, Claude, Pi, Grok, Muse)
        -> registry CLI / SQLite (durable control record)
        -> native subagent tools ------> native subagent (e.g. Codex, AGY)
-       -> official Herdr CLI ---------> external agent (pi, codex, claude, agy, grok, muse)
+       -> official Herdr CLI ---------> external agent (pi, codex, claude, agy, grok)
        -> independent reviewer -------> evaluation
   <- material result, blocker, or approval request
 ```
@@ -60,7 +60,7 @@ implicit shared-registry mode.
 | Supervisor (Any Agent) | Reconciliation, one-at-a-time dispatch, prompt envelopes, evidence checks, and state transitions | Vendor session internals |
 | Registry | Durable task/run/turn IDs, state machines, prompt digests, artifact paths, evaluations, and feedback | Live agent identity or liveness |
 | Native runtime | Native subagent creation, messaging, waiting, and live task identity | MVP task state |
-| Herdr | External agent processes (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`), panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
+| Herdr | External agent processes (`pi`, `codex`, `claude`, `agy`, `grok`), panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
 | Worker | The bounded task and its declared artifacts | Self-approval or policy changes |
 | Reviewer | Independent checks against the task's success criteria | Rewriting a failed result unless separately authorized |
 
@@ -97,7 +97,7 @@ evidence. ADR 0005 records the decision gates for reconsidering automatic select
 3. It selects only the task returned in `next_task` and starts one run. `next_task` stays `null`
    while another task is running or awaiting evaluation.
 4. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
-   path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) below.
+   path (`pi`, `codex`, `claude`, `agy`, `grok`) below.
 5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
 6. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
    records that verdict with `evaluate`.
