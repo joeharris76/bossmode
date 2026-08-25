@@ -88,10 +88,6 @@ reservation.
   must finish successfully, check that exact head, and record evidence tied to
   that SHA; a failed or unfinished reviewer, a moving branch name, or a
   different head is not acceptance.
-- A worker may have only one active reviewer. A reviewer admitted redundantly
-  before this guard may finish only after a passing exact-head evaluation has
-  made the task `succeeded`; failed, mismatched, or unevaluated evidence is
-  rejected, and the succeeded task state is preserved.
 - Finalize a team in a deterministic order: settle every worker turn, finish
   every worker, release or reconcile every claim, finish every linked reviewer,
   record each exact-head evaluation for every child, then finish the manager.

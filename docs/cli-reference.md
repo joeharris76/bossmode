@@ -188,11 +188,6 @@ against the repository and rejects any value that differs from the worker's
 accepted head. The evaluator must be independent of the worker. If provided, `--score` must be
 between `0` and `1`, inclusive.
 
-Only one reviewer can be active for a worker. A redundant reviewer admitted
-before that check can finish only after the worker has a passing exact-head
-evaluation and the task is already `succeeded`; failed, mismatched, and
-unevaluated cases are rejected without reopening the succeeded task.
-
 ## Promotions
 
 | Command | Purpose |
