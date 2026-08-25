@@ -156,10 +156,12 @@ SHA, and team evaluation must pass that same SHA through
 head.
 Admission atomically allows only one active reviewer for a worker, so a
 reviewer started after an earlier reviewer settles is a legitimate sequential
-retry. A redundant reviewer admitted concurrently before that guard may finish
-only after the worker has a passing exact-head evaluation and the task is
-`succeeded`; failed, mismatched, or unevaluated cases are rejected and the
-succeeded task state is preserved.
+retry. Any reviewer admitted while the task is `evaluating` may settle after
+the task succeeds only when the same parent worker has a passing evaluation
+whose reviewed head equals that worker's accepted head; settlement preserves
+the succeeded task state and existing evaluation. Reviewer admission after
+success remains impossible. Failed, mismatched, or missing evaluation
+evidence rejects post-success settlement.
 
 Finalize a team deterministically: settle turns, finish all workers, release or
 reconcile all claims, finish each linked reviewer, record a passing exact-head

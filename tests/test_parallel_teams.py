@@ -803,14 +803,14 @@ def test_team_evaluation_requires_a_successful_linked_reviewer(registry, tmp_pat
     assert registry.get_task(root["id"])["state"] == "running"
 
 
-def _admit_redundant_reviewer(registry: Registry, worker: dict) -> dict:
-    redundant_id = "run_redundant_reviewer"
+def _admit_overlapping_reviewer(registry: Registry, worker: dict) -> dict:
+    overlapping_id = "run_overlapping_reviewer"
     with registry._transaction() as connection:
         first_reviewer = connection.execute(
             "SELECT started_at FROM runs WHERE parent_run_id = ? AND run_type = 'reviewer'",
             (worker["id"],),
         ).fetchone()
-        redundant_started_at = (
+        overlapping_started_at = (
             datetime.fromisoformat(first_reviewer["started_at"]) + timedelta(microseconds=1)
         ).isoformat()
         connection.execute(
@@ -821,17 +821,17 @@ def _admit_redundant_reviewer(registry: Registry, worker: dict) -> dict:
             ) VALUES (?, ?, ?, 'reviewer', ?, ?, ?, ?, 'running', ?)
             """,
             (
-                redundant_id,
+                overlapping_id,
                 worker["task_id"],
-                "redundant-reviewer",
+                "overlapping-reviewer",
                 worker["id"],
                 worker["team_id"],
                 "native",
-                "redundant-reviewer",
-                redundant_started_at,
+                "overlapping-reviewer",
+                overlapping_started_at,
             ),
         )
-    return registry.get_run(redundant_id)
+    return registry.get_run(overlapping_id)
 
 
 def test_failed_reviewer_allows_a_sequential_successful_retry(registry, tmp_path):
@@ -913,7 +913,9 @@ def test_concurrent_reviewer_admission_allows_only_one_active_reviewer(registry,
     assert len(reviewers) == 1
 
 
-def test_redundant_reviewer_cannot_finish_without_exact_head_acceptance(registry, tmp_path):
+def test_overlapping_reviewer_cannot_settle_after_success_without_exact_head_acceptance(
+    registry, tmp_path
+):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker = registry.start_worker_run(
         children[0]["id"],
@@ -938,14 +940,19 @@ def test_redundant_reviewer_cannot_finish_without_exact_head_acceptance(registry
         worker_run_id=worker["id"],
         identity={"source": "native", "value": "primary-reviewer"},
     )
-    redundant = _admit_redundant_reviewer(registry, worker)
+    overlapping = _admit_overlapping_reviewer(registry, worker)
     registry.finish_run(reviewer["id"], outcome="failed", summary="review failed")
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE tasks SET state = 'succeeded' WHERE id = ?", (children[0]["id"],)
+        )
 
     with pytest.raises(RegistryError, match="passing exact-head evaluation"):
-        registry.finish_run(redundant["id"], outcome="succeeded", summary="redundant review")
+        registry.finish_run(overlapping["id"], outcome="succeeded", summary="overlapping review")
+    assert registry.get_task(children[0]["id"])["state"] == "succeeded"
 
 
-def test_redundant_reviewer_rejects_mismatched_head_evidence(registry, tmp_path):
+def test_overlapping_reviewer_rejects_mismatched_head_evidence(registry, tmp_path):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker = registry.start_worker_run(
         children[0]["id"],
@@ -970,7 +977,7 @@ def test_redundant_reviewer_rejects_mismatched_head_evidence(registry, tmp_path)
         worker_run_id=worker["id"],
         identity={"source": "native", "value": "mismatch-reviewer"},
     )
-    redundant = _admit_redundant_reviewer(registry, worker)
+    overlapping = _admit_overlapping_reviewer(registry, worker)
     registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
 
     mismatch_file = Path(worker["writer_identity"]["worktree_path"]) / "mismatch.txt"
@@ -999,11 +1006,16 @@ def test_redundant_reviewer_rejects_mismatched_head_evidence(registry, tmp_path)
             evidence="wrong head",
             reviewed_head_sha=mismatched_head,
         )
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE tasks SET state = 'succeeded' WHERE id = ?", (children[0]["id"],)
+        )
     with pytest.raises(RegistryError, match="passing exact-head evaluation"):
-        registry.finish_run(redundant["id"], outcome="succeeded", summary="redundant review")
+        registry.finish_run(overlapping["id"], outcome="succeeded", summary="overlapping review")
+    assert registry.get_task(children[0]["id"])["state"] == "succeeded"
 
 
-def test_redundant_reviewer_finishes_after_passing_exact_head_evaluation(registry, tmp_path):
+def test_overlapping_reviewer_wins_evaluation_then_earlier_reviewer_settles(registry, tmp_path):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker = registry.start_worker_run(
         children[0]["id"],
@@ -1020,30 +1032,75 @@ def test_redundant_reviewer_finishes_after_passing_exact_head_evaluation(registr
         summary="worker complete",
         accepted_head_sha=accepted_head,
     )
-    reviewer = registry.start_reviewer_run(
+    earlier = registry.start_reviewer_run(
         children[0]["id"],
         worker_run_id=worker["id"],
-        identity={"source": "native", "value": "accepted-reviewer"},
+        identity={"source": "native", "value": "earlier-reviewer"},
     )
-    redundant = _admit_redundant_reviewer(registry, worker)
-    registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
-    with pytest.raises(RegistryError, match="passing exact-head evaluation"):
-        registry.finish_run(redundant["id"], outcome="succeeded", summary="redundant review")
+    overlapping = _admit_overlapping_reviewer(registry, worker)
+    assert registry.get_run(earlier["id"])["status"] == "running"
+
+    registry.finish_run(overlapping["id"], outcome="succeeded", summary="later review complete")
 
     registry.add_evaluation(
         children[0]["id"],
         run_id=worker["id"],
-        evaluator="accepted-reviewer",
-        evaluator_run_id=reviewer["id"],
+        evaluator="overlapping-reviewer",
+        evaluator_run_id=overlapping["id"],
         passed=True,
-        evidence="accepted exact head",
+        evidence="later reviewer accepted exact head",
         reviewed_head_sha=accepted_head,
     )
+    task_after_evaluation = registry.get_task(children[0]["id"])
+    assert task_after_evaluation["state"] == "succeeded"
+    assert len(task_after_evaluation["evaluations"]) == 1
+
     finished = registry.finish_run(
-        redundant["id"], outcome="succeeded", summary="redundant review settled"
+        earlier["id"], outcome="succeeded", summary="earlier review settled"
     )
     assert finished["outcome"] == "succeeded"
-    assert registry.get_task(children[0]["id"])["state"] == "succeeded"
+    task_after_settlement = registry.get_task(children[0]["id"])
+    assert task_after_settlement["state"] == "succeeded"
+    assert task_after_settlement["evaluations"] == task_after_evaluation["evaluations"]
+
+
+def test_reviewer_admission_after_success_and_finish_on_other_task_state_are_rejected(
+    registry, tmp_path
+):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "state-worker"},
+        writer=_writer(registry, "reviewer-state/worker", "reviewer-state-worker", "state-worker"),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+    reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "state-reviewer"},
+    )
+    with registry._transaction() as connection:
+        connection.execute(
+            "UPDATE tasks SET state = 'succeeded' WHERE id = ?", (children[0]["id"],)
+        )
+    with pytest.raises(RegistryError, match="requires an evaluating task"):
+        registry.start_reviewer_run(
+            children[0]["id"],
+            worker_run_id=worker["id"],
+            identity={"source": "native", "value": "after-success-reviewer"},
+        )
+    with registry._transaction() as connection:
+        connection.execute("UPDATE tasks SET state = 'running' WHERE id = ?", (children[0]["id"],))
+    with pytest.raises(RegistryError, match="evaluating or succeeded"):
+        registry.finish_run(reviewer["id"], outcome="succeeded", summary="wrong task state")
+    assert registry.get_task(children[0]["id"])["state"] == "running"
 
 
 @pytest.mark.parametrize(
