@@ -1106,7 +1106,10 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
 
     registry = Registry(database)
     registry.initialize()
-    registry.initialize()
+    # A second instance re-runs the schema check; `initialize()` short-circuits
+    # after the first call on any one instance, so reusing `registry` here would
+    # no longer exercise migration idempotency.
+    Registry(database).initialize()
 
     with closing(registry._connect()) as connection:
         assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
@@ -1136,7 +1139,10 @@ def test_version_five_migration_splits_turn_status_and_renames_feedback_kind(tmp
 
     registry = Registry(database)
     registry.initialize()
-    registry.initialize()
+    # A second instance re-runs the schema check; `initialize()` short-circuits
+    # after the first call on any one instance, so reusing `registry` here would
+    # no longer exercise migration idempotency.
+    Registry(database).initialize()
 
     with closing(registry._connect()) as connection:
         assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
@@ -1168,6 +1174,29 @@ def test_version_five_migration_splits_turn_status_and_renames_feedback_kind(tmp
                           '.bossmode/turns/turn_x.json', 'running', '2026-01-01T00:04:00Z')
                 """
             )
+
+
+def test_initialize_checks_the_schema_once_per_instance(tmp_path, monkeypatch):
+    """A single reconcile used to take four BEGIN IMMEDIATE locks to re-read the version."""
+    registry = Registry(tmp_path / "control.db")
+    calls = 0
+    original = registry._ensure_schema
+
+    def counting_ensure_schema():
+        nonlocal calls
+        calls += 1
+        original()
+
+    monkeypatch.setattr(registry, "_ensure_schema", counting_ensure_schema)
+
+    registry.reconcile()
+    assert calls == 1
+
+    registry.create_task(title="T", goal="G", success_criteria="S")
+    assert calls == 1
+
+    # A separate instance performs its own check.
+    assert Registry(tmp_path / "control.db")._schema_ready is False
 
 
 def test_failed_migration_rolls_back_schema_and_version(tmp_path, monkeypatch):
