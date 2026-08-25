@@ -184,9 +184,9 @@ class UATHarness:
         # Step 1.3: Session Reconciliation & Dispatch
         def step_reconcile_dispatch() -> str:
             state = self.registry.reconcile()
-            assert state["dispatch"] is not None
-            assert state["dispatch"]["id"] == task["id"]
-            return f"Dispatched task: {state['dispatch']['id']}"
+            assert state["next_task"] is not None
+            assert state["next_task"]["id"] == task["id"]
+            return f"Dispatched task: {state['next_task']['id']}"
 
         self.run_step(
             scenario,
@@ -256,7 +256,7 @@ class UATHarness:
             result_file.parent.mkdir(parents=True, exist_ok=True)
             result_payload = {
                 "turn_id": turn["id"],
-                "status": "succeeded",
+                "outcome": "succeeded",
                 "summary": "Generated valid OpenAPI 3.0 schema at specs/openapi.json",
                 "artifacts": [{"path": str(spec_file), "kind": "schema"}],
             }
@@ -264,11 +264,12 @@ class UATHarness:
 
             finished_turn = self.registry.finish_turn(
                 turn["id"],
-                status="succeeded",
+                outcome="succeeded",
                 summary="Generated valid OpenAPI 3.0 schema at specs/openapi.json",
                 lifecycle_evidence="done",
             )
-            assert finished_turn["status"] == "succeeded"
+            assert finished_turn["status"] == "finished"
+            assert finished_turn["outcome"] == "succeeded"
             assert finished_turn["result"]["turn_id"] == turn["id"]
             return f"Turn ID: {turn['id']} verified"
 
@@ -365,13 +366,13 @@ class UATHarness:
                 json.dumps(
                     {
                         "turn_id": turn_1["id"],
-                        "status": "succeeded",
+                        "outcome": "succeeded",
                         "summary": "Implemented rate limiter without burst capacity",
                         "artifacts": [],
                     }
                 )
             )
-            self.registry.finish_turn(turn_1["id"], status="succeeded")
+            self.registry.finish_turn(turn_1["id"], outcome="succeeded")
             self.registry.finish_run(
                 run_1["id"], outcome="succeeded", summary="Worker claims rate limiter done"
             )
@@ -407,7 +408,7 @@ class UATHarness:
             self.registry.add_feedback(
                 task["id"],
                 run_id=run_1["id"],
-                kind="correction",
+                category="correction",
                 recurrence_key="ratelimit.burst-support",
                 content="Token bucket must account for burst capacity parameter",
             )
@@ -450,7 +451,7 @@ class UATHarness:
                 json.dumps(
                     {
                         "turn_id": turn_2["id"],
-                        "status": "succeeded",
+                        "outcome": "succeeded",
                         "summary": "Fixed rate limiter: added burst bucket support and unit tests",
                         "artifacts": [{"path": "auth/ratelimit.py", "kind": "code"}],
                     }
@@ -458,7 +459,7 @@ class UATHarness:
             )
             self.registry.finish_turn(
                 turn_2["id"],
-                status="succeeded",
+                outcome="succeeded",
                 summary="Fixed rate limiter: added burst bucket support and unit tests",
             )
             self.registry.finish_run(
@@ -508,13 +509,13 @@ class UATHarness:
             # Control layer trigger: 2 failures
             self.registry.add_feedback(
                 task["id"],
-                kind="failure",
+                category="failure",
                 recurrence_key="env.missing-key",
                 content="API key missing in environment",
             )
             self.registry.add_feedback(
                 task["id"],
-                kind="failure",
+                category="failure",
                 recurrence_key="env.missing-key",
                 content="API key missing on retry",
             )
@@ -522,7 +523,7 @@ class UATHarness:
             # Memory layer trigger: preference
             self.registry.add_feedback(
                 task["id"],
-                kind="preference",
+                category="preference",
                 recurrence_key="format.concise-diffs",
                 content="Prefer concise diffs over full file rewrites",
             )
@@ -530,13 +531,13 @@ class UATHarness:
             # Skill layer trigger: 2 corrections + passing eval
             self.registry.add_feedback(
                 task["id"],
-                kind="correction",
+                category="correction",
                 recurrence_key="git.rebase-first",
                 content="Always rebase before creating branch",
             )
             self.registry.add_feedback(
                 task["id"],
-                kind="correction",
+                category="correction",
                 recurrence_key="git.rebase-first",
                 content="Rebase on main before opening PR",
             )
@@ -596,14 +597,14 @@ class UATHarness:
 
             # Cannot jump proposed -> applied directly
             try:
-                self.registry.set_promotion_status(control_prop["id"], "applied")
+                self.registry.apply_promotion(control_prop["id"])
                 raise AssertionError("Allowed invalid promotion transition proposed -> applied")
             except RegistryError:
                 pass
 
-            accepted = self.registry.set_promotion_status(control_prop["id"], "accepted")
+            accepted = self.registry.accept_promotion(control_prop["id"])
             assert accepted["status"] == "accepted"
-            applied = self.registry.set_promotion_status(control_prop["id"], "applied")
+            applied = self.registry.apply_promotion(control_prop["id"])
             assert applied["status"] == "applied"
             return f"Control proposal {control_prop['id']} transitioned to applied"
 
@@ -617,13 +618,13 @@ class UATHarness:
         def step_repropose_rejected() -> str:
             proposals = self.registry.list_promotions("proposed")
             memory_prop = next(p for p in proposals if p["target_layer"] == "memory")
-            rejected = self.registry.set_promotion_status(memory_prop["id"], "rejected")
+            rejected = self.registry.reject_promotion(memory_prop["id"])
             assert rejected["status"] == "rejected"
 
             # Adding new feedback with same recurrence key allows re-proposing
             self.registry.add_feedback(
                 task["id"],
-                kind="preference",
+                category="preference",
                 recurrence_key=memory_prop["recurrence_key"],
                 content="Confirmed preference for concise diffs",
             )
@@ -706,7 +707,7 @@ class UATHarness:
                 r["id"], herdr_session="s", worker_name="w_fail", agent_kind="claude"
             )
             turn = self.registry.start_turn(r["id"], purpose="task", prompt="do work")
-            self.registry.finish_turn(turn["id"], status="failed", summary="crashed")
+            self.registry.finish_turn(turn["id"], outcome="failed", summary="crashed")
             try:
                 self.registry.finish_run(r["id"], outcome="succeeded", summary="fraudulent success")
                 raise AssertionError("Allowed succeeded run when all turns failed!")
@@ -735,15 +736,15 @@ class UATHarness:
             result_file = Path(turn["artifact_path"])
             result_file.parent.mkdir(parents=True, exist_ok=True)
             result_file.write_text(
-                f'```json\n{{"turn_id": "{turn["id"]}", "status": "succeeded"}}\n```'
+                f'```json\n{{"turn_id": "{turn["id"]}", "outcome": "succeeded"}}\n```'
             )
             try:
-                self.registry.finish_turn(turn["id"], status="succeeded")
+                self.registry.finish_turn(turn["id"], outcome="succeeded")
                 raise AssertionError("Allowed markdown-fenced turn result!")
             except RegistryError as err:
                 assert "markdown code fence" in str(err)
             finally:
-                self.registry.finish_turn(turn["id"], status="failed", summary="fences rejected")
+                self.registry.finish_turn(turn["id"], outcome="failed", summary="fences rejected")
                 self.registry.finish_run(r["id"], outcome="failed", summary="cleanup")
             return "Markdown-fenced turn result rejected with diagnostic message"
 
@@ -766,12 +767,12 @@ class UATHarness:
             result_file = Path(turn["artifact_path"])
             result_file.write_bytes(b"x" * (MAX_TURN_RESULT_BYTES + 1))
             try:
-                self.registry.finish_turn(turn["id"], status="succeeded")
+                self.registry.finish_turn(turn["id"], outcome="succeeded")
                 raise AssertionError("Allowed oversized turn result payload!")
             except RegistryError as err:
                 assert "exceeds" in str(err)
             finally:
-                self.registry.finish_turn(turn["id"], status="failed", summary="oversized payload")
+                self.registry.finish_turn(turn["id"], outcome="failed", summary="oversized payload")
                 self.registry.finish_run(r["id"], outcome="failed", summary="cleanup")
             return f"Payload exceeding {MAX_TURN_RESULT_BYTES} bytes rejected"
 
@@ -853,11 +854,11 @@ class UATHarness:
             r_active = self.registry.start_run(t_active["id"], agent_role="worker")
 
             state = self.registry.reconcile()
-            assert state["dispatch"] is None, (
-                f"Dispatched task {state['dispatch']} while another task was active!"
+            assert state["next_task"] is None, (
+                f"Dispatched task {state['next_task']} while another task was active!"
             )
-            assert len(state["active"]) == 1
-            assert state["active"][0]["id"] == t_active["id"]
+            assert len(state["running"]) == 1
+            assert state["running"][0]["id"] == t_active["id"]
             return "Dispatch paused while active task is running"
 
         self.run_step(
@@ -873,12 +874,12 @@ class UATHarness:
             )
 
             state = self.registry.reconcile()
-            assert state["dispatch"] is not None
-            assert state["dispatch"]["id"] == t_ready["id"]
-            assert state["dispatch"]["priority"] == 100
+            assert state["next_task"] is not None
+            assert state["next_task"]["id"] == t_ready["id"]
+            assert state["next_task"]["priority"] == 100
             msg = (
-                f"Selected highest priority ready task: {state['dispatch']['id']} "
-                f"(priority {state['dispatch']['priority']})"
+                f"Selected highest priority ready task: {state['next_task']['id']} "
+                f"(priority {state['next_task']['priority']})"
             )
             return msg
 

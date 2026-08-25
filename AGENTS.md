@@ -21,6 +21,35 @@
 - Require external evidence or an independent reviewer before recording a passing evaluation.
 - Report `waiting_user` work, protected approvals, and genuine blockers separately.
 
+## Naming policy
+
+Bossmode's recurring naming defect has been additive aliasing: a new name is
+introduced, the old one is kept, and the old one keeps canonical position. That
+produced six spellings for one reconciliation behaviour, a repurposed `init`,
+and single tokens naming several unrelated concepts. These rules exist to stop
+it recurring.
+
+- One canonical spelling per operation. A second spelling requires a stated
+  removal release; there are none today and none should be added casually.
+- A token means one thing across the CLI, the Python API, JSON keys, schema
+  columns, and the docs. When two concepts want the same English word, qualify
+  one of them: `agent_kind`, not `kind`.
+- `status` is where an object currently sits; `outcome` is how a finished object
+  ended. Do not use one for the other.
+- JSON payload keys reuse the state or enum names they select. Do not invent a
+  parallel vocabulary for the same values.
+- Retiring the old name is part of introducing the new one, in the same change,
+  including its tests and docs.
+- Never repurpose a token to a disjoint meaning. Retire it and introduce a new
+  one, so old invocations fail loudly instead of doing something else.
+- Every user-facing spelling has a test that invokes it. An untested spelling
+  cannot be removed safely later.
+- Every `add_parser` and every `add_argument` carries `help=`.
+- The rules cover the worker turn-result contract too: it reports `outcome`, not
+  `status`. A `kind` field nested inside an object that names its own domain,
+  such as an artifact's `kind` or a session reference's `kind`, is already
+  qualified by that object and stays as it is.
+
 ## Learning boundary
 
 - Treat feedback as data only after recording its source and recurrence key.

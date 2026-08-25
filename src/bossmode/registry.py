@@ -31,11 +31,12 @@ CREATE_TASK_STATES = {"backlog", "ready"}
 TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed"}
 HERDR_BINDING_STATUSES = {"pending", "live", "blocked", "stale", "unknown"}
 TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
-TERMINAL_TURN_STATUSES = {"blocked", "succeeded", "failed", "unknown"}
+TERMINAL_TURN_OUTCOMES = {"blocked", "succeeded", "failed", "unknown"}
+FEEDBACK_CATEGORIES = {"preference", "correction", "failure", "observation"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -48,6 +49,11 @@ ALLOWED_TRANSITIONS = {
     "failed": {"ready", "archived"},
     "archived": set(),
 }
+
+# States reachable as an explicit `task transition` target. Lifecycle commands
+# (`run start`, `run finish`, `evaluate`) own every other state change, so the
+# remaining six members of TASK_STATES are never valid transition destinations.
+TRANSITION_TARGET_STATES = frozenset().union(*ALLOWED_TRANSITIONS.values())
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -131,7 +137,10 @@ CREATE TABLE IF NOT EXISTS run_turns (
     prompt TEXT NOT NULL,
     prompt_digest TEXT NOT NULL,
     artifact_path TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('running', 'blocked', 'succeeded', 'failed', 'unknown')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'finished')),
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN (
+        'blocked', 'succeeded', 'failed', 'unknown'
+    )),
     lifecycle_evidence TEXT,
     summary TEXT,
     result_json TEXT,
@@ -157,7 +166,9 @@ CREATE TABLE IF NOT EXISTS feedback (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
     run_id TEXT REFERENCES runs(id),
-    kind TEXT NOT NULL CHECK (kind IN ('preference', 'correction', 'failure', 'observation')),
+    category TEXT NOT NULL CHECK (category IN (
+        'preference', 'correction', 'failure', 'observation'
+    )),
     recurrence_key TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -248,8 +259,41 @@ class Registry:
     def __init__(self, path: str | Path) -> None:
         _validate_registry_ownership(Path(path))
         self.path = Path(path)
+        self._schema_ready = False
 
     def initialize(self) -> None:
+        """Create or migrate the registry, at most once per instance.
+
+        Every transaction helper calls this, so a single `reconcile()` used to
+        open four connections and take four BEGIN IMMEDIATE write locks just to
+        re-read an unchanged schema version. Only the create-or-migrate path is
+        cached here. Compatibility is still enforced on every transaction by
+        `_assert_schema_current`, using that transaction's own connection, so a
+        long-lived instance cannot keep writing after another process migrates
+        the database to an unsupported schema.
+        """
+        if self._schema_ready:
+            return
+        self._ensure_schema()
+        self._schema_ready = True
+
+    def _assert_schema_current(self, connection: sqlite3.Connection) -> None:
+        try:
+            row = connection.execute("SELECT version FROM schema_meta").fetchone()
+        except sqlite3.Error as error:
+            raise RegistryError(
+                f"registry schema is unreadable; the database may have been "
+                f"replaced or removed: {self.path}"
+            ) from error
+        if row is None:
+            raise RegistryError("registry schema version is missing")
+        if row[0] != SCHEMA_VERSION:
+            raise RegistryError(
+                f"registry schema changed to {row[0]} while in use; "
+                f"this build supports {SCHEMA_VERSION}"
+            )
+
+    def _ensure_schema(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -279,6 +323,7 @@ class Registry:
                     2: self._migrate_v2_to_v3,
                     3: self._migrate_v3_to_v4,
                     4: self._migrate_v4_to_v5,
+                    5: self._migrate_v5_to_v6,
                 }
                 while current < SCHEMA_VERSION:
                     migration = migrations.get(current)
@@ -432,6 +477,69 @@ class Registry:
         connection.execute("ALTER TABLE run_turns ADD COLUMN prompt TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
+    def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+        """Split the mixed `run_turns.status` column into status plus outcome.
+
+        Before v6 a turn's single `status` column held both its lifecycle
+        position (`running`) and its terminal result, while `runs` already
+        modelled those as separate `status`/`outcome` columns. SQLite cannot
+        narrow a CHECK constraint in place, so the table is rebuilt.
+        """
+        connection.execute("DROP INDEX IF EXISTS idx_one_open_turn_per_run")
+        connection.execute("DROP INDEX IF EXISTS idx_run_turns_run_ordinal")
+        connection.execute("ALTER TABLE run_turns RENAME TO run_turns_v5")
+        connection.execute(
+            """
+            CREATE TABLE run_turns (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                purpose TEXT NOT NULL CHECK (purpose IN (
+                    'task', 'correction', 'clarification', 'review_follow_up'
+                )),
+                prompt TEXT NOT NULL,
+                prompt_digest TEXT NOT NULL,
+                artifact_path TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('running', 'finished')),
+                outcome TEXT CHECK (outcome IS NULL OR outcome IN (
+                    'blocked', 'succeeded', 'failed', 'unknown'
+                )),
+                lifecycle_evidence TEXT,
+                summary TEXT,
+                result_json TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                UNIQUE (run_id, ordinal),
+                UNIQUE (run_id, artifact_path)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO run_turns(
+                id, run_id, ordinal, purpose, prompt, prompt_digest, artifact_path,
+                status, outcome, lifecycle_evidence, summary, result_json,
+                started_at, finished_at
+            )
+            SELECT
+                id, run_id, ordinal, purpose, prompt, prompt_digest, artifact_path,
+                CASE WHEN status = 'running' THEN 'running' ELSE 'finished' END,
+                CASE WHEN status = 'running' THEN NULL ELSE status END,
+                lifecycle_evidence, summary, result_json, started_at, finished_at
+            FROM run_turns_v5
+            """
+        )
+        connection.execute("DROP TABLE run_turns_v5")
+        connection.execute("CREATE INDEX idx_run_turns_run_ordinal ON run_turns(run_id, ordinal)")
+        connection.execute(
+            "CREATE UNIQUE INDEX idx_one_open_turn_per_run "
+            "ON run_turns(run_id) WHERE status = 'running'"
+        )
+        # `kind` named the agent product on herdr_bindings and the feedback
+        # category here; qualify it so the token means one thing.
+        connection.execute("ALTER TABLE feedback RENAME COLUMN kind TO category")
+
+    @staticmethod
     def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
@@ -452,6 +560,7 @@ class Registry:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            self._assert_schema_current(connection)
             yield connection
             connection.commit()
         except Exception:
@@ -468,6 +577,7 @@ class Registry:
         try:
             connection.execute("BEGIN DEFERRED")
             transaction_started = True
+            self._assert_schema_current(connection)
             yield connection
             connection.commit()
             transaction_started = False
@@ -936,13 +1046,13 @@ class Registry:
         self,
         turn_id: str,
         *,
-        status: str,
+        outcome: str,
         summary: str | None = None,
         lifecycle_evidence: str | None = None,
     ) -> dict[str, Any]:
-        if status not in TERMINAL_TURN_STATUSES:
-            raise RegistryError(f"invalid terminal turn status: {status}")
-        if status != "succeeded" and (summary is None or not summary.strip()):
+        if outcome not in TERMINAL_TURN_OUTCOMES:
+            raise RegistryError(f"invalid terminal turn outcome: {outcome}")
+        if outcome != "succeeded" and (summary is None or not summary.strip()):
             raise RegistryError("turn summary is required")
         with self._transaction() as connection:
             turn = connection.execute("SELECT * FROM run_turns WHERE id = ?", (turn_id,)).fetchone()
@@ -951,18 +1061,18 @@ class Registry:
             if turn["status"] != "running":
                 raise RegistryError(f"turn already finished: {turn_id}")
             result = None
-            if status == "succeeded":
+            if outcome == "succeeded":
                 result = self._validated_turn_result(dict(turn), expected_summary=summary)
                 summary = result["summary"]
             connection.execute(
                 """
                 UPDATE run_turns
-                SET status = ?, summary = ?, lifecycle_evidence = ?,
+                SET status = 'finished', outcome = ?, summary = ?, lifecycle_evidence = ?,
                     result_json = ?, finished_at = ?
                 WHERE id = ? AND status = 'running'
                 """,
                 (
-                    status,
+                    outcome,
                     summary,
                     lifecycle_evidence,
                     _json(result) if result is not None else None,
@@ -1062,14 +1172,14 @@ class Registry:
             raise RegistryError(f"turn result is not valid JSON: {path}") from error
         if not isinstance(result, dict):
             raise RegistryError("turn result must be a JSON object")
-        required = {"turn_id", "status", "summary", "artifacts"}
+        required = {"turn_id", "outcome", "summary", "artifacts"}
         missing = sorted(required - result.keys())
         if missing:
             raise RegistryError(f"turn result is missing fields: {', '.join(missing)}")
         if result["turn_id"] != turn["id"]:
             raise RegistryError("turn result ID does not match the open turn")
-        if result["status"] != "succeeded":
-            raise RegistryError("successful turn result must have status succeeded")
+        if result["outcome"] != "succeeded":
+            raise RegistryError("successful turn result must have outcome succeeded")
         if not isinstance(result["summary"], str) or not result["summary"].strip():
             raise RegistryError("turn result summary must be a non-empty string")
         if expected_summary is not None and expected_summary != result["summary"]:
@@ -1127,13 +1237,13 @@ class Registry:
                 raise RegistryError(f"run has an unfinished turn: {open_turn['id']}")
             if outcome == "succeeded":
                 turns = connection.execute(
-                    "SELECT status FROM run_turns WHERE run_id = ?", (run_id,)
+                    "SELECT outcome FROM run_turns WHERE run_id = ?", (run_id,)
                 ).fetchall()
                 herdr_binding = connection.execute(
                     "SELECT 1 FROM herdr_bindings WHERE run_id = ?", (run_id,)
                 ).fetchone()
                 if (herdr_binding is not None or turns) and (
-                    not turns or not any(turn["status"] == "succeeded" for turn in turns)
+                    not turns or not any(turn["outcome"] == "succeeded" for turn in turns)
                 ):
                     raise RegistryError(
                         "successful run with Herdr worker or turns requires at least "
@@ -1291,13 +1401,13 @@ class Registry:
         self,
         task_id: str,
         *,
-        kind: str,
+        category: str,
         recurrence_key: str,
         content: str,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        if kind not in {"preference", "correction", "failure", "observation"}:
-            raise RegistryError(f"invalid feedback kind: {kind}")
+        if category not in FEEDBACK_CATEGORIES:
+            raise RegistryError(f"invalid feedback category: {category}")
         feedback_id = _id("feedback")
         with self._transaction() as connection:
             if (
@@ -1316,10 +1426,10 @@ class Registry:
             connection.execute(
                 """
                 INSERT INTO feedback(
-                    id, task_id, run_id, kind, recurrence_key, content, created_at
+                    id, task_id, run_id, category, recurrence_key, content, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (feedback_id, task_id, run_id, kind, recurrence_key, content, _now()),
+                (feedback_id, task_id, run_id, category, recurrence_key, content, _now()),
             )
         return self._get_record("feedback", feedback_id)
 
@@ -1358,7 +1468,9 @@ class Registry:
                 ):
                     continue
                 relevant_feedback = [
-                    item for item in feedback if self._is_relevant_feedback(target, item["kind"])
+                    item
+                    for item in feedback
+                    if self._is_relevant_feedback(target, item["category"])
                 ]
                 task_ids = sorted({item["task_id"] for item in relevant_feedback})
                 if not task_ids:
@@ -1451,7 +1563,7 @@ class Registry:
             promotion["evidence"] = json.loads(promotion.pop("evidence_json"))
         return rows
 
-    def set_promotion_status(self, promotion_id: str, status: str) -> dict[str, Any]:
+    def _set_promotion_status(self, promotion_id: str, status: str) -> dict[str, Any]:
         if status not in {"accepted", "rejected", "applied"}:
             raise RegistryError(f"invalid promotion status: {status}")
         with self._transaction() as connection:
@@ -1477,41 +1589,44 @@ class Registry:
         return self._get_promotion(promotion_id)
 
     def accept_promotion(self, promotion_id: str) -> dict[str, Any]:
-        return self.set_promotion_status(promotion_id, "accepted")
+        return self._set_promotion_status(promotion_id, "accepted")
 
     def reject_promotion(self, promotion_id: str) -> dict[str, Any]:
-        return self.set_promotion_status(promotion_id, "rejected")
+        return self._set_promotion_status(promotion_id, "rejected")
 
     def apply_promotion(self, promotion_id: str) -> dict[str, Any]:
-        return self.set_promotion_status(promotion_id, "applied")
+        return self._set_promotion_status(promotion_id, "applied")
 
     def reconcile(self) -> dict[str, Any]:
+        """Converge the registry and report the current control-plane state.
+
+        This is a read-shaped command with real writes: it creates or migrates
+        the schema through `initialize()` and materialises promotion proposals
+        before reporting. Each task bucket is keyed by the task state it holds.
+        """
         self.initialize()
         created = self.propose_promotions()
         with self._read_transaction() as connection:
             ready = self._list_tasks_impl(connection, ["ready"])
-            needs_user = self._list_tasks_impl(connection, ["waiting_user"])
+            waiting_user = self._list_tasks_impl(connection, ["waiting_user"])
             blocked = self._list_tasks_impl(connection, ["blocked"])
-            active = [
+            running = [
                 self._get_task_impl(connection, task["id"])
                 for task in self._list_tasks_impl(connection, ["running"])
             ]
-            needs_evaluation = [
+            evaluating = [
                 self._get_task_impl(connection, task["id"])
                 for task in self._list_tasks_impl(connection, ["evaluating"])
             ]
             return {
-                "dispatch": ready[0] if ready and not active and not needs_evaluation else None,
-                "active": active,
-                "needs_evaluation": needs_evaluation,
-                "needs_user": needs_user,
+                "next_task": ready[0] if ready and not running and not evaluating else None,
+                "running": running,
+                "evaluating": evaluating,
+                "waiting_user": waiting_user,
                 "blocked": blocked,
                 "new_promotion_proposals": created,
                 "promotion_proposals": self._list_promotions_impl(connection, "proposed"),
             }
-
-    def supervisor_tick(self) -> dict[str, Any]:
-        return self.reconcile()
 
     def run_maintenance(self) -> dict[str, Any]:
         self.initialize()
@@ -1705,21 +1820,21 @@ class Registry:
         return result
 
     @staticmethod
-    def _is_relevant_feedback(target: str, kind: str) -> bool:
+    def _is_relevant_feedback(target: str, category: str) -> bool:
         if target == "control":
-            return kind == "failure"
+            return category == "failure"
         if target == "skill":
-            return kind == "correction"
-        return kind in ("preference", "observation")
+            return category == "correction"
+        return category in ("preference", "observation")
 
     @staticmethod
     def _promotion_target(feedback: list[dict[str, Any]]) -> str | None:
-        kinds = [item["kind"] for item in feedback]
-        if kinds.count("failure") >= 2:
+        categories = [item["category"] for item in feedback]
+        if categories.count("failure") >= 2:
             return "control"
-        if kinds.count("correction") >= 2:
+        if categories.count("correction") >= 2:
             return "skill"
-        if "preference" in kinds or "observation" in kinds:
+        if "preference" in categories or "observation" in categories:
             return "memory"
         return None
 

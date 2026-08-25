@@ -1,5 +1,8 @@
 CREATE TABLE schema_meta (version INTEGER NOT NULL);
 INSERT INTO schema_meta(version) VALUES (3);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_meta_singleton
+    ON schema_meta((1));
+
 
 CREATE TABLE tasks (
     id TEXT PRIMARY KEY,
