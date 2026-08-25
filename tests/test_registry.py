@@ -1702,19 +1702,26 @@ def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monk
 class _FailingReadConnection:
     """Stands in for a connection, including the in-transaction schema check."""
 
-    def __init__(self, failure_stage):
+    def __init__(self, failure_stage, migration_row=None):
         self.failure_stage = failure_stage
+        self.migration_row = migration_row
         self.calls = []
+        self.last_statement = None
 
     def execute(self, statement, *parameters):
         self.calls.append(statement)
+        self.last_statement = statement
         if self.failure_stage == "begin" and statement == "BEGIN DEFERRED":
             raise sqlite3.OperationalError("begin failed")
         return self
 
     def fetchone(self):
-        # Satisfies `_assert_schema_current`'s version probe.
+        if "sqlite_master" in self.last_statement:
+            return (1,)
         return (SCHEMA_VERSION,)
+
+    def fetchall(self):
+        return [self.migration_row]
 
     def commit(self):
         self.calls.append("COMMIT")
@@ -1750,7 +1757,16 @@ def test_read_transaction_begin_failure_preserves_original_error(registry, monke
 def test_read_transaction_rollback_failure_preserves_original_error(
     registry, monkeypatch, failure_stage, message
 ):
-    connection = _FailingReadConnection(failure_stage)
+    step = registry._migration_plan()[6]
+    connection = _FailingReadConnection(
+        failure_stage,
+        {
+            "migration_id": step.migration_id,
+            "from_version": step.from_version,
+            "to_version": step.to_version,
+            "checksum": step.checksum,
+        },
+    )
     monkeypatch.setattr(registry, "initialize", lambda: None)
     monkeypatch.setattr(registry, "_connect", lambda: connection)
 

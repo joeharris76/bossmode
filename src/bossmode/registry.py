@@ -7,10 +7,12 @@ import os
 import re
 import sqlite3
 import stat
+import tempfile
 import time
 import uuid
-from collections.abc import Iterable
-from contextlib import closing, contextmanager
+from collections.abc import Callable, Iterable
+from contextlib import closing, contextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,7 +38,28 @@ FEEDBACK_CATEGORIES = {"preference", "correction", "failure", "observation"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+MIGRATION_LEDGER_VERSION = 7
+
+MIGRATION_V6_TO_V7_ID = "20260825_01_migration_durability"
+MIGRATION_V6_TO_V7_SQL = """
+CREATE TABLE applied_migrations (
+    migration_id TEXT PRIMARY KEY,
+    from_version INTEGER NOT NULL,
+    to_version INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    backup_path TEXT,
+    backup_sha256 TEXT,
+    CHECK (
+        (backup_path IS NULL AND backup_sha256 IS NULL)
+        OR (backup_path IS NOT NULL AND backup_sha256 IS NOT NULL)
+    ),
+    CHECK (to_version = from_version + 1)
+);
+CREATE UNIQUE INDEX idx_applied_migrations_transition
+    ON applied_migrations(from_version, to_version);
+"""
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -61,6 +84,23 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_meta_singleton
     ON schema_meta((1));
+
+CREATE TABLE IF NOT EXISTS applied_migrations (
+    migration_id TEXT PRIMARY KEY,
+    from_version INTEGER NOT NULL,
+    to_version INTEGER NOT NULL,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    backup_path TEXT,
+    backup_sha256 TEXT,
+    CHECK (
+        (backup_path IS NULL AND backup_sha256 IS NULL)
+        OR (backup_path IS NOT NULL AND backup_sha256 IS NOT NULL)
+    ),
+    CHECK (to_version = from_version + 1)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_applied_migrations_transition
+    ON applied_migrations(from_version, to_version);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -214,6 +254,21 @@ class RegistryError(RuntimeError):
     """Raised when a registry invariant is violated."""
 
 
+@dataclass(frozen=True)
+class MigrationStep:
+    migration_id: str | None
+    from_version: int
+    to_version: int
+    checksum: str | None
+    apply: Callable[[sqlite3.Connection], None]
+
+
+@dataclass(frozen=True)
+class MigrationBackup:
+    path: Path
+    sha256: str
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -224,6 +279,18 @@ def _id(prefix: str) -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _migration_checksum(migration_id: str, from_version: int, to_version: int, payload: str) -> str:
+    canonical = _json(
+        {
+            "from_version": from_version,
+            "migration_id": migration_id,
+            "payload": payload.strip(),
+            "to_version": to_version,
+        }
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -292,62 +359,448 @@ class Registry:
                 f"registry schema changed to {row[0]} while in use; "
                 f"this build supports {SCHEMA_VERSION}"
             )
+        self._validate_migration_ledger(connection, SCHEMA_VERSION)
+
+    def _migration_plan(self) -> dict[int, MigrationStep]:
+        ledger_checksum = _migration_checksum(
+            MIGRATION_V6_TO_V7_ID,
+            6,
+            7,
+            MIGRATION_V6_TO_V7_SQL,
+        )
+        return {
+            1: MigrationStep(None, 1, 2, None, self._migrate_v1_to_v2),
+            2: MigrationStep(None, 2, 3, None, self._migrate_v2_to_v3),
+            3: MigrationStep(None, 3, 4, None, self._migrate_v3_to_v4),
+            4: MigrationStep(None, 4, 5, None, self._migrate_v4_to_v5),
+            5: MigrationStep(None, 5, 6, None, self._migrate_v5_to_v6),
+            6: MigrationStep(
+                MIGRATION_V6_TO_V7_ID,
+                6,
+                7,
+                ledger_checksum,
+                self._migrate_v6_to_v7,
+            ),
+        }
+
+    def _inspect_existing_schema_version(self) -> int | None:
+        if not self.path.exists():
+            return None
+        if self.path.stat().st_size == 0:
+            return None
+        uri = f"{self.path.resolve().as_uri()}?mode=ro&immutable=1"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            schema_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            ).fetchone()
+            if schema_exists is None:
+                raise RegistryError(
+                    "existing nonempty registry is missing schema_meta; refusing initialization"
+                )
+            versions = connection.execute("SELECT version FROM schema_meta").fetchall()
+            if not versions:
+                raise RegistryError("registry schema version is missing")
+            if len(versions) != 1:
+                raise RegistryError("registry schema version must contain exactly one row")
+            current = int(versions[0]["version"])
+            if current > SCHEMA_VERSION:
+                raise RegistryError(
+                    f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
+                )
+            if current >= MIGRATION_LEDGER_VERSION:
+                self._validate_migration_ledger(connection, current)
+            return current
+
+    def _validate_migration_path(self, current: int) -> None:
+        plan = self._migration_plan()
+        probe = current
+        while probe < SCHEMA_VERSION:
+            step = plan.get(probe)
+            if step is None or step.to_version != probe + 1:
+                raise RegistryError(f"no registry migration from schema {probe}")
+            probe = step.to_version
+
+    @staticmethod
+    def _assert_open_directory_matches_path(path: Path, descriptor: int, label: str) -> None:
+        opened = os.fstat(descriptor)
+        try:
+            observed = os.stat(path, follow_symlinks=False)
+        except OSError as error:
+            raise RegistryError(f"{label} changed while backup was created: {path}") from error
+        if not stat.S_ISDIR(observed.st_mode) or (opened.st_dev, opened.st_ino) != (
+            observed.st_dev,
+            observed.st_ino,
+        ):
+            raise RegistryError(f"{label} changed while backup was created: {path}")
+
+    def _open_migration_backup_directory(self) -> tuple[Path, int, int]:
+        registry_directory = self.path.parent
+        backup_directory = registry_directory / "backups"
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            registry_descriptor = os.open(registry_directory, directory_flags)
+        except OSError as error:
+            raise RegistryError(
+                f"registry directory must be a real directory: {registry_directory}"
+            ) from error
+        try:
+            created = False
+            try:
+                os.mkdir("backups", mode=0o700, dir_fd=registry_descriptor)
+                created = True
+            except FileExistsError:
+                pass
+            try:
+                backup_descriptor = os.open("backups", directory_flags, dir_fd=registry_descriptor)
+            except OSError as error:
+                raise RegistryError(
+                    f"registry backup directory must be a real directory: {backup_directory}"
+                ) from error
+            try:
+                if not stat.S_ISDIR(os.fstat(backup_descriptor).st_mode):
+                    raise RegistryError(
+                        f"registry backup directory must be a real directory: {backup_directory}"
+                    )
+                os.fchmod(backup_descriptor, 0o700)
+                os.fsync(backup_descriptor)
+                if created:
+                    os.fsync(registry_descriptor)
+                self._assert_open_directory_matches_path(
+                    registry_directory, registry_descriptor, "registry directory"
+                )
+                observed_backup = os.stat(
+                    "backups", dir_fd=registry_descriptor, follow_symlinks=False
+                )
+                opened_backup = os.fstat(backup_descriptor)
+                if not stat.S_ISDIR(observed_backup.st_mode) or (
+                    opened_backup.st_dev,
+                    opened_backup.st_ino,
+                ) != (observed_backup.st_dev, observed_backup.st_ino):
+                    raise RegistryError(
+                        f"registry backup directory changed while backup was created: "
+                        f"{backup_directory}"
+                    )
+            except Exception:
+                os.close(backup_descriptor)
+                raise
+        except Exception:
+            os.close(registry_descriptor)
+            raise
+        return backup_directory, registry_descriptor, backup_descriptor
+
+    def _create_migration_backup(self, schema_version: int) -> MigrationBackup:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_stem = f"{self.path.name}.schema-{schema_version}.{timestamp}-{uuid.uuid4().hex[:8]}"
+        source_uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        backup_directory, registry_descriptor, backup_descriptor = (
+            self._open_migration_backup_directory()
+        )
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="bossmode-migration-backup-"
+            ) as staging_directory:
+                staging_path = Path(staging_directory) / "backup.sqlite3"
+                with (
+                    closing(sqlite3.connect(source_uri, uri=True)) as source,
+                    closing(sqlite3.connect(staging_path)) as destination,
+                ):
+                    source.backup(destination)
+                    destination.commit()
+                os.chmod(staging_path, 0o600)
+                self._verify_migration_backup(staging_path, schema_version)
+                with staging_path.open("rb") as staging_file:
+                    digest = hashlib.file_digest(staging_file, "sha256").hexdigest()
+
+                self._assert_open_directory_matches_path(
+                    self.path.parent, registry_descriptor, "registry directory"
+                )
+                temporary_name = f".{backup_stem}.partial"
+                backup_name = f"{backup_stem}.sha256-{digest}.sqlite3"
+                temporary_created = False
+                backup_published = False
+                try:
+                    creation_flags = (
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    destination_descriptor = os.open(
+                        temporary_name,
+                        creation_flags,
+                        0o600,
+                        dir_fd=backup_descriptor,
+                    )
+                    temporary_created = True
+                    try:
+                        source_descriptor = os.open(
+                            staging_path,
+                            os.O_RDONLY
+                            | getattr(os, "O_CLOEXEC", 0)
+                            | getattr(os, "O_NOFOLLOW", 0),
+                        )
+                        try:
+                            while block := os.read(source_descriptor, 1024 * 1024):
+                                view = memoryview(block)
+                                while view:
+                                    written = os.write(destination_descriptor, view)
+                                    view = view[written:]
+                        finally:
+                            os.close(source_descriptor)
+                        os.fchmod(destination_descriptor, 0o600)
+                        os.fsync(destination_descriptor)
+                        os.lseek(destination_descriptor, 0, os.SEEK_SET)
+                        with os.fdopen(os.dup(destination_descriptor), "rb") as backup_file:
+                            published_digest = hashlib.file_digest(
+                                backup_file, "sha256"
+                            ).hexdigest()
+                        if published_digest != digest:
+                            raise RegistryError(
+                                "registry migration backup changed during publication"
+                            )
+                    finally:
+                        os.close(destination_descriptor)
+
+                    os.link(
+                        temporary_name,
+                        backup_name,
+                        src_dir_fd=backup_descriptor,
+                        dst_dir_fd=backup_descriptor,
+                        follow_symlinks=False,
+                    )
+                    backup_published = True
+                    os.unlink(temporary_name, dir_fd=backup_descriptor)
+                    temporary_created = False
+                    os.fsync(backup_descriptor)
+                    self._assert_open_directory_matches_path(
+                        self.path.parent, registry_descriptor, "registry directory"
+                    )
+                    observed_backup = os.stat(
+                        "backups", dir_fd=registry_descriptor, follow_symlinks=False
+                    )
+                    opened_backup = os.fstat(backup_descriptor)
+                    if not stat.S_ISDIR(observed_backup.st_mode) or (
+                        opened_backup.st_dev,
+                        opened_backup.st_ino,
+                    ) != (observed_backup.st_dev, observed_backup.st_ino):
+                        raise RegistryError(
+                            f"registry backup directory changed while backup was created: "
+                            f"{backup_directory}"
+                        )
+                except Exception:
+                    if temporary_created:
+                        with suppress(FileNotFoundError):
+                            os.unlink(temporary_name, dir_fd=backup_descriptor)
+                    if backup_published:
+                        with suppress(FileNotFoundError):
+                            os.unlink(backup_name, dir_fd=backup_descriptor)
+                    with suppress(OSError):
+                        os.fsync(backup_descriptor)
+                    raise
+        finally:
+            os.close(backup_descriptor)
+            os.close(registry_descriptor)
+        return MigrationBackup(backup_directory / backup_name, digest)
+
+    @staticmethod
+    def _verify_migration_backup(backup_path: Path, schema_version: int) -> None:
+        uri = f"{backup_path.resolve().as_uri()}?mode=ro"
+        try:
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                integrity = connection.execute("PRAGMA integrity_check").fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise RegistryError(
+                        f"registry migration backup failed integrity check: {backup_path}"
+                    )
+                version = connection.execute("SELECT version FROM schema_meta").fetchone()
+                if version is None or version[0] != schema_version:
+                    raise RegistryError(
+                        f"registry migration backup has unexpected schema version: {backup_path}"
+                    )
+        except sqlite3.Error as error:
+            raise RegistryError(
+                f"registry migration backup is unreadable: {backup_path}: {error}"
+            ) from error
+
+    def _validate_migration_ledger(
+        self, connection: sqlite3.Connection, schema_version: int
+    ) -> None:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'applied_migrations'"
+        ).fetchone()
+        if table is None:
+            raise RegistryError(
+                f"registry schema {schema_version} is missing the applied migration ledger"
+            )
+        known = {
+            step.migration_id: step
+            for step in self._migration_plan().values()
+            if step.migration_id is not None
+        }
+        rows = connection.execute(
+            "SELECT migration_id, from_version, to_version, checksum "
+            "FROM applied_migrations ORDER BY to_version, migration_id"
+        ).fetchall()
+        migration_ids = [row["migration_id"] for row in rows]
+        transitions = [(row["from_version"], row["to_version"]) for row in rows]
+        if len(migration_ids) != len(set(migration_ids)) or len(transitions) != len(
+            set(transitions)
+        ):
+            raise RegistryError("registry applied migration ledger contains duplicate entries")
+        required_ids = {
+            step.migration_id for step in known.values() if step.to_version <= schema_version
+        }
+        observed_ids = set(migration_ids)
+        if observed_ids != required_ids:
+            missing = sorted(required_ids - observed_ids)
+            unknown = sorted(observed_ids - required_ids)
+            detail = []
+            if missing:
+                detail.append(f"missing {', '.join(missing)}")
+            if unknown:
+                detail.append(f"unknown {', '.join(unknown)}")
+            raise RegistryError(
+                "registry applied migration lineage is invalid: " + "; ".join(detail)
+            )
+        for row in rows:
+            step = known.get(row["migration_id"])
+            if step is None:
+                raise RegistryError(
+                    f"registry contains unknown applied migration: {row['migration_id']}"
+                )
+            observed = (row["from_version"], row["to_version"], row["checksum"])
+            expected = (step.from_version, step.to_version, step.checksum)
+            if observed != expected:
+                raise RegistryError(f"registry migration checksum mismatch: {row['migration_id']}")
+            if step.to_version > schema_version:
+                raise RegistryError(
+                    f"registry migration {row['migration_id']} exceeds schema {schema_version}"
+                )
+
+    def _record_applied_migration(
+        self,
+        connection: sqlite3.Connection,
+        step: MigrationStep,
+        backup: MigrationBackup | None,
+    ) -> None:
+        if step.migration_id is None or step.checksum is None:
+            return
+        connection.execute(
+            """
+            INSERT INTO applied_migrations(
+                migration_id, from_version, to_version, checksum, applied_at,
+                backup_path, backup_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                step.migration_id,
+                step.from_version,
+                step.to_version,
+                step.checksum,
+                _now(),
+                None if backup is None else backup.path.relative_to(self.path.parent).as_posix(),
+                None if backup is None else backup.sha256,
+            ),
+        )
+
+    @staticmethod
+    def _rollback_schema_transaction(connection: sqlite3.Connection) -> None:
+        connection.rollback()
 
     def _ensure_schema(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                schema_exists = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
-                ).fetchone()
-                if schema_exists is None:
-                    self._execute_schema(connection)
-                    connection.execute(
-                        "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
-                    )
-                    connection.commit()
-                    return
-                versions = connection.execute("SELECT version FROM schema_meta").fetchall()
-                if not versions:
-                    raise RegistryError("registry schema version is missing")
-                if len(versions) != 1:
-                    raise RegistryError("registry schema version must contain exactly one row")
-                current = versions[0]["version"]
-                if current > SCHEMA_VERSION:
-                    raise RegistryError(
-                        f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
-                    )
-                migrations = {
-                    1: self._migrate_v1_to_v2,
-                    2: self._migrate_v2_to_v3,
-                    3: self._migrate_v3_to_v4,
-                    4: self._migrate_v4_to_v5,
-                    5: self._migrate_v5_to_v6,
-                }
-                while current < SCHEMA_VERSION:
-                    migration = migrations.get(current)
-                    if migration is None:
+        inspected_version = self._inspect_existing_schema_version()
+        if inspected_version is not None:
+            self._validate_migration_path(inspected_version)
+        with closing(self._connect_for_schema()) as connection:
+            while True:
+                backup: MigrationBackup | None = None
+                migration_step: MigrationStep | None = None
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    schema_exists = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+                    ).fetchone()
+                    if schema_exists is None:
+                        existing_objects = connection.execute(
+                            "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                        ).fetchone()
+                        if existing_objects is not None:
+                            raise RegistryError(
+                                "existing registry is missing schema_meta; refusing initialization"
+                            )
+                        self._execute_schema(connection)
+                        connection.execute(
+                            "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
+                        )
+                        for step in self._migration_plan().values():
+                            if step.migration_id is not None:
+                                self._record_applied_migration(connection, step, None)
+                        connection.commit()
+                        return
+                    versions = connection.execute("SELECT version FROM schema_meta").fetchall()
+                    if not versions:
+                        raise RegistryError("registry schema version is missing")
+                    if len(versions) != 1:
+                        raise RegistryError("registry schema version must contain exactly one row")
+                    current = int(versions[0]["version"])
+                    if current > SCHEMA_VERSION:
+                        raise RegistryError(
+                            f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
+                        )
+                    self._validate_migration_path(current)
+                    if current == SCHEMA_VERSION:
+                        self._validate_migration_ledger(connection, current)
+                        connection.commit()
+                        return
+
+                    integrity = connection.execute("PRAGMA integrity_check").fetchone()
+                    if integrity is None or integrity[0] != "ok":
+                        raise RegistryError("registry failed integrity check; refusing migration")
+                    backup = self._create_migration_backup(current)
+                    step = self._migration_plan().get(current)
+                    if step is None:
                         raise RegistryError(f"no registry migration from schema {current}")
-                    target = current + 1
-                    migration(connection)
-                    connection.execute("UPDATE schema_meta SET version = ?", (target,))
-                    current = target
-                connection.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_meta_singleton "
-                    "ON schema_meta((1))"
-                )
-                connection.commit()
-            except sqlite3.Error as error:
-                connection.rollback()
-                if "current" in locals() and current < SCHEMA_VERSION:
-                    raise RegistryError(
-                        f"registry migration {current} -> {current + 1} failed: {error}"
-                    ) from error
-                raise
-            except Exception:
-                connection.rollback()
-                raise
+                    migration_step = step
+                    step.apply(connection)
+                    self._record_applied_migration(connection, step, backup)
+                    connection.execute("UPDATE schema_meta SET version = ?", (step.to_version,))
+                    connection.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_meta_singleton "
+                        "ON schema_meta((1))"
+                    )
+                    if step.to_version >= MIGRATION_LEDGER_VERSION:
+                        self._validate_migration_ledger(connection, step.to_version)
+                    connection.commit()
+                    if step.to_version == SCHEMA_VERSION:
+                        return
+                except Exception as error:
+                    rollback_error: Exception | None = None
+                    try:
+                        self._rollback_schema_transaction(connection)
+                    except Exception as caught_rollback_error:
+                        rollback_error = caught_rollback_error
+                    if backup is not None and migration_step is not None:
+                        migration_error = RegistryError(
+                            f"registry migration {migration_step.from_version} -> "
+                            f"{migration_step.to_version} failed: {error}; restore from "
+                            f"{backup.path} (sha256 {backup.sha256})"
+                        )
+                        if rollback_error is not None:
+                            migration_error.add_note(
+                                f"registry migration rollback failed: {rollback_error}"
+                            )
+                        raise migration_error from error
+                    if rollback_error is not None:
+                        error.add_note(f"registry schema rollback failed: {rollback_error}")
+                    raise
 
     @staticmethod
     def _execute_schema(connection: sqlite3.Connection) -> None:
@@ -554,6 +1007,13 @@ class Registry:
             """
         )
 
+    @staticmethod
+    def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
+        """Add durable, checksum-bound migration lineage without feature tables."""
+        for statement in MIGRATION_V6_TO_V7_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -592,15 +1052,8 @@ class Registry:
             connection.close()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.path,
-            timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
-            isolation_level=None,
-        )
+        connection = self._connect_for_schema()
         try:
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             deadline = time.perf_counter() + (SQLITE_BUSY_TIMEOUT_MS / 1_000)
             while True:
                 try:
@@ -610,6 +1063,21 @@ class Registry:
                     if "locked" not in str(error).lower() or time.perf_counter() >= deadline:
                         raise
                     time.sleep(0.005)
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    def _connect_for_schema(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            self.path,
+            timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
+            isolation_level=None,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         except Exception:
             connection.close()
             raise
