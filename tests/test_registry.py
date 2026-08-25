@@ -208,7 +208,7 @@ def test_registry_rejects_sibling_worktree_before_opening_database(tmp_path, mon
 
     database = foreign_worktree / ".bossmode" / "control.db"
     database.parent.mkdir()
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         connection.execute("CREATE TABLE schema_meta (version INTEGER NOT NULL)")
         connection.execute("INSERT INTO schema_meta(version) VALUES (5)")
     before = database.read_bytes()
