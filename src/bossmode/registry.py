@@ -262,15 +262,36 @@ class Registry:
         self._schema_ready = False
 
     def initialize(self) -> None:
-        # Every transaction helper calls this, so a single `reconcile()` used to
-        # open four connections and take four BEGIN IMMEDIATE write locks just to
-        # re-read an unchanged schema version. One check per Registry instance is
-        # enough: each instance owns its worktree-local registry for the lifetime
-        # of a single command.
+        """Create or migrate the registry, at most once per instance.
+
+        Every transaction helper calls this, so a single `reconcile()` used to
+        open four connections and take four BEGIN IMMEDIATE write locks just to
+        re-read an unchanged schema version. Only the create-or-migrate path is
+        cached here. Compatibility is still enforced on every transaction by
+        `_assert_schema_current`, using that transaction's own connection, so a
+        long-lived instance cannot keep writing after another process migrates
+        the database to an unsupported schema.
+        """
         if self._schema_ready:
             return
         self._ensure_schema()
         self._schema_ready = True
+
+    def _assert_schema_current(self, connection: sqlite3.Connection) -> None:
+        try:
+            row = connection.execute("SELECT version FROM schema_meta").fetchone()
+        except sqlite3.Error as error:
+            raise RegistryError(
+                f"registry schema is unreadable; the database may have been "
+                f"replaced or removed: {self.path}"
+            ) from error
+        if row is None:
+            raise RegistryError("registry schema version is missing")
+        if row[0] != SCHEMA_VERSION:
+            raise RegistryError(
+                f"registry schema changed to {row[0]} while in use; "
+                f"this build supports {SCHEMA_VERSION}"
+            )
 
     def _ensure_schema(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -539,6 +560,7 @@ class Registry:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            self._assert_schema_current(connection)
             yield connection
             connection.commit()
         except Exception:
@@ -555,6 +577,7 @@ class Registry:
         try:
             connection.execute("BEGIN DEFERRED")
             transaction_started = True
+            self._assert_schema_current(connection)
             yield connection
             connection.commit()
             transaction_started = False
@@ -1149,14 +1172,14 @@ class Registry:
             raise RegistryError(f"turn result is not valid JSON: {path}") from error
         if not isinstance(result, dict):
             raise RegistryError("turn result must be a JSON object")
-        required = {"turn_id", "status", "summary", "artifacts"}
+        required = {"turn_id", "outcome", "summary", "artifacts"}
         missing = sorted(required - result.keys())
         if missing:
             raise RegistryError(f"turn result is missing fields: {', '.join(missing)}")
         if result["turn_id"] != turn["id"]:
             raise RegistryError("turn result ID does not match the open turn")
-        if result["status"] != "succeeded":
-            raise RegistryError("successful turn result must have status succeeded")
+        if result["outcome"] != "succeeded":
+            raise RegistryError("successful turn result must have outcome succeeded")
         if not isinstance(result["summary"], str) or not result["summary"].strip():
             raise RegistryError("turn result summary must be a non-empty string")
         if expected_summary is not None and expected_summary != result["summary"]:
@@ -1540,7 +1563,7 @@ class Registry:
             promotion["evidence"] = json.loads(promotion.pop("evidence_json"))
         return rows
 
-    def set_promotion_status(self, promotion_id: str, status: str) -> dict[str, Any]:
+    def _set_promotion_status(self, promotion_id: str, status: str) -> dict[str, Any]:
         if status not in {"accepted", "rejected", "applied"}:
             raise RegistryError(f"invalid promotion status: {status}")
         with self._transaction() as connection:
@@ -1566,13 +1589,13 @@ class Registry:
         return self._get_promotion(promotion_id)
 
     def accept_promotion(self, promotion_id: str) -> dict[str, Any]:
-        return self.set_promotion_status(promotion_id, "accepted")
+        return self._set_promotion_status(promotion_id, "accepted")
 
     def reject_promotion(self, promotion_id: str) -> dict[str, Any]:
-        return self.set_promotion_status(promotion_id, "rejected")
+        return self._set_promotion_status(promotion_id, "rejected")
 
     def apply_promotion(self, promotion_id: str) -> dict[str, Any]:
-        return self.set_promotion_status(promotion_id, "applied")
+        return self._set_promotion_status(promotion_id, "applied")
 
     def reconcile(self) -> dict[str, Any]:
         """Converge the registry and report the current control-plane state.

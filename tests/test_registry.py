@@ -38,7 +38,7 @@ def write_turn_result(
     turn: dict,
     *,
     turn_id: str | None = None,
-    status: str = "succeeded",
+    outcome: str = "succeeded",
     summary: str = "Result verified",
     artifacts: list[dict] | None = None,
 ) -> None:
@@ -48,7 +48,7 @@ def write_turn_result(
         json.dumps(
             {
                 "turn_id": turn_id or turn["id"],
-                "status": status,
+                "outcome": outcome,
                 "summary": summary,
                 "artifacts": artifacts or [],
             }
@@ -754,7 +754,7 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
     with pytest.raises(RegistryError, match="exceeds"):
         registry.finish_turn(turn["id"], outcome="succeeded")
 
-    bad_payload = f'```json\n{{"turn_id": "{turn["id"]}", "status": "succeeded"}}\n```'
+    bad_payload = f'```json\n{{"turn_id": "{turn["id"]}", "outcome": "succeeded"}}\n```'
     Path(turn["artifact_path"]).write_text(bad_payload)
     with pytest.raises(RegistryError, match="markdown code fence"):
         registry.finish_turn(turn["id"], outcome="succeeded")
@@ -772,7 +772,7 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
     assert finished["result"]["artifacts"][0]["path"] == "result.md"
 
 
-@pytest.mark.parametrize("missing_field", ["turn_id", "status", "summary", "artifacts"])
+@pytest.mark.parametrize("missing_field", ["turn_id", "outcome", "summary", "artifacts"])
 def test_turn_result_requires_every_contract_field(registry, tmp_path, monkeypatch, missing_field):
     monkeypatch.chdir(tmp_path)
     task = create_task(registry)
@@ -783,7 +783,7 @@ def test_turn_result_requires_every_contract_field(registry, tmp_path, monkeypat
     turn = registry.start_turn(run["id"], purpose="task", prompt="validate fields")
     payload = {
         "turn_id": turn["id"],
-        "status": "succeeded",
+        "outcome": "succeeded",
         "summary": "done",
         "artifacts": [],
     }
@@ -805,7 +805,7 @@ def test_turn_result_requires_every_contract_field(registry, tmp_path, monkeypat
         ("invalid_utf8", "not valid JSON"),
         ("invalid_json", "not valid JSON"),
         ("array", "JSON object"),
-        ("wrong_status", "must have status succeeded"),
+        ("wrong_outcome", "must have outcome succeeded"),
         ("blank_summary", "non-empty string"),
         ("non_string_summary", "non-empty string"),
         ("summary_mismatch", "does not match"),
@@ -827,7 +827,7 @@ def test_turn_result_rejects_malformed_payloads(registry, tmp_path, monkeypatch,
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "turn_id": turn["id"],
-        "status": "succeeded",
+        "outcome": "succeeded",
         "summary": "expected summary",
         "artifacts": [],
     }
@@ -838,8 +838,8 @@ def test_turn_result_rejects_malformed_payloads(registry, tmp_path, monkeypatch,
     elif case == "array":
         path.write_text("[]")
     else:
-        if case == "wrong_status":
-            payload["status"] = "failed"
+        if case == "wrong_outcome":
+            payload["outcome"] = "failed"
         elif case == "blank_summary":
             payload["summary"] = " "
         elif case == "non_string_summary":
@@ -1199,6 +1199,36 @@ def test_initialize_checks_the_schema_once_per_instance(tmp_path, monkeypatch):
     assert Registry(tmp_path / "control.db")._schema_ready is False
 
 
+def test_live_instance_refuses_a_schema_changed_underneath_it(tmp_path):
+    """Caching the create-or-migrate path must not cache compatibility.
+
+    A long-lived Registry previously kept writing after another process migrated
+    the database to an unsupported schema, defeating the fail-closed check.
+    """
+    database = tmp_path / "control.db"
+    registry = Registry(database)
+    registry.reconcile()
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION + 1,))
+
+    with pytest.raises(RegistryError, match="schema changed"):
+        registry.create_task(title="T", goal="G", success_criteria="S")
+    with pytest.raises(RegistryError, match="schema changed"):
+        registry.reconcile()
+
+
+def test_live_instance_reports_a_removed_database_clearly(tmp_path):
+    """A replaced or deleted registry must not surface as a raw sqlite error."""
+    database = tmp_path / "control.db"
+    registry = Registry(database)
+    registry.reconcile()
+    database.unlink()
+
+    with pytest.raises(RegistryError, match="schema is unreadable"):
+        registry.create_task(title="T", goal="G", success_criteria="S")
+
+
 def test_failed_migration_rolls_back_schema_and_version(tmp_path, monkeypatch):
     database = tmp_path / "control.db"
     version_four = Path(__file__).parent / "fixtures" / "schema_v4.sql"
@@ -1367,7 +1397,7 @@ def test_rejected_promotion_can_be_reproposed(registry):
             content=content,
         )
     promotion = registry.propose_promotions()[0]
-    registry.set_promotion_status(promotion["id"], "rejected")
+    registry.reject_promotion(promotion["id"])
 
     # Adding new feedback under the same key allows re-proposing
     registry.add_feedback(
@@ -1394,11 +1424,11 @@ def test_promotion_status_requires_explicit_order(registry):
     promotion = registry.propose_promotions()[0]
 
     with pytest.raises(RegistryError, match="proposed -> applied"):
-        registry.set_promotion_status(promotion["id"], "applied")
+        registry.apply_promotion(promotion["id"])
 
-    accepted = registry.set_promotion_status(promotion["id"], "accepted")
+    accepted = registry.accept_promotion(promotion["id"])
     assert accepted["status"] == "accepted"
-    assert registry.set_promotion_status(promotion["id"], "applied")["status"] == "applied"
+    assert registry.apply_promotion(promotion["id"])["status"] == "applied"
 
 
 @pytest.mark.parametrize(
@@ -1629,7 +1659,7 @@ def test_turn_result_rejects_symlink_swap_during_open(registry, tmp_path, monkey
         json.dumps(
             {
                 "turn_id": turn["id"],
-                "status": "succeeded",
+                "outcome": "succeeded",
                 "summary": "swapped result",
                 "artifacts": [],
             }
@@ -1670,15 +1700,21 @@ def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monk
 
 
 class _FailingReadConnection:
+    """Stands in for a connection, including the in-transaction schema check."""
+
     def __init__(self, failure_stage):
         self.failure_stage = failure_stage
         self.calls = []
 
-    def execute(self, statement):
+    def execute(self, statement, *parameters):
         self.calls.append(statement)
         if self.failure_stage == "begin" and statement == "BEGIN DEFERRED":
             raise sqlite3.OperationalError("begin failed")
         return self
+
+    def fetchone(self):
+        # Satisfies `_assert_schema_current`'s version probe.
+        return (SCHEMA_VERSION,)
 
     def commit(self):
         self.calls.append("COMMIT")
