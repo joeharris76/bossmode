@@ -45,8 +45,10 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
     database = project / ".bossmode" / "control.db"
 
     def invoke(*arguments: str, expected_exit: int = 0) -> dict:
+        # `install-skill` touches no registry and rejects --db.
+        prefix = [] if arguments[:1] == ("install-skill",) else ["--db", str(database)]
         completed = subprocess.run(
-            [str(executable), "--db", str(database), *arguments],
+            [str(executable), *prefix, *arguments],
             cwd=project,
             capture_output=True,
             text=True,
@@ -55,17 +57,17 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         assert completed.returncode == expected_exit, completed.stderr
         return json.loads(completed.stdout if expected_exit == 0 else completed.stderr)
 
-    initialized = invoke("init", "--project-dir", str(project))
+    initialized = invoke("install-skill", "--project-dir", str(project))
     installed_skill = project / ".agents" / "skills" / "bossmode" / "SKILL.md"
     assert initialized["status"] == "installed"
     assert initialized["skill_version"] == "0.1.0"
     assert initialized["skill_path"] == str(installed_skill)
     assert "one bounded task" in initialized["next_prompt"]
     assert installed_skill.read_bytes() == canonical_skill.read_bytes()
-    assert invoke("init", "--project-dir", str(project))["status"] == "already_installed"
+    assert invoke("install-skill", "--project-dir", str(project))["status"] == "already_installed"
     assert not database.exists()
 
-    assert invoke()["dispatch"] is None
+    assert invoke()["next_task"] is None
     requested_outcome = "Create proof.txt containing clean-install-ready."
     supervisor_prompt = initialized["next_prompt"].replace(
         "[describe the outcome you want]", requested_outcome
@@ -94,7 +96,7 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         "bossmode",
         "--worker",
         "wheel_worker",
-        "--kind",
+        "--agent-kind",
         "codex",
     )
     turn = invoke(
@@ -124,7 +126,7 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         "turn",
         "finish",
         turn["id"],
-        "--status",
+        "--outcome",
         "succeeded",
         "--summary",
         "Created and checked proof.txt",

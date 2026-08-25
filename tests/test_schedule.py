@@ -9,6 +9,7 @@ import pytest
 
 from bossmode.cli import main
 from bossmode.scheduler import (
+    SCHEDULE_TARGETS,
     CrontabAdapter,
     LaunchdAdapter,
     SchedulerError,
@@ -51,6 +52,12 @@ def test_command_falls_back_to_active_python_when_uv_is_unavailable() -> None:
 
     with pytest.raises(SchedulerError, match="unsupported schedule target"):
         scheduled_command("unknown")
+
+
+def test_scheduled_command_names_every_target_explicitly() -> None:
+    """`reconcile` used to be scheduled as a naked `bossmode`, hiding the target."""
+    for target in sorted(SCHEDULE_TARGETS):
+        assert scheduled_command(target)[-1] == target
 
 
 def test_rotate_log_if_needed(tmp_path: Path) -> None:

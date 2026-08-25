@@ -12,7 +12,12 @@ from threading import Barrier
 
 import pytest
 
-from bossmode.registry import MAX_TURN_RESULT_BYTES, Registry, RegistryError
+from bossmode.registry import (
+    MAX_TURN_RESULT_BYTES,
+    SCHEMA_VERSION,
+    Registry,
+    RegistryError,
+)
 
 
 @pytest.fixture
@@ -195,7 +200,10 @@ def test_concurrent_fresh_initialization_is_singleton_and_error_free(tmp_path):
         registry = Registry(database)
         with closing(registry._connect()) as connection:
             assert connection.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 1
-            assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+            assert (
+                connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+                == SCHEMA_VERSION
+            )
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
@@ -232,7 +240,7 @@ def test_registry_allows_current_worktree_database(tmp_path, monkeypatch):
     Registry(database).initialize()
 
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_competing_cli_processes_start_exactly_one_run(tmp_path):
@@ -423,10 +431,10 @@ def test_supervisor_selects_highest_priority_ready_task(registry):
     low = create_task(registry, title="Low", priority=1)
     high = create_task(registry, title="High", priority=10)
 
-    tick = registry.supervisor_tick()
+    state = registry.reconcile()
 
-    assert tick["dispatch"]["id"] == high["id"]
-    assert tick["dispatch"]["id"] != low["id"]
+    assert state["next_task"]["id"] == high["id"]
+    assert state["next_task"]["id"] != low["id"]
 
 
 def test_supervisor_is_single_flight_and_returns_recovery_details(registry):
@@ -434,11 +442,11 @@ def test_supervisor_is_single_flight_and_returns_recovery_details(registry):
     active_run = registry.start_run(active_task["id"], agent_role="worker")
     create_task(registry, title="Ready", priority=10)
 
-    tick = registry.supervisor_tick()
+    state = registry.reconcile()
 
-    assert tick["dispatch"] is None
-    assert tick["active"][0]["runs"][0]["id"] == active_run["id"]
-    assert tick["active"][0]["runs"][0]["turns"] == []
+    assert state["next_task"] is None
+    assert state["running"][0]["runs"][0]["id"] == active_run["id"]
+    assert state["running"][0]["runs"][0]["turns"] == []
 
 
 def test_supervisor_exposes_tasks_needing_evaluation(registry):
@@ -446,10 +454,10 @@ def test_supervisor_exposes_tasks_needing_evaluation(registry):
     run = registry.start_run(task["id"], agent_role="worker")
     registry.finish_run(run["id"], outcome="succeeded", summary="Execution completed")
 
-    tick = registry.supervisor_tick()
+    state = registry.reconcile()
 
-    assert [item["id"] for item in tick["needs_evaluation"]] == [task["id"]]
-    assert tick["dispatch"] is None
+    assert [item["id"] for item in state["evaluating"]] == [task["id"]]
+    assert state["next_task"] is None
 
 
 def test_failed_evaluation_fails_the_task(registry):
@@ -507,7 +515,7 @@ def test_herdr_binding_records_native_session_and_correlated_turns(registry, tmp
     write_turn_result(first, summary="Report written")
     registry.finish_turn(
         first["id"],
-        status="succeeded",
+        outcome="succeeded",
         summary="Report written",
         lifecycle_evidence="done",
     )
@@ -524,8 +532,12 @@ def test_herdr_binding_records_native_session_and_correlated_turns(registry, tmp
     assert first["artifact_path"].endswith(f"{first['id']}.json")
     assert first["prompt_digest"] != second["prompt_digest"]
     assert second["ordinal"] == 2
-    assert [turn["status"] for turn in registry.get_run(run["id"])["turns"]] == [
+    assert [turn["outcome"] for turn in registry.get_run(run["id"])["turns"]] == [
         "succeeded",
+        None,
+    ]
+    assert [turn["status"] for turn in registry.get_run(run["id"])["turns"]] == [
+        "finished",
         "running",
     ]
 
@@ -732,27 +744,27 @@ def test_turn_requires_one_open_turn_and_a_matching_result(registry, tmp_path, m
     with pytest.raises(RegistryError, match="already has an open turn"):
         registry.start_turn(run["id"], purpose="correction", prompt="retry")
     with pytest.raises(RegistryError, match="result is unavailable"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
     write_turn_result(turn, turn_id="foreign-turn")
     with pytest.raises(RegistryError, match="ID does not match"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
     Path(turn["artifact_path"]).write_bytes(b"x" * (MAX_TURN_RESULT_BYTES + 1))
     with pytest.raises(RegistryError, match="exceeds"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
     bad_payload = f'```json\n{{"turn_id": "{turn["id"]}", "status": "succeeded"}}\n```'
     Path(turn["artifact_path"]).write_text(bad_payload)
     with pytest.raises(RegistryError, match="markdown code fence"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
     write_turn_result(
         turn,
         summary="Verified result",
         artifacts=[{"path": "result.md", "kind": "report"}],
     )
-    finished = registry.finish_turn(turn["id"], status="succeeded")
+    finished = registry.finish_turn(turn["id"], outcome="succeeded")
 
     assert finished["summary"] == "Verified result"
     assert finished["prompt"] == "hello"
@@ -780,7 +792,7 @@ def test_turn_result_requires_every_contract_field(registry, tmp_path, monkeypat
     Path(turn["artifact_path"]).write_text(json.dumps(payload))
 
     with pytest.raises(RegistryError, match=f"missing fields: {missing_field}"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
     preserved = registry.get_turn(turn["id"])
     assert preserved["status"] == "running"
@@ -847,7 +859,7 @@ def test_turn_result_rejects_malformed_payloads(registry, tmp_path, monkeypatch,
     with pytest.raises(RegistryError, match=message):
         registry.finish_turn(
             turn["id"],
-            status="succeeded",
+            outcome="succeeded",
             summary="expected summary",
         )
 
@@ -872,7 +884,7 @@ def test_run_cannot_finish_with_open_turn(registry, tmp_path, monkeypatch):
         registry.finish_run(run["id"], outcome="succeeded", summary="too early")
 
     write_turn_result(turn, summary="done")
-    registry.finish_turn(turn["id"], status="succeeded", summary="done")
+    registry.finish_turn(turn["id"], outcome="succeeded", summary="done")
     finished = registry.finish_run(run["id"], outcome="succeeded", summary="complete")
     assert finished["outcome"] == "succeeded"
 
@@ -890,7 +902,7 @@ def test_finish_run_with_turns_requires_at_least_one_succeeded_turn(
         agent_kind="claude",
     )
     turn = registry.start_turn(run["id"], purpose="task", prompt="do work")
-    registry.finish_turn(turn["id"], status="failed", summary="Worker crashed")
+    registry.finish_turn(turn["id"], outcome="failed", summary="Worker crashed")
 
     with pytest.raises(RegistryError, match="requires at least one succeeded turn"):
         registry.finish_run(run["id"], outcome="succeeded", summary="claimed success anyway")
@@ -1033,7 +1045,7 @@ def test_initialize_upgrades_a_real_version_one_schema(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -1058,7 +1070,7 @@ def test_version_two_migration_preserves_and_stales_finished_bindings(tmp_path):
     assert migrated["turns"][0]["summary"] == "historical turn"
     assert migrated["turns"][0]["result"] is None
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(herdr_bindings)")}
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
@@ -1080,7 +1092,7 @@ def test_version_three_migration_preserves_turn_data(tmp_path):
         assert turn["summary"] == "preserved"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v3"
         assert turn["prompt"] == ""
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         assert connection.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM promotions").fetchone()[0] == 1
@@ -1097,7 +1109,7 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
     registry.initialize()
 
     with closing(registry._connect()) as connection:
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
         turn = connection.execute("SELECT * FROM run_turns WHERE id = 'turn_v4'").fetchone()
         assert turn["prompt"] == "historical prompt"
         assert json.loads(turn["result_json"])["turn_id"] == "turn_v4"
@@ -1113,6 +1125,49 @@ def test_version_four_migration_preserves_records_and_is_idempotent(tmp_path):
             ).fetchone()[0]
             == 1
         )
+
+
+def test_version_five_migration_splits_turn_status_and_renames_feedback_kind(tmp_path):
+    """v6 splits the mixed run_turns.status column and qualifies feedback.kind."""
+    database = tmp_path / "control.db"
+    version_five = Path(__file__).parent / "fixtures" / "schema_v5.sql"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.executescript(version_five.read_text())
+
+    registry = Registry(database)
+    registry.initialize()
+    registry.initialize()
+
+    with closing(registry._connect()) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
+
+        done = connection.execute("SELECT * FROM run_turns WHERE id = 'turn_done'").fetchone()
+        assert done["status"] == "finished"
+        assert done["outcome"] == "succeeded"
+        assert done["summary"] == "finished turn"
+
+        open_turn = connection.execute("SELECT * FROM run_turns WHERE id = 'turn_open'").fetchone()
+        assert open_turn["status"] == "running"
+        assert open_turn["outcome"] is None
+
+        feedback = connection.execute("SELECT * FROM feedback WHERE id = 'fb_v5'").fetchone()
+        assert feedback["category"] == "correction"
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(feedback)").fetchall()
+        }
+        assert "kind" not in columns
+
+        # The one-open-turn-per-run guard must survive the table rebuild.
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO run_turns(
+                    id, run_id, ordinal, purpose, prompt, prompt_digest, artifact_path,
+                    status, started_at
+                ) VALUES ('turn_x', 'run_v5', 3, 'task', 'p3', 'd3',
+                          '.bossmode/turns/turn_x.json', 'running', '2026-01-01T00:04:00Z')
+                """
+            )
 
 
 def test_failed_migration_rolls_back_schema_and_version(tmp_path, monkeypatch):
@@ -1189,7 +1244,7 @@ def test_preference_proposes_memory_without_applying_it(registry):
     task = create_task(registry)
     registry.add_feedback(
         task["id"],
-        kind="preference",
+        category="preference",
         recurrence_key="reports.explicit-limits",
         content="Separate evidence from inference",
     )
@@ -1206,7 +1261,7 @@ def test_repeated_correction_requires_passing_evidence_for_skill(registry):
     for task in (first, second):
         registry.add_feedback(
             task["id"],
-            kind="correction",
+            category="correction",
             recurrence_key="closeout.require-evidence",
             content="Do not call work complete before checking evidence",
         )
@@ -1234,7 +1289,7 @@ def test_repeated_failure_proposes_deterministic_control(registry):
     for content in ("Archived too early", "Archived before preserving context"):
         registry.add_feedback(
             task["id"],
-            kind="failure",
+            category="failure",
             recurrence_key="lifecycle.archive-guard",
             content=content,
         )
@@ -1249,19 +1304,19 @@ def test_promotion_counts_matching_feedback_kind_only(registry):
     task = create_task(registry)
     registry.add_feedback(
         task["id"],
-        kind="failure",
+        category="failure",
         recurrence_key="lifecycle.archive-guard",
         content="First failure",
     )
     registry.add_feedback(
         task["id"],
-        kind="preference",
+        category="preference",
         recurrence_key="lifecycle.archive-guard",
         content="Irrelevant preference under same key",
     )
     registry.add_feedback(
         task["id"],
-        kind="failure",
+        category="failure",
         recurrence_key="lifecycle.archive-guard",
         content="Second failure",
     )
@@ -1278,7 +1333,7 @@ def test_rejected_promotion_can_be_reproposed(registry):
     for content in ("Failure 1", "Failure 2"):
         registry.add_feedback(
             task["id"],
-            kind="failure",
+            category="failure",
             recurrence_key="lifecycle.retry",
             content=content,
         )
@@ -1288,7 +1343,7 @@ def test_rejected_promotion_can_be_reproposed(registry):
     # Adding new feedback under the same key allows re-proposing
     registry.add_feedback(
         task["id"],
-        kind="failure",
+        category="failure",
         recurrence_key="lifecycle.retry",
         content="Failure 3",
     )
@@ -1303,7 +1358,7 @@ def test_promotion_status_requires_explicit_order(registry):
     task = create_task(registry)
     registry.add_feedback(
         task["id"],
-        kind="preference",
+        category="preference",
         recurrence_key="style.brief",
         content="Prefer concise status reports",
     )
@@ -1355,11 +1410,12 @@ def test_all_supported_agents_can_bind_and_execute_turns(
     )
     finished_turn = registry.finish_turn(
         turn["id"],
-        status="succeeded",
+        outcome="succeeded",
         summary=f"Completed by {agent_kind}",
         lifecycle_evidence="done",
     )
-    assert finished_turn["status"] == "succeeded"
+    assert finished_turn["status"] == "finished"
+    assert finished_turn["outcome"] == "succeeded"
 
     finished_run = registry.finish_run(
         run["id"],
@@ -1397,8 +1453,8 @@ def test_any_agent_can_coordinate_and_review(
         reason=f"Prepared by {coordinator_role} supervisor",
     )
 
-    tick = registry.supervisor_tick()
-    assert tick["dispatch"]["id"] == task["id"]
+    state = registry.reconcile()
+    assert state["next_task"]["id"] == task["id"]
 
     run = registry.start_run(task["id"], agent_role=worker_role)
     registry.finish_run(
@@ -1424,7 +1480,7 @@ def test_rejected_promotion_waits_for_new_evidence(registry):
     for content in ("Failure 1", "Failure 2"):
         registry.add_feedback(
             task["id"],
-            kind="failure",
+            category="failure",
             recurrence_key="db.lock-timeout",
             content=content,
         )
@@ -1436,7 +1492,7 @@ def test_rejected_promotion_waits_for_new_evidence(registry):
 
     registry.add_feedback(
         task["id"],
-        kind="failure",
+        category="failure",
         recurrence_key="db.lock-timeout",
         content="Failure 3",
     )
@@ -1451,7 +1507,7 @@ def test_rejected_promotion_accepts_new_evaluation_evidence(registry):
     for content in ("Failure 1", "Failure 2"):
         registry.add_feedback(
             task["id"],
-            kind="failure",
+            category="failure",
             recurrence_key="db.lock-timeout",
             content=content,
         )
@@ -1523,7 +1579,7 @@ def test_turn_result_rejects_symlinks_and_non_regular_files(
         artifact_path.mkdir()
 
     with pytest.raises(RegistryError, match=message):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
 
 def test_turn_result_rejects_symlink_swap_during_open(registry, tmp_path, monkeypatch):
@@ -1560,7 +1616,7 @@ def test_turn_result_rejects_symlink_swap_during_open(registry, tmp_path, monkey
 
     monkeypatch.setattr(os, "open", swap_then_open)
     with pytest.raises(RegistryError, match="turn result artifact cannot be a symlink"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
 
 def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monkeypatch):
@@ -1581,7 +1637,7 @@ def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monk
     artifact_path.parent.parent.symlink_to(real_root)
 
     with pytest.raises(RegistryError, match="turn result artifact parent cannot be a symlink"):
-        registry.finish_turn(turn["id"], status="succeeded")
+        registry.finish_turn(turn["id"], outcome="succeeded")
 
 
 class _FailingReadConnection:

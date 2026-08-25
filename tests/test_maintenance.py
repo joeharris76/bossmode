@@ -136,13 +136,13 @@ def test_maintenance_discovers_promotions(tmp_path: Path) -> None:
     task = registry.create_task(title="Feedback Task", goal="Test", success_criteria="Pass")
     registry.add_feedback(
         task["id"],
-        kind="failure",
+        category="failure",
         recurrence_key="env.missing-var",
         content="Missing env 1",
     )
     registry.add_feedback(
         task["id"],
-        kind="failure",
+        category="failure",
         recurrence_key="env.missing-var",
         content="Missing env 2",
     )

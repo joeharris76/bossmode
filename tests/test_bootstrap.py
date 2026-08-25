@@ -45,7 +45,7 @@ def test_cli_init_refuses_to_overwrite_conflicting_skill(tmp_path: Path, capsys)
     installed.parent.mkdir(parents=True)
     installed.write_text("user-owned instructions\n")
 
-    assert main(["init", "--project-dir", str(tmp_path)]) == 2
+    assert main(["install-skill", "--project-dir", str(tmp_path)]) == 2
     error = json.loads(capsys.readouterr().err)
     assert error == {"error": f"refuse to overwrite conflicting skill: {installed}"}
     assert installed.read_text() == "user-owned instructions\n"
@@ -56,7 +56,7 @@ def test_cli_init_refuses_symlinked_skill_parent(tmp_path: Path, capsys) -> None
     outside.mkdir()
     (tmp_path / ".agents").symlink_to(outside, target_is_directory=True)
 
-    assert main(["init", "--project-dir", str(tmp_path)]) == 2
+    assert main(["install-skill", "--project-dir", str(tmp_path)]) == 2
     error = json.loads(capsys.readouterr().err)
     assert error == {
         "error": f"refuse to install through symlinked directory: {tmp_path / '.agents'}"
@@ -243,7 +243,7 @@ def test_cli_init_translates_filesystem_error_to_json(
 
     monkeypatch.setattr(os, "open", deny_project_open)
 
-    assert main(["init", "--project-dir", str(tmp_path)]) == 2
+    assert main(["install-skill", "--project-dir", str(tmp_path)]) == 2
     error = json.loads(capsys.readouterr().err)
     assert error["error"].startswith(f"cannot open project directory {tmp_path}:")
 
