@@ -8,36 +8,58 @@ Parsed commands that reach the Bossmode handler write structured JSON to standar
 error and exit `2`. Argparse help and usage remain text: help exits `0`, while missing arguments and
 invalid choices exit `2` before the JSON handler runs.
 
-The global `--db PATH` option selects the registry. It defaults to `.bossmode/control.db` or the
-`BOSSMODE_DB` environment variable.
+The global `--db PATH` option selects the registry. It defaults to the current checkout's
+`.bossmode/control.db` or the `BOSSMODE_DB` environment variable. Each linked worktree owns its
+standard registry path: Bossmode rejects a path resolving to a sibling worktree's
+`.bossmode/control.db` before opening SQLite, inspecting the schema, or applying migrations. Run
+the command from the checkout that owns a newer registry; do not use `--db` to bypass a schema
+mismatch.
 
 ## Installation
 
 | Command | Purpose |
 |---|---|
-| `bossmode init` | Install this version's Bossmode skill in the current project. |
-| `bossmode init --project-dir PATH` | Install the skill in another project directory. |
+| `bossmode install-skill` | Install this version's Bossmode skill in the current project. |
+| `bossmode install-skill --project-dir PATH` | Install the skill in another project directory. |
 
 The command creates `.agents/skills/bossmode/SKILL.md`. It is idempotent when that file already
 matches this Bossmode version, and it refuses to overwrite different content or follow a symlinked
 skill directory.
 
+`install-skill` never opens a registry. It rejects the global `--db` option rather than accepting
+and discarding it, and it does not create `.bossmode/control.db`. The registry is created on the
+first command that needs it.
+
 ## Reconciliation
 
 | Command | Purpose |
 |---|---|
-| `bossmode` | Reconcile session state and return the next dispatchable task. |
-| `bossmode reconcile` | Same as the default command. |
-| `bossmode next` | Alias for `reconcile`. |
-| `bossmode supervisor tick` | Supervisor-form alias for the default command. |
-| `bossmode supervisor reconcile` | Alias for `supervisor tick`. |
-| `bossmode supervisor next` | Alias for `supervisor tick`. |
+| `bossmode` | Converge the registry and report control-plane state. |
+| `bossmode reconcile` | The same command, named explicitly. |
+
+These are the only two spellings. There are no aliases.
+
+Reconciliation is read-shaped but performs real writes. It creates the registry and applies any
+pending schema migration, then materialises promotion proposals from recorded feedback before
+reporting. Treat it as a mutating command, not an inspection.
+
+It returns one bucket per task state plus the promotion queues:
+
+| Key | Contents |
+|---|---|
+| `next_task` | The single `ready` task to dispatch, or `null` while other work is in flight. |
+| `running` | Tasks in `running`, with nested runs, bindings, and turns. |
+| `evaluating` | Tasks in `evaluating`, awaiting an independent evaluation. |
+| `waiting_user` | Tasks in `waiting_user`. |
+| `blocked` | Tasks in `blocked`. |
+| `new_promotion_proposals` | Proposals created by this invocation. |
+| `promotion_proposals` | All proposals currently in `proposed`. |
 
 ## Tasks
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `task create` (`task add`) | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action`, `--parent-task-id`, `--team-id`, `--task-kind`, `--scope-json OBJECT`, `--approved-base-sha SHA` |
+| `task create` | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action` |
 | `task list` | — | repeatable `--state STATE` |
 | `task show TASK_ID` | `TASK_ID` | — |
 | `task transition TASK_ID STATE` | `TASK_ID`, `STATE`, `--actor`, `--reason` | `--evidence`, `--next-action`, `--blocked-on` |
@@ -46,7 +68,9 @@ Task states are `backlog`, `ready`, `running`, `evaluating`, `succeeded`, `faile
 `waiting_user`, and `archived`. Task creation accepts only `backlog` or `ready`; later transitions
 must follow the registry state machine.
 
-`task transition` allows these explicit changes:
+`task transition` accepts only `ready`, `blocked`, and `archived` as destinations. The other six
+task states are never valid explicit targets, so they are not offered as choices. These are the
+allowed changes:
 
 | From | To |
 |---|---|
@@ -61,7 +85,7 @@ must follow the registry state machine.
 
 Lifecycle commands own the remaining changes: `run start` moves `ready` to `running`; `run finish`
 moves `running` to `evaluating`, `waiting_user`, `blocked`, or `failed`; team
-`dispatch batch` reserves multiple managers and workers atomically; and
+`dispatch` reserves multiple managers and workers atomically; and
 evaluation moves `evaluating` to `succeeded` or `failed`.
 
 ## Parallel manager teams and Herdr tabs
@@ -72,17 +96,17 @@ evaluation moves `evaluating` to `succeeded` or `failed`.
 | `team bind-tab TEAM_ID` | `--herdr-session`, `--workspace-id`, `--tab-id`, `--observed-tab-label` | — |
 | `team list` | — | `--root-task-id` |
 | `team show TEAM_ID` | `TEAM_ID` | — |
-| `run manager-start TEAM_ID` | `--identity-json` | `--model`, `--reasoning-effort` |
-| `run worker-start TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--approved-repository-path PATH` (`--approved-repository`), `--approved-base-sha SHA` (`--base-sha`), `--repository-path PATH`, `--protected-branches-json ARRAY`, `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
-| `run reviewer-start TASK_ID` | `--worker-run-id`, `--identity-json` | `--model`, `--reasoning-effort` |
+| `run start-manager TEAM_ID` | `--identity-json` | `--model`, `--reasoning-effort` |
+| `run start-worker TASK_ID` | `--manager-run-id`, `--identity-json`, `--writer-json` | `--approved-repository-path PATH`, `--approved-base-sha SHA`, `--repository-path PATH`, `--protected-branches-json ARRAY`, `--resources-json`, `--lease-seconds`, `--model`, `--reasoning-effort` |
+| `run start-reviewer TASK_ID` | `--worker-run-id`, `--identity-json` | `--model`, `--reasoning-effort` |
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `dispatch batch ROOT_TASK_ID` | `--managers-json`, `--workers-json` | `--approved-repository-path PATH` (`--repository-path`), `--approved-base-sha SHA` (`--base-sha`), `--protected-branches-json ARRAY` |
-| `resource reconcile` | — | `--now ISO_TIMESTAMP` |
+| `dispatch ROOT_TASK_ID` | `--managers-json`, `--workers-json` | `--approved-repository-path PATH`, `--approved-base-sha SHA`, `--protected-branches-json ARRAY` |
+| `resource reclaim` | — | `--now ISO_TIMESTAMP` |
 | `resource release CLAIM_ID` | `--run-id`, `--fence-token`, `--evidence` | — |
-| `status executive TASK_ID` | `TASK_ID` | — |
-| `signal TASK_ID KIND` | `TASK_ID`, `KIND {decision,blocker,approval}`, `--content` | `--source-run-id`, `--team-id`, `--redacted` |
+| `report TASK_ID` | `TASK_ID` | — |
+| `signal TASK_ID CATEGORY` | `TASK_ID`, `CATEGORY {decision,blocker,approval}`, `--content` | `--source-run-id`, `--team-id`, `--redacted` |
 
 Create the Herdr tab with its durable label before the first agent, reconcile it
 with `team bind-tab`, and check the observed workspace and tab IDs. The command
@@ -91,7 +115,7 @@ observed label. Team manager, worker, and reviewer bindings then require that
 same Herdr session, workspace, and tab. The legacy `run start` singleton path
 does not require a team tab.
 
-`run worker-start` and `dispatch batch` are admission points, not worker
+`run start-worker` and `dispatch` are admission points, not worker
 creation shortcuts. Before invoking either command, the supervisor must
 provide the explicit supervisor-approved repository and base inputs:
 `--approved-repository-path PATH` and `--approved-base-sha SHA`. It must then
@@ -132,13 +156,13 @@ tab to work around an ambiguity.
 | `run start TASK_ID` | `TASK_ID`, `--role` | `--thread-id`, `--model`, `--reasoning-effort` |
 | `run show RUN_ID` | `RUN_ID` | — |
 | `run finish RUN_ID` | `RUN_ID`, `--outcome`, `--summary` | `--artifacts-json ARRAY`, `--tokens`, `--duration-seconds`, `--retries`, `--blocked-on`, `--accepted-head-sha SHA` |
-| `run reconcile-accepted-head RUN_ID` | `RUN_ID`, `--repository-path PATH`, `--accepted-head-sha SHA`, `--evidence TEXT` | aliases: `accepted-head-reconcile`, `reconcile-head` |
+| `run record-head RUN_ID` | `RUN_ID`, `--repository-path PATH`, `--accepted-head-sha SHA`, `--evidence TEXT` | — |
 
 Run outcomes are `waiting_user`, `blocked`, `succeeded`, and `failed`. A successful run moves its
 task to `evaluating`, not final success.
 
 For a legacy finished team worker whose schema-upgraded writer row has NULL `repository_path` and
-`accepted_head_sha`, use `run reconcile-accepted-head` with the supervisor-supplied live Git root.
+`accepted_head_sha`, use `run record-head` with the supervisor-supplied live Git root.
 The command requires a finished successful team worker, the supplied repository root/common
 repository to contain the recorded linked worktree, the worktree/branch/current head to match live
 Git, the supplied SHA to be the existing live commit, and non-empty evidence. It records that
@@ -150,7 +174,7 @@ accepted head cannot be overwritten. All three command aliases forward the repos
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `herdr bind RUN_ID` | `RUN_ID`, `--herdr-session`, `--worker`, `--kind` | `--status {pending,live,blocked,unknown}`, `--session-source`, `--session-agent`, `--session-ref-kind {id,path}`, `--session-value`, `--pane-id`, `--tab-id`, `--workspace-id` |
+| `herdr bind RUN_ID` | `RUN_ID`, `--herdr-session`, `--worker`, `--agent-kind` | `--status {pending,live,blocked,unknown}`, `--session-source`, `--session-agent`, `--session-ref-kind {id,path}`, `--session-value`, `--pane-id`, `--tab-id`, `--workspace-id` |
 | `herdr show RUN_ID` | `RUN_ID` | — |
 
 `herdr bind` records an observed identity. For team runs, its observed tab and
@@ -164,22 +188,26 @@ prompting, interrupting, continuing, or closing.
 |---|---|---|
 | `turn start RUN_ID` | `RUN_ID`, `--purpose`, `--prompt` | — |
 | `turn show TURN_ID` | `TURN_ID` | — |
-| `turn finish TURN_ID` | `TURN_ID`, `--status` | `--summary`, `--lifecycle-evidence` |
+| `turn finish TURN_ID` | `TURN_ID`, `--outcome` | `--summary`, `--lifecycle-evidence` |
 
-Turn purposes are `task`, `correction`, `clarification`, and `review_follow_up`. Terminal statuses
+Turn purposes are `task`, `correction`, `clarification`, and `review_follow_up`. Terminal outcomes
 are `blocked`, `succeeded`, `failed`, and `unknown`. A successful finish validates the exact bounded
 JSON result allocated by `turn start`; terminal text alone is not success evidence. `--summary` is
-required when the status is `blocked`, `failed`, or `unknown`. For `succeeded`, the validated result
+required when the outcome is `blocked`, `failed`, or `unknown`. For `succeeded`, the validated result
 file supplies the summary; an optional `--summary` must match that file exactly.
+
+A turn records `status` (`running` or `finished`) and `outcome` separately, matching runs. The
+worker result file reports `outcome` with the same four values; the registry validates it before
+storing it.
 
 ## Evaluation and feedback
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
 | `evaluate TASK_ID` | `TASK_ID`, `--run-id`, `--evaluator`, one of `--passed` or `--failed`, `--evidence` | `--evaluator-run-id`, `--reviewed-head-sha SHA` (required for team workers), `--score`, `--notes` |
-| `feedback TASK_ID` | `TASK_ID`, `--kind`, `--key`, `--content` | `--run-id` |
+| `feedback TASK_ID` | `TASK_ID`, `--category`, `--key`, `--content` | `--run-id` |
 
-Feedback kinds are `preference`, `correction`, `failure`, and `observation`. The key should be a
+Feedback categories are `preference`, `correction`, `failure`, and `observation`. The key should be a
 stable, narrowly scoped recurrence key. Every team worker evaluation requires a
 finished successful reviewer run linked with `--evaluator-run-id`; a reviewer
 string alone is bounded compatibility only for a legacy singleton `run start`.
@@ -197,7 +225,6 @@ between `0` and `1`, inclusive.
 | `promotion accept PROMOTION_ID` | Record user acceptance for implementation. |
 | `promotion reject PROMOTION_ID` | Reject a proposal. |
 | `promotion apply PROMOTION_ID` | Record that an accepted artifact was implemented and verified. |
-| `promotion set PROMOTION_ID STATUS` | Explicitly set `accepted`, `rejected`, or `applied`. |
 
 These commands change proposal state only. They do not create or edit the proposed memory, skill,
 instruction, or control artifact.
@@ -221,13 +248,13 @@ user authorization.
 ## Operational rules
 
 - Run the naked `bossmode` command before dispatch and after material state changes.
-- For singleton work, dispatch only the task returned in `dispatch`; use
-  `dispatch batch` for disjoint team children.
+- For singleton work, dispatch only the task returned in `next_task`; use `dispatch` for disjoint
+  team children.
 - Reserve an external run before creating its Herdr worker.
 - Admit live Git writer state from the registry's repository before creating a
   team worker; reject unrelated, protected, primary, dirty, duplicate, or
   invalid-base worktrees.
-- Claims are owned and fenced. Expiry is `reconcile_required`, not availability;
+- Claims are owned and fenced. Expiry is `expired`, not availability;
   `resource release` requires live owner evidence and the matching owner/fence
   pair, and claims are never auto-stolen.
 - Treat live native-runtime or Herdr identity as authoritative; stored IDs are indexes.

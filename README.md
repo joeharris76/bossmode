@@ -32,11 +32,11 @@ team -> manager run -> child task -> fenced worker run -> independent reviewer r
 The parallel safety contract is fail-closed:
 
 - Every claim has an owner run, a unique fence token, a lease, and live
-  reconciliation evidence. Expiry becomes `reconcile_required`; it is not
-  reusable until the observed owner is reconciled and the owner presents the
+  verification evidence. Expiry becomes `expired`; it is not reusable until
+  the observed owner is verified and the owner presents the
   matching fence token and evidence to `resource release`. Bossmode never
   auto-steals a claim.
-- Before `run worker-start` or `dispatch batch` can create a worker, the
+- Before `run start-worker` or `dispatch` can create a worker, the
   supervisor supplies the explicit `--approved-base-sha` and
   `--approved-repository-path` inputs and admits the live Git writer against
   the registry's repository: reject protected branches
@@ -57,7 +57,7 @@ The parallel safety contract is fail-closed:
   each accepted worker is reviewed at its exact Git head, and only then may the
   manager finish and the root task be accepted.
 
-Use `bossmode status executive TASK_ID` for the redacted management view. It
+Use `bossmode report TASK_ID` for the redacted management view. It
 contains outcomes, decisions, blockers, approvals, and team progress, never
 prompts, transcripts, turn artifacts, or low-level worker activity. See [ADR
 0004](docs/adr/0004-parallel-manager-teams.md) for the full contract.
@@ -96,12 +96,13 @@ Bossmode skill in your project:
 ```bash
 uv tool install ./bossmode-0.1.0-py3-none-any.whl
 cd /path/to/your-project
-bossmode init
+bossmode install-skill
 ```
 
-`bossmode init` creates `.agents/skills/bossmode/SKILL.md`. Running it again is safe when the file
-is identical. It refuses to overwrite a different file or install through a symlinked skill
-directory.
+`bossmode install-skill` creates `.agents/skills/bossmode/SKILL.md`. Running it again is safe when
+the file is identical. It refuses to overwrite a different file or install through a symlinked skill
+directory. It does not create the registry; the first command that needs `.bossmode/control.db`
+creates it.
 
 Then ask an agent that discovers project skills:
 
@@ -205,12 +206,18 @@ historical scores in this MVP.
 - [Example walkthrough](docs/example-walkthrough.md): an end-to-end conversation with failure,
   retry, evaluation, and learning.
 - [Supervisor protocol](docs/agent-workflow.md): canonical agent procedure and recovery rules.
-- [CLI reference](docs/cli-reference.md): exact commands, options, aliases, output, and exit codes.
+- [CLI reference](docs/cli-reference.md): exact commands, options, output, and exit codes.
 - [Herdr runtime boundary](docs/adr/0001-herdr-runtime-boundary.md): why live Herdr state remains
   authoritative.
 - [Agent organization design](docs/adr/0002-agent-organization-design.md): deferred scaling choices.
+- [Task intake and external sources](docs/adr/0003-task-intake-and-external-sources.md): how work
+  reaches the registry.
+- [Parallel manager teams](docs/adr/0004-parallel-manager-teams.md): how concurrent manager teams
+  stay fenced and recoverable.
 - [Deferred executor selection](docs/adr/0005-defer-executor-selection.md): why model/provider
   routing remains an explicit executive choice for now.
+- [Registry worktree ownership](docs/adr/0006-registry-worktree-ownership.md): why each checkout
+  owns its own registry.
 
 ## Development and verification
 

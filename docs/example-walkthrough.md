@@ -76,7 +76,7 @@ the task history.
 ```
 
 This is a new worker and run, not a continuation of the Pi session. If the same live worker had been
-reused, the supervisor would still have reconciled its identity and created a new run record.
+reused, the supervisor would still have verified its live identity and created a new run record.
 
 ## 4. Complete only after a passing evaluation
 

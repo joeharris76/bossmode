@@ -7,7 +7,7 @@ precise about commands and state transitions. Most users should start with the
 | User intent | Supervisor responsibility |
 |---|---|
 | Start bounded work | Record the goal, success criteria, permissions, and next action before delegation. |
-| Resume | Reconcile stored records against authoritative live runtime identity. |
+| Resume | Verify stored records against authoritative live runtime identity. |
 | Use an external agent | Reserve the run, create and bind one verified Herdr worker, and correlate each turn. |
 | Call work complete | Record the run result and obtain independent evaluation. |
 | Record a correction | Store sourced feedback and show any proposal without applying it. |
@@ -31,6 +31,27 @@ user
 There is no background MVP daemon and no generic executor interface. The registry never sends a
 prompt, creates a pane, grants permission, or decides that terminal text means success.
 
+## Registry and worktree boundary
+
+Each checkout or linked worktree owns its own `.bossmode/control.db`. Worktree-local registries
+keep task history and schema migrations tied to the source that understands them. A registry path
+that resolves to a sibling worktree's standard `.bossmode/control.db` is rejected before Bossmode
+opens SQLite, inspects the schema, or applies a migration.
+
+Before running any registry command, verify the ownership boundary:
+
+```bash
+pwd
+git rev-parse --show-toplevel
+realpath .bossmode/control.db
+```
+
+Do not use `--db` or `BOSSMODE_DB` to point at another worktree's registry. If a database is newer
+than the current checkout supports, run the command from the owning checkout and treat any
+remaining mismatch as a blocker. A genuinely shared control plane needs a dedicated,
+supervisor-owned registry location and an explicit adoption protocol; the MVP does not provide an
+implicit shared-registry mode.
+
 ## Responsibilities
 
 | Actor | Owns | Does not own |
@@ -43,21 +64,27 @@ prompt, creates a pane, grants permission, or decides that terminal text means s
 | Worker | The bounded task and its declared artifacts | Self-approval or policy changes |
 | Reviewer | Independent checks against the task's success criteria | Rewriting a failed result unless separately authorized |
 
-Live native runtime or Herdr state is authoritative for executor identity. Registry identities are durable
-indexes that must be reconciled before every prompt, interruption, continuation, or close.
+Live native runtime or Herdr state is authoritative for executor identity. Registry identities are
+durable indexes that must be verified against live state before every prompt, interruption,
+continuation, or close.
+
+Two different operations are easy to confuse. `bossmode reconcile` converges the registry itself:
+it migrates the schema, materialises promotion proposals, and reports task buckets. Verifying a
+stored worker identity against live Herdr or native runtime state is a separate supervisor
+responsibility that Bossmode never performs for you.
 
 ## Common task lifecycle
 
-1. The supervisor runs `uv run bossmode` to inspect session state and ready tasks.
+1. The supervisor runs `uv run bossmode` to converge the registry and read current state. The
+   command writes: it creates or migrates the registry and materialises promotion proposals.
 2. It records user requests with `bossmode task create`, including success criteria, permission
    limits, and (for team Git work) the explicit `--approved-base-sha` input. Do not hide the
    approved base only inside scope JSON. For worker admission, carry the supervisor-approved
    repository root explicitly with `--approved-repository-path`; these approvals are inputs to
    the public CLI and are checked against live Git state.
-3. For singleton work it selects only the task returned in `dispatch` and
-   starts one run. For team work it uses the atomic `dispatch batch` path for
-   disjoint child tasks; singleton dispatch remains serialized while another
-   task is running or awaiting evaluation.
+3. For singleton work it selects only the task returned in `next_task` and starts one run. For team
+   work it uses the atomic `dispatch` path for disjoint child tasks; singleton dispatch remains
+   serialized while another task is running or awaiting evaluation.
 4. It delegates through either the native subagent path (e.g. AGY, Codex), the
    legacy singleton Herdr path, or the parallel team path below.
 5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
@@ -78,8 +105,8 @@ indexes that must be reconciled before every prompt, interruption, continuation,
      --thread-id NATIVE_THREAD_OR_TASK_ID
    ```
 
-3. Wait or continue through the runtime's native subagent tools. Before every later message, reconcile
-   the stored ID against live runtime state.
+3. Wait or continue through the runtime's native subagent tools. Before every later message,
+   verify the stored ID against live runtime state.
 4. Record the terminal result with `run finish`. Do not translate a subagent's self-reported success
    into a passing evaluation.
 
@@ -95,7 +122,7 @@ manager run must exist before a worker run; a team tab must be created and
 reconciled before any team pane:
 
 ```bash
-uv run bossmode run manager-start TEAM_ID \
+uv run bossmode run start-manager TEAM_ID \
   --identity-json '{"source":"herdr","value":"manager"}'
 
 herdr tab create --workspace WORKSPACE_ID --label "TEAM_TAB_LABEL" --cwd "$PWD" --no-focus
@@ -129,10 +156,10 @@ the parent. Repeat the down-split-before-start sequence for manager, worker,
 and reviewer agents; the first `tab create` is the only tab creation for that
 team.
 
-Do not start a second worker if either command returns an uncertain result. Reconcile the
+Do not start a second worker if either command returns an uncertain result. Verify the
 deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
 
-Before `run worker-start` or `dispatch batch`, collect live Git evidence for
+Before `run start-worker` or `dispatch`, collect live Git evidence for
 the proposed writer. It must use a dedicated non-protected branch, a separate
 linked worktree rather than the primary checkout, a clean worktree including
 untracked files, a unique branch/path/worktree ID, and a base SHA that resolves
@@ -151,19 +178,19 @@ After confirming one matching live worker, record its observed Herdr location:
 uv run bossmode herdr bind RUN_ID \
   --herdr-session bossmode \
   --worker worker_1234abcd \
-  --kind claude \
+  --agent-kind claude \
   --pane-id LIVE_PANE_ID \
   --tab-id LIVE_TAB_ID \
   --workspace-id LIVE_WORKSPACE_ID
 ```
 
-After `herdr agent get` reports a native session, reconcile the same binding with all four fields:
+After `herdr agent get` reports a native session, rebind with all four fields:
 
 ```bash
 uv run bossmode herdr bind RUN_ID \
   --herdr-session bossmode \
   --worker worker_1234abcd \
-  --kind claude \
+  --agent-kind claude \
   --session-source OBSERVED_SOURCE \
   --session-agent OBSERVED_AGENT \
   --session-ref-kind id \
@@ -205,19 +232,21 @@ The result file contract is:
 ```json
 {
   "turn_id": "turn_...",
-  "status": "succeeded",
+  "outcome": "succeeded",
   "summary": "What changed and what was verified",
   "artifacts": [{"path": "reports/result.md", "kind": "report"}]
 }
 ```
 
-Allowed terminal statuses are `succeeded`, `blocked`, `failed`, and `unknown`. For success,
+Allowed terminal outcomes are `succeeded`, `blocked`, `failed`, and `unknown`. The result file
+reports the worker's `outcome`; the registry validates it and stores it alongside a `status` of
+`finished`, matching runs. For success,
 `turn finish` reads at most 1 MiB from the exact generated path, validates the JSON object, requires
 the matching `turn_id` and `succeeded` status, and stores the validated result:
 
 ```bash
 uv run bossmode turn finish TURN_ID \
-  --status succeeded \
+  --outcome succeeded \
   --lifecycle-evidence done
 ```
 
@@ -231,7 +260,7 @@ before submission and treats the exact result file—not terminal text—as corr
 
 ### 4. Continue the same agent
 
-For a clarification before run completion, reconcile the same worker and start another turn with
+For a clarification before run completion, verify the same worker and start another turn with
 `--purpose clarification`, `correction`, or `review_follow_up`. If evaluation requires a later run,
 transition the task back to `ready`, start a new run, and bind the same live worker and native
 session. Finished-run bindings become `stale`, so they retain history without reserving the live
@@ -239,12 +268,13 @@ worker name. Do not replace a worker merely because its pane moved or the server
 
 ## Recover after interruption
 
-Run `uv run bossmode` (or `bossmode`). Its `active` and `needs_evaluation` entries contain nested runs, Herdr
-bindings, turns, output paths, and validated results. Use `bossmode run show RUN_ID` or
-`bossmode turn show TURN_ID` when you need one exact record, then reconcile that stored
-identity against live native runtime (AGY, Codex) or Herdr state before continuing.
+Run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain
+nested runs, Herdr bindings, turns, output paths, and validated results. Use
+`bossmode run show RUN_ID` or `bossmode turn show TURN_ID` when you need one exact record, then
+verify that stored identity against live native runtime (AGY, Codex) or Herdr state before
+continuing.
 
-## Reconciliation and failure rules
+## Live-identity and failure rules
 
 ### Parallel manager teams
 
@@ -257,7 +287,7 @@ When a task has disjoint bounded slices, use the team workflow:
 2. Create and reconcile one named Herdr tab per team. Reserve one manager
    identity per team. Start manager runs before dispatching
    workers.
-3. Dispatch workers through `dispatch batch` or `run worker-start` only after
+3. Dispatch workers through `dispatch` or `run start-worker` only after
    live Git admission against the registry's repository. Every writer must
    provide `--approved-repository-path` and `--approved-base-sha`, plus a
    dedicated branch, base SHA, worktree path, and worktree ID from
@@ -267,7 +297,7 @@ When a task has disjoint bounded slices, use the team workflow:
    Before each manager, worker, or reviewer start, create its pane with
    `herdr pane split TEAM_ANCHOR_PANE_ID --direction down` and start it in
    that pane, keeping all worker/reviewer panes below the manager/control pane.
-4. If a claim lease expires, stop and reconcile it with live owner evidence.
+4. If a claim lease expires, verify the live owner state and release the claim.
    The claim is not available for reuse until `resource release` receives the
    owner, exact fence token, and evidence; never auto-steal it. Normal
    successful run finalization releases still-active claims.
@@ -297,11 +327,11 @@ When a task has disjoint bounded slices, use the team workflow:
 
 Schema upgrades can leave a finished successful team worker with a writer row whose
 `repository_path` and `accepted_head_sha` are both NULL. The supervisor must supply the recorded
-repository's live Git root explicitly. Reconcile it through the public CLI path only after
+repository's live Git root explicitly. Record it through the public CLI path only after
 inspecting the recorded run and live Git state:
 
 ```bash
-uv run bossmode run reconcile-accepted-head RUN_ID \
+uv run bossmode run record-head RUN_ID \
   --repository-path RECORDED_REPOSITORY_ROOT \
   --accepted-head-sha LIVE_CURRENT_HEAD_SHA \
   --evidence "Recorded repository, clean linked worktree, branch, and exact current head verified"
@@ -315,7 +345,7 @@ remain NULL. A pre-existing non-NULL repository path must match the supplied pat
 overwritten; a prior accepted head is also immutable. Active runs, non-workers, wrong identities,
 unrelated or non-root repositories, dirty/moved/ambiguous worktrees, and invalid commits are
 rejected.
-7. Report `status executive TASK_ID` to leadership. This view contains only
+7. Run `report TASK_ID` for leadership. This view contains only
    aggregate outcomes, signals, approvals, blockers, and team progress; it
    excludes prompts, transcripts, turn artifacts, and low-level worker activity.
 
@@ -328,11 +358,12 @@ The parallel acceptance gate requires at least three selected accepted workers
 overlapping under two managers. Each selected accepted worker must have a
 passing evaluation that reviews its exact accepted head.
 
-The registry schema is currently version 9. Initialization applies migrations
-v1 -> v2 through v9 in order; the parallel-team steps add hierarchy and run
-identity (v5 -> v6), named team tabs (v6 -> v7), claim reconciliation evidence
-(v7 -> v8), and approved-base, repository-binding, accepted-head, and
-reviewed-head columns (v8 -> v9). A newer schema or missing migration is a
+The registry schema is currently version 10. Initialization applies migrations
+v1 -> v2 through v10 in order. Version 6 splits turn status from outcome and
+qualifies feedback category. The parallel-team steps then add hierarchy and run
+identity (v6 -> v7), named team tabs (v7 -> v8), claim release evidence
+(v8 -> v9), and approved-base, repository-binding, accepted-head, and
+reviewed-head columns (v9 -> v10). A newer schema or missing migration is a
 blocker.
 
 - Missing, duplicate, foreign, or ambiguous live identity: stop and report `blocked`; do not adopt

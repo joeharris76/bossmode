@@ -24,8 +24,8 @@ def test_cli_smoke(tmp_path, capsys):
     # 1. Naked bossmode invocation on fresh DB auto-initializes and returns clean state
     assert main(["--db", str(database)]) == 0
     state = json.loads(capsys.readouterr().out)
-    assert state["dispatch"] is None
-    assert state["active"] == []
+    assert state["next_task"] is None
+    assert state["running"] == []
     assert database.exists()
 
     # 2. Create task using `task create`
@@ -53,7 +53,7 @@ def test_cli_smoke(tmp_path, capsys):
     # 3. Re-run naked bossmode to confirm single-flight dispatch of ready task
     assert main(["--db", str(database)]) == 0
     reconciled = json.loads(capsys.readouterr().out)
-    assert reconciled["dispatch"]["id"] == task["id"]
+    assert reconciled["next_task"]["id"] == task["id"]
 
 
 def test_cli_returns_structured_error(tmp_path, capsys):
@@ -187,7 +187,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
                 "bossmode",
                 "--worker",
                 "worker_1234",
-                "--kind",
+                "--agent-kind",
                 "claude",
                 "--session-source",
                 "herdr:claude",
@@ -243,7 +243,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
         json.dumps(
             {
                 "turn_id": turn["id"],
-                "status": "succeeded",
+                "outcome": "succeeded",
                 "summary": "CLI result verified",
                 "artifacts": [],
             }
@@ -257,7 +257,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
                 "turn",
                 "finish",
                 turn["id"],
-                "--status",
+                "--outcome",
                 "succeeded",
             ]
         )
@@ -336,7 +336,7 @@ def test_cli_promotion_lifecycle_commands(tmp_path, capsys):
                 str(database),
                 "feedback",
                 task["id"],
-                "--kind",
+                "--category",
                 "failure",
                 "--key",
                 "env.missing-key",
@@ -353,7 +353,7 @@ def test_cli_promotion_lifecycle_commands(tmp_path, capsys):
                 str(database),
                 "feedback",
                 task["id"],
-                "--kind",
+                "--category",
                 "failure",
                 "--key",
                 "env.missing-key",
@@ -377,6 +377,377 @@ def test_cli_promotion_lifecycle_commands(tmp_path, capsys):
     assert main(["--db", str(database), "promotion", "apply", prop_id]) == 0
     applied = json.loads(capsys.readouterr().out)
     assert applied["status"] == "applied"
+
+
+def test_cli_herdr_bind_rejects_stale_status(tmp_path):
+    database = tmp_path / "control.db"
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--db",
+                str(database),
+                "herdr",
+                "bind",
+                "run-123",
+                "--herdr-session",
+                "session",
+                "--worker",
+                "worker1",
+                "--agent-kind",
+                "claude",
+                "--status",
+                "stale",
+            ]
+        )
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize("kind", ["pi", "codex", "claude", "agy", "grok", "muse"])
+def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
+    monkeypatch.chdir(tmp_path)
+    database = tmp_path / "control.db"
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                f"Task for {kind}",
+                "--goal",
+                "Verify agent kind support",
+                "--success-criteria",
+                "Run completes successfully",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "start",
+                task["id"],
+                "--role",
+                kind,
+                "--model",
+                f"{kind}-base",
+            ]
+        )
+        == 0
+    )
+    run = json.loads(capsys.readouterr().out)
+    assert run["agent_role"] == kind
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "herdr",
+                "bind",
+                run["id"],
+                "--herdr-session",
+                "bossmode",
+                "--worker",
+                f"worker_{kind}",
+                "--agent-kind",
+                kind,
+                "--session-source",
+                f"herdr:{kind}",
+                "--session-agent",
+                kind,
+                "--session-ref-kind",
+                "id",
+                "--session-value",
+                f"{kind}-123",
+            ]
+        )
+        == 0
+    )
+    binding = json.loads(capsys.readouterr().out)
+    assert binding["agent_kind"] == kind
+
+
+def test_cli_maintenance_subcommand(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert main(["--db", str(database), "maintenance"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["database"]["integrity"] == "ok"
+    assert report["health"]["status"] == "healthy"
+
+
+def test_cli_schedule_subcommands(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["schedule", "status"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert "status" in status
+    assert "platform" in status
+
+
+def test_cli_default_and_reconcile_are_the_only_reconciliation_spellings(tmp_path, capsys):
+    """The v0.1.0 surface has exactly two spellings and no aliases.
+
+    `tick`, the `supervisor` group, and `next` were removed; this pins both the
+    survivors' identical behaviour and the removals.
+    """
+    database = tmp_path / "control.db"
+
+    assert main(["--db", str(database)]) == 0
+    default_state = json.loads(capsys.readouterr().out)
+    assert main(["--db", str(database), "reconcile"]) == 0
+    explicit_state = json.loads(capsys.readouterr().out)
+    assert default_state == explicit_state
+    assert set(default_state) == {
+        "next_task",
+        "running",
+        "evaluating",
+        "waiting_user",
+        "blocked",
+        "new_promotion_proposals",
+        "promotion_proposals",
+    }
+
+
+def test_cli_task_transition_rejects_unreachable_states(tmp_path, capsys):
+    """Only reachable targets are offered; lifecycle commands own the rest."""
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "T",
+                "--goal",
+                "G",
+                "--success-criteria",
+                "S",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    for unreachable in ("running", "evaluating", "succeeded", "failed", "backlog", "waiting_user"):
+        with pytest.raises(SystemExit) as exit_info:
+            main(
+                [
+                    "--db",
+                    str(database),
+                    "task",
+                    "transition",
+                    task["id"],
+                    unreachable,
+                    "--actor",
+                    "supervisor",
+                    "--reason",
+                    "r",
+                ]
+            )
+        assert exit_info.value.code == 2
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "transition",
+                task["id"],
+                "blocked",
+                "--actor",
+                "supervisor",
+                "--reason",
+                "needs a decision",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["state"] == "blocked"
+
+
+def test_cli_install_skill_rejects_a_registry_path(tmp_path, capsys):
+    """`install-skill` touches no registry, so it refuses --db instead of ignoring it."""
+    assert main(["--db", str(tmp_path / "control.db"), "install-skill"]) == 2
+    assert "does not use a registry" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_cli_herdr_show_returns_the_binding(tmp_path, capsys, monkeypatch):
+    database = tmp_path / "control.db"
+    monkeypatch.chdir(tmp_path)
+    run = _bound_run(database, capsys)
+
+    assert main(["--db", str(database), "herdr", "show", run["id"]]) == 0
+    binding = json.loads(capsys.readouterr().out)
+    assert binding["worker_name"] == "worker_show"
+    assert binding["status"] == "live"
+
+
+def test_cli_promotion_apply_records_verified_implementation(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    _task_with_repeated_failures(database, capsys)
+
+    assert main(["--db", str(database), "promotion", "propose"]) == 0
+    capsys.readouterr()
+    assert main(["--db", str(database), "promotion", "list", "--status", "proposed"]) == 0
+    proposals = json.loads(capsys.readouterr().out)
+    assert proposals
+
+    promotion_id = proposals[0]["id"]
+    assert main(["--db", str(database), "promotion", "accept", promotion_id]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "accepted"
+    assert main(["--db", str(database), "promotion", "apply", promotion_id]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "applied"
+
+
+def test_cli_promotion_reject_closes_a_proposal(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    _task_with_repeated_failures(database, capsys)
+    assert main(["--db", str(database), "promotion", "propose"]) == 0
+    proposals = json.loads(capsys.readouterr().out)
+    assert proposals
+
+    promotion_id = proposals[0]["id"]
+    assert main(["--db", str(database), "promotion", "reject", promotion_id]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "rejected"
+
+
+def _task_with_repeated_failures(database: Path, capsys) -> dict:
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "T",
+                "--goal",
+                "G",
+                "--success-criteria",
+                "S",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+    for _ in range(2):
+        assert (
+            main(
+                [
+                    "--db",
+                    str(database),
+                    "feedback",
+                    task["id"],
+                    "--category",
+                    "failure",
+                    "--key",
+                    "api.retry",
+                    "--content",
+                    "retries are unbounded",
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+    return task
+
+
+def _bound_run(database: Path, capsys) -> dict:
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "T",
+                "--goal",
+                "G",
+                "--success-criteria",
+                "S",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+    assert main(["--db", str(database), "run", "start", task["id"], "--role", "worker"]) == 0
+    run = json.loads(capsys.readouterr().out)
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "herdr",
+                "bind",
+                run["id"],
+                "--herdr-session",
+                "bossmode",
+                "--worker",
+                "worker_show",
+                "--agent-kind",
+                "claude",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    return run
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        # Retired top-level spellings.
+        ["tick"],
+        ["supervisor"],
+        ["supervisor", "tick"],
+        ["supervisor", "reconcile"],
+        ["supervisor", "next"],
+        ["next"],
+        ["init"],
+        # Retired subcommands.
+        ["task", "add", "--title", "T", "--goal", "G", "--success-criteria", "S"],
+        ["promotion", "set", "promo_1", "accepted"],
+        ["run", "manager-start"],
+        ["run", "worker-start"],
+        ["run", "reviewer-start"],
+        ["run", "reconcile-accepted-head"],
+        ["run", "accepted-head-reconcile"],
+        ["run", "reconcile-head"],
+        ["resource", "reconcile"],
+        ["status", "executive"],
+        [
+            "dispatch",
+            "batch",
+            "root-task",
+            "--managers-json",
+            "[]",
+            "--workers-json",
+            "[]",
+        ],
+        # Retired flags, replaced without aliases.
+        ["turn", "finish", "turn_1", "--status", "succeeded"],
+        ["herdr", "bind", "run_1", "--herdr-session", "s", "--worker", "w", "--kind", "claude"],
+        ["feedback", "task_1", "--kind", "failure", "--key", "k", "--content", "c"],
+    ],
+)
+def test_cli_rejects_every_retired_spelling(tmp_path, removed):
+    """v0.1.0 ships no compatibility aliases; each retired name must fail loudly."""
+    database = tmp_path / "control.db"
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--db", str(database), *removed])
+    assert exit_info.value.code == 2
 
 
 def test_cli_evaluate_reviewed_head_parser_and_contract_paths(tmp_path, capsys, monkeypatch):
@@ -452,118 +823,6 @@ def test_cli_evaluate_reviewed_head_parser_and_contract_paths(tmp_path, capsys, 
     failure = json.loads(capsys.readouterr().err)
     assert "exact reviewed head" in failure["error"]
     assert captured[-1][1]["reviewed_head_sha"] is None
-
-
-def test_cli_herdr_bind_rejects_stale_status(tmp_path):
-    database = tmp_path / "control.db"
-    with pytest.raises(SystemExit) as exc_info:
-        main(
-            [
-                "--db",
-                str(database),
-                "herdr",
-                "bind",
-                "run-123",
-                "--herdr-session",
-                "session",
-                "--worker",
-                "worker1",
-                "--kind",
-                "claude",
-                "--status",
-                "stale",
-            ]
-        )
-    assert exc_info.value.code == 2
-
-
-@pytest.mark.parametrize("kind", ["pi", "codex", "claude", "agy", "grok", "muse"])
-def test_cli_supports_all_agent_kinds(tmp_path, capsys, monkeypatch, kind):
-    monkeypatch.chdir(tmp_path)
-    database = tmp_path / "control.db"
-
-    assert (
-        main(
-            [
-                "--db",
-                str(database),
-                "task",
-                "create",
-                "--title",
-                f"Task for {kind}",
-                "--goal",
-                "Verify agent kind support",
-                "--success-criteria",
-                "Run completes successfully",
-            ]
-        )
-        == 0
-    )
-    task = json.loads(capsys.readouterr().out)
-
-    assert (
-        main(
-            [
-                "--db",
-                str(database),
-                "run",
-                "start",
-                task["id"],
-                "--role",
-                kind,
-                "--model",
-                f"{kind}-base",
-            ]
-        )
-        == 0
-    )
-    run = json.loads(capsys.readouterr().out)
-    assert run["agent_role"] == kind
-
-    assert (
-        main(
-            [
-                "--db",
-                str(database),
-                "herdr",
-                "bind",
-                run["id"],
-                "--herdr-session",
-                "bossmode",
-                "--worker",
-                f"worker_{kind}",
-                "--kind",
-                kind,
-                "--session-source",
-                f"herdr:{kind}",
-                "--session-agent",
-                kind,
-                "--session-ref-kind",
-                "id",
-                "--session-value",
-                f"{kind}-123",
-            ]
-        )
-        == 0
-    )
-    binding = json.loads(capsys.readouterr().out)
-    assert binding["agent_kind"] == kind
-
-
-def test_cli_maintenance_subcommand(tmp_path, capsys):
-    database = tmp_path / "control.db"
-    assert main(["--db", str(database), "maintenance"]) == 0
-    report = json.loads(capsys.readouterr().out)
-    assert report["database"]["integrity"] == "ok"
-    assert report["health"]["status"] == "healthy"
-
-
-def test_cli_schedule_subcommands(tmp_path, capsys, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert main(["schedule", "status"]) == 0
-    status = json.loads(capsys.readouterr().out)
-    assert "status" in status
-    assert "platform" in status
 
 
 def test_cli_run_finish_rejects_accepted_head_without_writer(tmp_path, capsys):
@@ -645,20 +904,15 @@ def test_cli_task_create_accepts_first_class_approved_base(tmp_path, capsys, mon
     assert captured["approved_base_sha"] == approved_base
 
 
-@pytest.mark.parametrize(
-    "command", ["reconcile-accepted-head", "accepted-head-reconcile", "reconcile-head"]
-)
-def test_cli_reconcile_accepted_head_aliases_forward_repository(
-    tmp_path, capsys, monkeypatch, command
-):
+def test_cli_record_accepted_head_forwards_repository(tmp_path, capsys, monkeypatch):
     captured = {}
 
-    def fake_reconcile(self, run_id, **kwargs):
+    def fake_record(self, run_id, **kwargs):
         captured["run_id"] = run_id
         captured.update(kwargs)
         return {"id": run_id, "writer_identity": {"accepted_head_sha": kwargs["accepted_head_sha"]}}
 
-    monkeypatch.setattr(registry_module.Registry, "reconcile_accepted_head", fake_reconcile)
+    monkeypatch.setattr(registry_module.Registry, "record_accepted_head", fake_record)
     accepted_head = "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"
     assert (
         main(
@@ -666,7 +920,7 @@ def test_cli_reconcile_accepted_head_aliases_forward_repository(
                 "--db",
                 str(tmp_path / "control.db"),
                 "run",
-                command,
+                "record-head",
                 "run-worker",
                 "--repository-path",
                 str(tmp_path / "repository"),
@@ -687,14 +941,40 @@ def test_cli_reconcile_accepted_head_aliases_forward_repository(
     }
 
 
-def test_cli_reconcile_accepted_head_requires_repository_path(tmp_path, capsys):
+@pytest.mark.parametrize(
+    "retired_flag",
+    [
+        ["--approved-repository", "/tmp/repository"],
+        ["--base-sha", "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d"],
+    ],
+)
+def test_cli_start_worker_rejects_retired_approval_flags(retired_flag):
+    with pytest.raises(SystemExit) as error:
+        _parser().parse_args(
+            [
+                "run",
+                "start-worker",
+                "task-worker",
+                "--manager-run-id",
+                "run-manager",
+                "--identity-json",
+                '{"source":"native","value":"worker"}',
+                "--writer-json",
+                '{"branch_name":"feature/worker","base_sha":"a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d","worktree_path":"/tmp/worktree","worktree_id":"wt-worker"}',
+                *retired_flag,
+            ]
+        )
+    assert error.value.code == 2
+
+
+def test_cli_record_accepted_head_requires_repository_path(tmp_path, capsys):
     with pytest.raises(SystemExit) as error:
         main(
             [
                 "--db",
                 str(tmp_path / "control.db"),
                 "run",
-                "reconcile-accepted-head",
+                "record-head",
                 "run-worker",
                 "--accepted-head-sha",
                 "a57b1d4cb8f18432dfb1d2f7f64be5b19c20ff5d",
@@ -730,7 +1010,7 @@ def test_cli_worker_start_forwards_approval_inputs(tmp_path, capsys, monkeypatch
                 "--db",
                 str(tmp_path / "control.db"),
                 "run",
-                "worker-start",
+                "start-worker",
                 "task-1",
                 "--manager-run-id",
                 "run-manager",
@@ -777,7 +1057,7 @@ def test_cli_rejects_unapproved_writer_inputs(tmp_path, capsys, monkeypatch):
                 "--db",
                 str(tmp_path / "control.db"),
                 "run",
-                "worker-start",
+                "start-worker",
                 "task-1",
                 "--manager-run-id",
                 "run-manager",
@@ -870,13 +1150,12 @@ def test_cli_dispatch_forwards_approval_inputs(tmp_path, capsys, monkeypatch):
                 "--db",
                 str(tmp_path / "control.db"),
                 "dispatch",
-                "batch",
                 "root-task",
                 "--managers-json",
                 "[]",
                 "--workers-json",
                 json.dumps([worker]),
-                "--repository-path",
+                "--approved-repository-path",
                 str(tmp_path / "repository"),
                 "--approved-base-sha",
                 base_sha,
@@ -901,5 +1180,5 @@ def test_cli_dispatch_forwards_approval_inputs(tmp_path, capsys, monkeypatch):
 )
 def test_cli_parser_rejects_forbidden_pane_inputs(forbidden):
     with pytest.raises(SystemExit) as exc_info:
-        _parser().parse_args(["run", "worker-start", "task-1", *forbidden])
+        _parser().parse_args(["run", "start-worker", "task-1", *forbidden])
     assert exc_info.value.code == 2

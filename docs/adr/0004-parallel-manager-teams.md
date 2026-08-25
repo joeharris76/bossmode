@@ -27,9 +27,9 @@ boundary.
   in one root/team hierarchy; a child from one team cannot be attached to
   another team's manager. A failed hierarchy check rolls back the transaction;
   no partial team, run, writer, or claim survives.
-- Runs have a durable type (`manager`, `worker`, or `reviewer`), parent run,
+- Runs have a durable run kind (`manager`, `worker`, or `reviewer`), parent run,
   team, and identity. A reviewer run is linked to the worker run it evaluates.
-- `dispatch batch` creates manager and worker reservations atomically. A
+- `dispatch` creates manager and worker reservations atomically. A
   worker is not created until all hierarchy, writer, resource, and live
   admission checks pass.
 
@@ -38,19 +38,19 @@ boundary.
 - Resource claims use a canonical `(kind, key)` pair. File keys are absolute
   real paths; non-file keys are normalized identifiers. Each claim records its
   owning run, unique fence token, lease, and status.
-- A live reconciliation records evidence for the owner and its current
-  activity. Lease expiry changes `active` to `reconcile_required`; that state
+- Live verification records evidence for the owner and its current activity.
+  Lease expiry changes `active` to `expired`; that state
   is still held and cannot be reused.
 - Release requires explicit live evidence that the owner no longer writes,
   the owning run ID, and the exact fence token, through
   `bossmode resource release`. A mismatched owner or fence is rejected.
-  Reconciliation never auto-steals a claim. Normal successful run finalization
-  releases its still-active claims; an expired claim still needs explicit
-  reconciliation and release.
+  Verification and release never auto-steal a claim. Normal successful run
+  finalization releases its still-active claims; an expired claim still needs
+  explicit live verification and release.
 
 ### Live Git writer admission
 
-Before `run worker-start` or `dispatch batch` creates a worker run, the
+Before `run start-worker` or `dispatch` creates a worker run, the
 supervisor must inspect the live repository and reject the writer unless all of
 these are true:
 
@@ -89,7 +89,7 @@ reservation.
   that SHA; a failed or unfinished reviewer, a moving branch name, or a
   different head is not acceptance.
 - Finalize a team in a deterministic order: settle every worker turn, finish
-  every worker, release or reconcile every claim, finish every linked reviewer,
+  every worker, release every claim, finish every linked reviewer,
   record each exact-head evaluation for every child, then finish the manager.
   The manager cannot finish while child workers or reviewers are active, while
   claims remain held, or while a child lacks a passing evaluation. The root
@@ -113,7 +113,7 @@ reservation.
   agent. The `--current` focused-pane option and rightward splits are
   mechanically forbidden. Missing, foreign, or ambiguous tabs and anchors block admission;
   existing panes are never moved or closed to repair them.
-- Executive status is a mechanically derived view of task outcomes, signals,
+- The executive report is a mechanically derived view of task outcomes, signals,
   approvals, blockers, and team progress. It excludes prompts, transcripts,
   turn artifacts, and low-level worker activity. Sensitive signals can be
   stored as `[redacted]`.
@@ -125,12 +125,13 @@ pending migration in order and updates the single schema-version row in the
 same transaction; a newer unsupported version or a missing migration fails
 closed. The relevant parallel-team migrations are:
 
-- v5 -> v6 adds task hierarchy, team and run identity fields, reviewer-run
+- v5 -> v6 splits turn status from outcome and qualifies feedback category.
+- v6 -> v7 adds task hierarchy, team and run identity fields, reviewer-run
   links, and the parallel-team tables while preserving legacy lifecycle rows.
-- v6 -> v7 adds `team_herdr_tabs`, assigning every existing team one unique
+- v7 -> v8 adds `team_herdr_tabs`, assigning every existing team one unique
   expected label while leaving its live tab unbound until reconciliation.
-- v7 -> v8 adds resource-claim reconciliation evidence.
-- v8 -> v9 adds task `approved_base_sha`, evaluation `reviewed_head_sha`, and
+- v8 -> v9 adds resource-claim expiry and release evidence.
+- v9 -> v10 adds task `approved_base_sha`, evaluation `reviewed_head_sha`, and
   writer `repository_path` and `accepted_head_sha` fields used by explicit
   repository admission and exact-head acceptance.
 
@@ -145,7 +146,7 @@ not need team or writer metadata.
 - A process-local lock cannot recover after a crash and cannot represent
   non-file resources, so it is not the canonical claim authority.
 - Automatically stealing expired leases would allow a stale writer to commit
-  after a new writer starts. Fail-closed reconciliation is safer.
+  after a new writer starts. Fail-closed verification and release are safer.
 - Interactive manager chat trees would make status and recovery depend on
   transcripts. Durable rows and bounded scopes provide coordination without
   making conversation history a control surface.

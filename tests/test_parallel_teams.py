@@ -217,28 +217,28 @@ def _legacy_worker(registry: Registry, tmp_path: Path) -> tuple[dict, dict, dict
     return root, teams[0], children[0], registry.get_run(worker["id"])
 
 
-def test_reconcile_accepted_head_repairs_a_legacy_team_worker(registry, tmp_path):
+def test_record_accepted_head_repairs_a_legacy_team_worker(registry, tmp_path):
     _root, _team, child, worker = _legacy_worker(registry, tmp_path)
     accepted_head = _head(worker["writer_identity"])
 
-    reconciled = registry.reconcile_accepted_head(
+    recorded = registry.record_accepted_head(
         worker["id"],
         repository_path=registry.repository_path,
         accepted_head_sha=accepted_head,
         evidence="Repository, worktree, branch, and live current head verified",
     )
 
-    assert reconciled["writer_identity"]["accepted_head_sha"] == accepted_head
-    assert reconciled["writer_identity"]["repository_path"] == str(registry.repository_path)
+    assert recorded["writer_identity"]["accepted_head_sha"] == accepted_head
+    assert recorded["writer_identity"]["repository_path"] == str(registry.repository_path)
     event = registry.get_task(child["id"])["events"][-1]
-    assert event["event_type"] == "accepted_head_reconciled"
+    assert event["event_type"] == "accepted_head_recorded"
     assert "live current head verified" in event["evidence"]
 
 
-def test_reconcile_accepted_head_requires_explicit_repository_path(registry, tmp_path):
+def test_record_accepted_head_requires_explicit_repository_path(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     with pytest.raises(RegistryError, match="requires a repository path"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=None,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -246,11 +246,11 @@ def test_reconcile_accepted_head_requires_explicit_repository_path(registry, tmp
         )
 
 
-def test_reconcile_accepted_head_rejects_unrelated_supplied_repository(registry, tmp_path):
+def test_record_accepted_head_rejects_unrelated_supplied_repository(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     unrelated = _create_repository(tmp_path / "unrelated-supplied")
     with pytest.raises(RegistryError, match="Registry common repository"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=unrelated,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -258,12 +258,12 @@ def test_reconcile_accepted_head_rejects_unrelated_supplied_repository(registry,
         )
 
 
-def test_reconcile_accepted_head_rejects_non_root_supplied_repository(registry, tmp_path):
+def test_record_accepted_head_rejects_non_root_supplied_repository(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     nested = registry.repository_path / "nested"
     nested.mkdir()
     with pytest.raises(RegistryError, match="live Git root"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=nested,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -271,30 +271,30 @@ def test_reconcile_accepted_head_rejects_non_root_supplied_repository(registry, 
         )
 
 
-def test_reconcile_accepted_head_preserves_matching_non_null_repository(registry, tmp_path):
+def test_record_accepted_head_preserves_matching_non_null_repository(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
-    recorded = str(registry.repository_path)
+    recorded_repository = str(registry.repository_path)
     supplied = registry.repository_path / ".." / registry.repository_path.name
     with registry._transaction() as connection:
         connection.execute(
             "UPDATE writer_identities SET repository_path = ? WHERE run_id = ?",
-            (recorded, worker["id"]),
+            (recorded_repository, worker["id"]),
         )
-    reconciled = registry.reconcile_accepted_head(
+    recorded_run = registry.record_accepted_head(
         worker["id"],
         repository_path=supplied,
         accepted_head_sha=_head(worker["writer_identity"]),
         evidence="matching recorded repository verified",
     )
-    assert reconciled["writer_identity"]["repository_path"] == recorded
+    assert recorded_run["writer_identity"]["repository_path"] == recorded_repository
 
 
-def test_reconcile_accepted_head_rejects_dirty_worktree(registry, tmp_path):
+def test_record_accepted_head_rejects_dirty_worktree(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     worktree = Path(worker["writer_identity"]["worktree_path"])
     (worktree / "dirty").write_text("uncommitted\n")
     with pytest.raises(RegistryError, match="worktree is dirty"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -302,14 +302,14 @@ def test_reconcile_accepted_head_rejects_dirty_worktree(registry, tmp_path):
         )
 
 
-def test_reconcile_accepted_head_race_has_one_winner(registry, tmp_path):
+def test_record_accepted_head_race_has_one_winner(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     barrier = Barrier(2)
 
     def attempt(index: int):
         barrier.wait()
         try:
-            return registry.reconcile_accepted_head(
+            return registry.record_accepted_head(
                 worker["id"],
                 repository_path=registry.repository_path,
                 accepted_head_sha=_head(worker["writer_identity"]),
@@ -363,23 +363,23 @@ def test_cli_run_finish_records_exact_accepted_head_for_team_worker(
     assert registry.get_run(worker["id"])["writer_identity"]["accepted_head_sha"] == accepted_head
 
 
-def test_reconcile_accepted_head_rejects_active_and_wrong_identity(registry, tmp_path):
+def test_record_accepted_head_rejects_active_and_wrong_identity(registry, tmp_path):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker = registry.start_worker_run(
         children[0]["id"],
         manager_run_id=managers[0]["id"],
         identity={"source": "native", "value": "active-worker"},
-        writer=_writer(registry, "reconcile/active", "reconcile-active", "reconcile-active"),
+        writer=_writer(registry, "record/active", "record-active", "record-active"),
     )
     with pytest.raises(RegistryError, match="finished successful worker"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=_head(worker["writer_identity"]),
             evidence="checked",
         )
     with pytest.raises(RegistryError, match="team worker run"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             managers[0]["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=_repo_head(registry),
@@ -387,7 +387,7 @@ def test_reconcile_accepted_head_rejects_active_and_wrong_identity(registry, tmp
         )
 
 
-def test_reconcile_accepted_head_rejects_unrelated_repository(registry, tmp_path):
+def test_record_accepted_head_rejects_unrelated_repository(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     unrelated = _create_repository(tmp_path / "unrelated")
     with registry._transaction() as connection:
@@ -396,7 +396,7 @@ def test_reconcile_accepted_head_rejects_unrelated_repository(registry, tmp_path
             (str(unrelated), worker["id"]),
         )
     with pytest.raises(RegistryError, match="recorded writer repository does not match"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -404,7 +404,7 @@ def test_reconcile_accepted_head_rejects_unrelated_repository(registry, tmp_path
         )
 
 
-def test_reconcile_accepted_head_rejects_a_clone_of_the_common_repository(registry, tmp_path):
+def test_record_accepted_head_rejects_a_clone_of_the_common_repository(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     clone = tmp_path / "clone"
     subprocess.run(
@@ -414,7 +414,7 @@ def test_reconcile_accepted_head_rejects_a_clone_of_the_common_repository(regist
         text=True,
     )
     with pytest.raises(RegistryError, match="Registry common repository"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=clone,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -452,7 +452,7 @@ def test_team_root_does_not_derive_an_approved_base_from_live_head(registry, tmp
         )
 
 
-def test_reconcile_accepted_head_rejects_an_unpushed_writer_head(registry, tmp_path):
+def test_record_accepted_head_rejects_an_unpushed_writer_head(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     worktree = Path(worker["writer_identity"]["worktree_path"])
     (worktree / "unpushed-recovery.txt").write_text("not on origin\n")
@@ -469,7 +469,7 @@ def test_reconcile_accepted_head_rejects_an_unpushed_writer_head(registry, tmp_p
         text=True,
     )
     with pytest.raises(RegistryError, match="pushed remote branch head"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -477,13 +477,13 @@ def test_reconcile_accepted_head_rejects_an_unpushed_writer_head(registry, tmp_p
         )
 
 
-def test_reconcile_accepted_head_rejects_missing_or_inconsistent_identity(registry, tmp_path):
+def test_record_accepted_head_rejects_missing_or_inconsistent_identity(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     accepted_head = _head(worker["writer_identity"])
     with registry._transaction() as connection:
         connection.execute("UPDATE runs SET identity_source = NULL WHERE id = ?", (worker["id"],))
     with pytest.raises(RegistryError, match="identity is missing"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=accepted_head,
@@ -496,7 +496,7 @@ def test_reconcile_accepted_head_rejects_missing_or_inconsistent_identity(regist
             (worker["id"],),
         )
     with pytest.raises(RegistryError, match="identity is inconsistent"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=accepted_head,
@@ -505,7 +505,7 @@ def test_reconcile_accepted_head_rejects_missing_or_inconsistent_identity(regist
 
 
 @pytest.mark.parametrize("change", ["branch", "head"])
-def test_reconcile_accepted_head_rejects_moved_branch_or_head(registry, tmp_path, change):
+def test_record_accepted_head_rejects_moved_branch_or_head(registry, tmp_path, change):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     accepted_head = _head(worker["writer_identity"])
     if change == "branch":
@@ -525,7 +525,7 @@ def test_reconcile_accepted_head_rejects_moved_branch_or_head(registry, tmp_path
             text=True,
         )
     with pytest.raises(RegistryError, match="branch|current head"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=accepted_head,
@@ -533,7 +533,7 @@ def test_reconcile_accepted_head_rejects_moved_branch_or_head(registry, tmp_path
         )
 
 
-def test_reconcile_accepted_head_rejects_ambiguous_live_worktree(registry, tmp_path, monkeypatch):
+def test_record_accepted_head_rejects_ambiguous_live_worktree(registry, tmp_path, monkeypatch):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
 
     def ambiguous(_repository):
@@ -541,7 +541,7 @@ def test_reconcile_accepted_head_rejects_ambiguous_live_worktree(registry, tmp_p
 
     monkeypatch.setattr(registry_module, "_live_worktrees", ambiguous)
     with pytest.raises(RegistryError, match="ambiguous"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=_head(worker["writer_identity"]),
@@ -549,28 +549,28 @@ def test_reconcile_accepted_head_rejects_ambiguous_live_worktree(registry, tmp_p
         )
 
 
-def test_reconcile_accepted_head_is_one_time_and_requires_evidence(registry, tmp_path):
+def test_record_accepted_head_is_one_time_and_requires_evidence(registry, tmp_path):
     _root, _team, _child, worker = _legacy_worker(registry, tmp_path)
     accepted_head = _head(worker["writer_identity"])
     with pytest.raises(RegistryError, match="evidence"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha=accepted_head,
             evidence=" ",
         )
-    registry.reconcile_accepted_head(
+    registry.record_accepted_head(
         worker["id"],
         repository_path=registry.repository_path,
         accepted_head_sha=accepted_head,
-        evidence="first reconciliation",
+        evidence="first recording",
     )
     with pytest.raises(RegistryError, match="cannot be overwritten"):
-        registry.reconcile_accepted_head(
+        registry.record_accepted_head(
             worker["id"],
             repository_path=registry.repository_path,
             accepted_head_sha="0" * 40,
-            evidence="second reconciliation",
+            evidence="second recording",
         )
 
 
@@ -607,7 +607,7 @@ def test_batch_dispatch_supports_three_workers_and_two_managers(registry, tmp_pa
         result["manager_runs"][1]["id"],
     }
     assert all(
-        registry.get_run(item["id"])["run_type"] == "worker" for item in result["worker_runs"]
+        registry.get_run(item["id"])["run_kind"] == "worker" for item in result["worker_runs"]
     )
     assert registry.get_task(root["id"])["parent_task_id"] is None
     assert all(registry.get_task(child["id"])["parent_task_id"] == root["id"] for child in children)
@@ -646,7 +646,7 @@ def test_writer_and_resource_conflicts_reject_before_worker_creation(registry, t
     assert registry.get_task(children[2]["id"])["state"] == "ready"
 
 
-def test_expired_claim_requires_reconciliation_and_fence_is_required(registry, tmp_path):
+def test_expired_claim_requires_release_evidence_and_fence(registry, tmp_path):
     root, teams, children, managers = _setup(registry, tmp_path, count=3)
     first = registry.start_worker_run(
         children[0]["id"],
@@ -657,16 +657,16 @@ def test_expired_claim_requires_reconciliation_and_fence_is_required(registry, t
         lease_seconds=1,
     )
     claim = first["resource_claims"][0]
-    report = registry.reconcile_resource_claims(now="2999-01-01T00:00:00+00:00")
+    report = registry.reclaim_resource_claims(now="2999-01-01T00:00:00+00:00")
     assert report["expired"] == 1
-    with pytest.raises(RegistryError, match="requires reconciliation"):
+    with pytest.raises(RegistryError, match="cannot be renewed"):
         registry.renew_resource_claim(
             claim["id"], run_id=first["id"], fence_token=claim["fence_token"]
         )
-    with pytest.raises(RegistryError, match="requires reconciliation"):
+    with pytest.raises(RegistryError, match="released before reuse"):
         registry.claim_resources(first["id"], ["lease.py"])
     with pytest.raises(RegistryError, match="owner"):
-        registry.reconcile_resource_claim(
+        registry.release_expired_resource_claim(
             claim["id"],
             run_id="foreign-run",
             fence_token=claim["fence_token"],
@@ -676,19 +676,19 @@ def test_expired_claim_requires_reconciliation_and_fence_is_required(registry, t
         registry.release_resource_claim(
             claim["id"], run_id=first["id"], fence_token=claim["fence_token"], evidence=" "
         )
-    released = registry.reconcile_resource_claim(
+    released = registry.release_expired_resource_claim(
         claim["id"],
         run_id=first["id"],
         fence_token=claim["fence_token"],
         evidence="live worker confirmed stopped; worktree inspected clean",
     )
     assert released["status"] == "released"
-    assert "worktree inspected clean" in released["reconciliation_evidence"]
+    assert "worktree inspected clean" in released["release_evidence"]
     assert registry.get_task(children[0]["id"])["events"][-1]["event_type"] == (
-        "resource_reconciled"
+        "expired_resource_claim_released"
     )
     with pytest.raises(RegistryError, match="only applies"):
-        registry.reconcile_resource_claim(
+        registry.release_expired_resource_claim(
             claim["id"],
             run_id=first["id"],
             fence_token=claim["fence_token"],
@@ -720,7 +720,7 @@ def test_claim_race_has_one_winner(tmp_path):
     assert sum(isinstance(result, RegistryError) for result in results) == 1
 
 
-def test_reviewer_identity_and_redacted_executive_status(registry, tmp_path):
+def test_reviewer_identity_and_redacted_executive_report(registry, tmp_path):
     root, teams, children, managers = _setup(registry, tmp_path, count=3)
     worker = registry.start_worker_run(
         children[0]["id"],
@@ -753,7 +753,7 @@ def test_reviewer_identity_and_redacted_executive_status(registry, tmp_path):
     registry.record_decision(root["id"], "Use the bounded team architecture")
     registry.record_blocker(root["id"], "private credential omitted", redacted=True)
     registry.record_approval(root["id"], "review gate passed", source_run_id=reviewer["id"])
-    status = registry.executive_status(root["id"])
+    status = registry.executive_report(root["id"])
     assert evaluation["evaluator_run_id"] == reviewer["id"]
     assert status["decisions"][0]["content"] == "Use the bounded team architecture"
     assert status["blockers"][0]["content"] == "[redacted]"
@@ -807,7 +807,7 @@ def _admit_overlapping_reviewer(registry: Registry, worker: dict) -> dict:
     overlapping_id = "run_overlapping_reviewer"
     with registry._transaction() as connection:
         first_reviewer = connection.execute(
-            "SELECT started_at FROM runs WHERE parent_run_id = ? AND run_type = 'reviewer'",
+            "SELECT started_at FROM runs WHERE parent_run_id = ? AND run_kind = 'reviewer'",
             (worker["id"],),
         ).fetchone()
         overlapping_started_at = (
@@ -816,7 +816,7 @@ def _admit_overlapping_reviewer(registry: Registry, worker: dict) -> dict:
         connection.execute(
             """
             INSERT INTO runs(
-                id, task_id, agent_role, run_type, parent_run_id, team_id,
+                id, task_id, agent_role, run_kind, parent_run_id, team_id,
                 identity_source, identity_value, status, started_at
             ) VALUES (?, ?, ?, 'reviewer', ?, ?, ?, ?, 'running', ?)
             """,
@@ -908,7 +908,7 @@ def test_concurrent_reviewer_admission_allows_only_one_active_reviewer(registry,
     assert len(errors) == 1
     assert "active reviewer" in str(errors[0])
     reviewers = [
-        run for run in registry.get_task(children[0]["id"])["runs"] if run["run_type"] == "reviewer"
+        run for run in registry.get_task(children[0]["id"])["runs"] if run["run_kind"] == "reviewer"
     ]
     assert len(reviewers) == 1
 
@@ -1745,7 +1745,7 @@ def test_manager_finish_rejects_unreleased_claim(registry, tmp_path):
     claim = worker["resource_claims"][0]
     with registry._transaction() as connection:
         connection.execute(
-            "UPDATE resource_claims SET status = 'reconcile_required' WHERE id = ?",
+            "UPDATE resource_claims SET status = 'expired' WHERE id = ?",
             (claim["id"],),
         )
     accepted_head = _head(worker["writer_identity"])
@@ -1982,7 +1982,7 @@ def test_writer_git_admission_rejects_internal_root_branch_and_head_mismatches(
         registry_module._validate_writer_git(writer, tmp_path)
 
 
-def test_executive_status_derives_finished_team_state(registry, tmp_path):
+def test_executive_report_derives_finished_team_state(registry, tmp_path):
     root, teams, children, managers = _setup(registry, tmp_path, count=3)
     workers = [
         registry.start_worker_run(
@@ -2023,7 +2023,7 @@ def test_executive_status_derives_finished_team_state(registry, tmp_path):
     registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
     assert registry.get_task(root["id"])["state"] == "running"
     registry.finish_run(managers[1]["id"], outcome="succeeded", summary="manager complete")
-    status = registry.executive_status(root["id"])
+    status = registry.executive_report(root["id"])
     team_status = next(item for item in status["teams"] if item["team_id"] == teams[0]["id"])
     assert team_status["status"] == "finished"
     assert registry.get_task(root["id"])["state"] == "succeeded"
@@ -2035,7 +2035,7 @@ def test_singleton_start_run_remains_compatible(registry):
     )
     run = registry.start_run(task["id"], agent_role="worker")
     finished = registry.finish_run(run["id"], outcome="succeeded", summary="legacy complete")
-    assert finished["run_type"] == "worker"
+    assert finished["run_kind"] == "worker"
     assert registry.get_task(task["id"])["state"] == "evaluating"
 
 
@@ -2414,11 +2414,11 @@ def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys, monkeypat
         '{"paths":["cli"]}',
     )
     manager = call(
-        "run", "manager-start", team["id"], "--identity-json", '{"source":"cli","value":"m"}'
+        "run", "start-manager", team["id"], "--identity-json", '{"source":"cli","value":"m"}'
     )
     worker = call(
         "run",
-        "worker-start",
+        "start-worker",
         child["id"],
         "--manager-run-id",
         manager["id"],
@@ -2432,7 +2432,7 @@ def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys, monkeypat
         '[{"kind":"service","value":"cli"}]',
     )
     claim = worker["resource_claims"][0]
-    assert call("resource", "reconcile", "--now", "2999-01-01T00:00:00+00:00")["expired"] == 1
+    assert call("resource", "reclaim", "--now", "2999-01-01T00:00:00+00:00")["expired"] == 1
     assert (
         call(
             "resource",
@@ -2449,10 +2449,13 @@ def test_cli_exposes_team_dispatch_status_and_signal(tmp_path, capsys, monkeypat
     )
     assert call("team", "list", "--root-task-id", root["id"])[0]["id"] == team["id"]
     assert call("team", "show", team["id"])["manager_run_id"] == manager["id"]
-    assert call("status", "executive", root["id"])["task_id"] == root["id"]
-    assert call("signal", root["id"], "decision", "--content", "CLI decision")["kind"] == "decision"
-    assert call("resource", "reconcile")["expired"] == 0
-    assert worker["run_type"] == "worker"
+    assert call("report", root["id"])["task_id"] == root["id"]
+    assert (
+        call("signal", root["id"], "decision", "--content", "CLI decision")["category"]
+        == "decision"
+    )
+    assert call("resource", "reclaim")["expired"] == 0
+    assert worker["run_kind"] == "worker"
 
 
 def test_parallel_contract_rejections_are_explicit(registry, tmp_path):

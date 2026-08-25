@@ -65,10 +65,10 @@ def resolve_bossmode_command() -> list[str]:
 def scheduled_command(target: str) -> list[str]:
     if target not in SCHEDULE_TARGETS:
         raise SchedulerError(f"unsupported schedule target: {target}")
-    command = resolve_bossmode_command()
-    if target != "reconcile":
-        command.append(target)
-    return command
+    # Always name the target explicitly. `reconcile` used to be scheduled as a
+    # naked `bossmode`, so the installed crontab or plist entry did not say
+    # which target an operator had asked for.
+    return [*resolve_bossmode_command(), target]
 
 
 def rotate_log_if_needed(log_path: Path, max_bytes: int = MAX_LOG_BYTES) -> None:
