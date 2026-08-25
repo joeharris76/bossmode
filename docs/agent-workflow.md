@@ -192,15 +192,15 @@ The result file contract is:
 ```json
 {
   "turn_id": "turn_...",
-  "status": "succeeded",
+  "outcome": "succeeded",
   "summary": "What changed and what was verified",
   "artifacts": [{"path": "reports/result.md", "kind": "report"}]
 }
 ```
 
 Allowed terminal outcomes are `succeeded`, `blocked`, `failed`, and `unknown`. The result file
-reports the worker's own `status`; the registry validates it and stores it as the turn's `outcome`,
-alongside a `status` of `finished`. For success,
+reports the worker's `outcome`; the registry validates it and stores it alongside a `status` of
+`finished`, matching runs. For success,
 `turn finish` reads at most 1 MiB from the exact generated path, validates the JSON object, requires
 the matching `turn_id` and `succeeded` status, and stores the validated result:
 

@@ -45,6 +45,10 @@ it recurring.
 - Every user-facing spelling has a test that invokes it. An untested spelling
   cannot be removed safely later.
 - Every `add_parser` and every `add_argument` carries `help=`.
+- The rules cover the worker turn-result contract too: it reports `outcome`, not
+  `status`. A `kind` field nested inside an object that names its own domain,
+  such as an artifact's `kind` or a session reference's `kind`, is already
+  qualified by that object and stays as it is.
 
 ## Learning boundary
 

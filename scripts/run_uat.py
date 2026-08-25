@@ -256,7 +256,7 @@ class UATHarness:
             result_file.parent.mkdir(parents=True, exist_ok=True)
             result_payload = {
                 "turn_id": turn["id"],
-                "status": "succeeded",
+                "outcome": "succeeded",
                 "summary": "Generated valid OpenAPI 3.0 schema at specs/openapi.json",
                 "artifacts": [{"path": str(spec_file), "kind": "schema"}],
             }
@@ -366,7 +366,7 @@ class UATHarness:
                 json.dumps(
                     {
                         "turn_id": turn_1["id"],
-                        "status": "succeeded",
+                        "outcome": "succeeded",
                         "summary": "Implemented rate limiter without burst capacity",
                         "artifacts": [],
                     }
@@ -451,7 +451,7 @@ class UATHarness:
                 json.dumps(
                     {
                         "turn_id": turn_2["id"],
-                        "status": "succeeded",
+                        "outcome": "succeeded",
                         "summary": "Fixed rate limiter: added burst bucket support and unit tests",
                         "artifacts": [{"path": "auth/ratelimit.py", "kind": "code"}],
                     }
@@ -597,14 +597,14 @@ class UATHarness:
 
             # Cannot jump proposed -> applied directly
             try:
-                self.registry.set_promotion_status(control_prop["id"], "applied")
+                self.registry.apply_promotion(control_prop["id"])
                 raise AssertionError("Allowed invalid promotion transition proposed -> applied")
             except RegistryError:
                 pass
 
-            accepted = self.registry.set_promotion_status(control_prop["id"], "accepted")
+            accepted = self.registry.accept_promotion(control_prop["id"])
             assert accepted["status"] == "accepted"
-            applied = self.registry.set_promotion_status(control_prop["id"], "applied")
+            applied = self.registry.apply_promotion(control_prop["id"])
             assert applied["status"] == "applied"
             return f"Control proposal {control_prop['id']} transitioned to applied"
 
@@ -618,7 +618,7 @@ class UATHarness:
         def step_repropose_rejected() -> str:
             proposals = self.registry.list_promotions("proposed")
             memory_prop = next(p for p in proposals if p["target_layer"] == "memory")
-            rejected = self.registry.set_promotion_status(memory_prop["id"], "rejected")
+            rejected = self.registry.reject_promotion(memory_prop["id"])
             assert rejected["status"] == "rejected"
 
             # Adding new feedback with same recurrence key allows re-proposing
@@ -736,7 +736,7 @@ class UATHarness:
             result_file = Path(turn["artifact_path"])
             result_file.parent.mkdir(parents=True, exist_ok=True)
             result_file.write_text(
-                f'```json\n{{"turn_id": "{turn["id"]}", "status": "succeeded"}}\n```'
+                f'```json\n{{"turn_id": "{turn["id"]}", "outcome": "succeeded"}}\n```'
             )
             try:
                 self.registry.finish_turn(turn["id"], outcome="succeeded")

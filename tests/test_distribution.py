@@ -116,7 +116,7 @@ def test_built_wheel_supports_full_cli_round_trip(tmp_path: Path) -> None:
         json.dumps(
             {
                 "turn_id": turn["id"],
-                "status": "succeeded",
+                "outcome": "succeeded",
                 "summary": "Created and checked proof.txt",
                 "artifacts": [{"path": "proof.txt", "kind": "proof"}],
             }

@@ -236,7 +236,7 @@ def test_cli_records_herdr_binding_and_turn(tmp_path, capsys, monkeypatch):
         json.dumps(
             {
                 "turn_id": turn["id"],
-                "status": "succeeded",
+                "outcome": "succeeded",
                 "summary": "CLI result verified",
                 "artifacts": [],
             }
@@ -507,11 +507,6 @@ def test_cli_default_and_reconcile_are_the_only_reconciliation_spellings(tmp_pat
         "promotion_proposals",
     }
 
-    for removed in ("tick", "supervisor", "next", "init"):
-        with pytest.raises(SystemExit) as exit_info:
-            main(["--db", str(database), removed])
-        assert exit_info.value.code == 2
-
 
 def test_cli_task_transition_rejects_unreachable_states(tmp_path, capsys):
     """Only reachable targets are offered; lifecycle commands own the rest."""
@@ -592,8 +587,7 @@ def test_cli_herdr_show_returns_the_binding(tmp_path, capsys, monkeypatch):
 
 def test_cli_promotion_apply_records_verified_implementation(tmp_path, capsys):
     database = tmp_path / "control.db"
-    task = _task_with_repeated_corrections(database, capsys)
-    assert task is not None
+    _task_with_repeated_failures(database, capsys)
 
     assert main(["--db", str(database), "promotion", "propose"]) == 0
     capsys.readouterr()
@@ -610,18 +604,17 @@ def test_cli_promotion_apply_records_verified_implementation(tmp_path, capsys):
 
 def test_cli_promotion_reject_closes_a_proposal(tmp_path, capsys):
     database = tmp_path / "control.db"
-    task = _task_with_repeated_corrections(database, capsys)
+    _task_with_repeated_failures(database, capsys)
     assert main(["--db", str(database), "promotion", "propose"]) == 0
     proposals = json.loads(capsys.readouterr().out)
     assert proposals
-    assert task is not None
 
     promotion_id = proposals[0]["id"]
     assert main(["--db", str(database), "promotion", "reject", promotion_id]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "rejected"
 
 
-def _task_with_repeated_corrections(database: Path, capsys) -> dict:
+def _task_with_repeated_failures(database: Path, capsys) -> dict:
     assert (
         main(
             [
@@ -703,3 +696,31 @@ def _bound_run(database: Path, capsys) -> dict:
     )
     capsys.readouterr()
     return run
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        # Retired top-level spellings.
+        ["tick"],
+        ["supervisor"],
+        ["supervisor", "tick"],
+        ["supervisor", "reconcile"],
+        ["supervisor", "next"],
+        ["next"],
+        ["init"],
+        # Retired subcommands.
+        ["task", "add", "--title", "T", "--goal", "G", "--success-criteria", "S"],
+        ["promotion", "set", "promo_1", "accepted"],
+        # Retired flags, replaced without aliases.
+        ["turn", "finish", "turn_1", "--status", "succeeded"],
+        ["herdr", "bind", "run_1", "--herdr-session", "s", "--worker", "w", "--kind", "claude"],
+        ["feedback", "task_1", "--kind", "failure", "--key", "k", "--content", "c"],
+    ],
+)
+def test_cli_rejects_every_retired_spelling(tmp_path, removed):
+    """v0.1.0 ships no compatibility aliases; each retired name must fail loudly."""
+    database = tmp_path / "control.db"
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--db", str(database), *removed])
+    assert exit_info.value.code == 2

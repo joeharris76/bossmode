@@ -59,7 +59,7 @@ It returns one bucket per task state plus the promotion queues:
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `task create` (`task add`) | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action` |
+| `task create` | `--title`, `--goal`, `--success-criteria` | `--state {backlog,ready}`, `--priority INT`, `--permissions-json OBJECT`, `--next-action` |
 | `task list` | — | repeatable `--state STATE` |
 | `task show TASK_ID` | `TASK_ID` | — |
 | `task transition TASK_ID STATE` | `TASK_ID`, `STATE`, `--actor`, `--reason` | `--evidence`, `--next-action`, `--blocked-on` |
@@ -123,8 +123,8 @@ required when the outcome is `blocked`, `failed`, or `unknown`. For `succeeded`,
 file supplies the summary; an optional `--summary` must match that file exactly.
 
 A turn records `status` (`running` or `finished`) and `outcome` separately, matching runs. The
-result-file contract uses `status` for the worker's self-reported terminal value, which the registry
-validates before storing it as the turn's `outcome`.
+worker result file reports `outcome` with the same four values; the registry validates it before
+storing it.
 
 ## Evaluation and feedback
 
