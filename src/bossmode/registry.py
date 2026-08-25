@@ -219,8 +219,34 @@ def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def _repository_root(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return resolved
+
+
+def _validate_registry_ownership(path: Path) -> None:
+    """Reject a standard registry path owned by a different worktree."""
+    resolved = path.expanduser().resolve()
+    if resolved.name != "control.db" or resolved.parent.name != ".bossmode":
+        return
+
+    current_root = _repository_root(Path.cwd())
+    database_root = resolved.parent.parent
+    if database_root == current_root or not (database_root / ".git").exists():
+        return
+    raise RegistryError(
+        "registry path belongs to a different worktree: "
+        f"current={current_root}, database={database_root}; "
+        "run Bossmode from the owning checkout or use a dedicated shared registry"
+    )
+
+
 class Registry:
     def __init__(self, path: str | Path) -> None:
+        _validate_registry_ownership(Path(path))
         self.path = Path(path)
 
     def initialize(self) -> None:

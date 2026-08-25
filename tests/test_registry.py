@@ -199,6 +199,42 @@ def test_concurrent_fresh_initialization_is_singleton_and_error_free(tmp_path):
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+def test_registry_rejects_sibling_worktree_before_opening_database(tmp_path, monkeypatch):
+    current_worktree = tmp_path / "current"
+    foreign_worktree = tmp_path / "foreign"
+    for worktree in (current_worktree, foreign_worktree):
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: /tmp/test-worktree\n")
+
+    database = foreign_worktree / ".bossmode" / "control.db"
+    database.parent.mkdir()
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE schema_meta (version INTEGER NOT NULL)")
+        connection.execute("INSERT INTO schema_meta(version) VALUES (5)")
+    before = database.read_bytes()
+    before_mtime = database.stat().st_mtime_ns
+    monkeypatch.chdir(current_worktree)
+
+    with pytest.raises(RegistryError, match="belongs to a different worktree"):
+        Registry(database).initialize()
+
+    assert database.read_bytes() == before
+    assert database.stat().st_mtime_ns == before_mtime
+
+
+def test_registry_allows_current_worktree_database(tmp_path, monkeypatch):
+    worktree = tmp_path / "current"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /tmp/test-worktree\n")
+    monkeypatch.chdir(worktree)
+
+    database = worktree / ".bossmode" / "control.db"
+    Registry(database).initialize()
+
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+
+
 def test_competing_cli_processes_start_exactly_one_run(tmp_path):
     database = tmp_path / "control.db"
     registry = Registry(database)
