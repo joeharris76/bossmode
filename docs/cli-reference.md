@@ -43,6 +43,13 @@ Reconciliation is read-shaped but performs real writes. It creates the registry 
 pending schema migration, then materialises promotion proposals from recorded feedback before
 reporting. Treat it as a mutating command, not an inspection.
 
+Before changing an existing schema, Bossmode creates and verifies a private SQLite backup under
+the registry directory's `backups/` subdirectory. Migration IDs and checksums are recorded in
+`applied_migrations`; missing, unknown, duplicate, or changed lineage fails closed before registry
+writes. Bossmode never prunes these backups. A migration failure reports the recovery path and
+SHA-256 digest; follow the [registry recovery procedure](operations/registry-recovery.md) before
+retrying.
+
 It returns one bucket per task state plus the promotion queues:
 
 | Key | Contents |
