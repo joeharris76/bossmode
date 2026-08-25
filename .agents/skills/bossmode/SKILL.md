@@ -27,6 +27,8 @@ Operate from the repository root. Each checkout or linked worktree owns its own
 ```text
 bossmode                        # Default: Reconcile project session and return next action
 ├── init                        # Install this version's skill into a project
+├── reconcile                   # Explicit default reconciliation command
+├── next                        # Alias for reconcile
 ├── task
 │   ├── create                  # Create a new task with success criteria
 │   ├── list                    # List tasks by state
@@ -50,7 +52,10 @@ bossmode                        # Default: Reconcile project session and return 
 │   ├── list                    # List promotion proposals by status
 │   ├── accept <id>             # Accept a proposal for implementation
 │   ├── reject <id>             # Reject a proposal
-│   └── apply <id>              # Mark an accepted proposal as verified and applied
+│   ├── apply <id>              # Mark an accepted proposal as verified and applied
+│   └── set <id> <status>       # Explicitly set accepted, rejected, or applied
+├── supervisor
+│   └── tick                    # Supervisor-form reconciliation (aliases: reconcile, next)
 ├── maintenance                 # Run telemetry analytics, health checks, & promotion scan
 └── schedule
     ├── install                 # Register OS scheduler job (launchd on macOS, crontab on Linux)
@@ -73,7 +78,8 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 
 ## 2. Reconcile
 
-1. Run `uv run bossmode` (naked execution) to reconcile session state and inspect the JSON output.
+1. Run `uv run bossmode` (naked execution), `uv run bossmode reconcile`, or
+   `uv run bossmode supervisor tick` to reconcile session state and inspect the JSON output.
 2. Use the nested run, binding, and turn records in `active` and `needs_evaluation` to recover after
    interruption. Use `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` for exact records.
 3. For every active registry task, reconcile its executor against live state before sending,
