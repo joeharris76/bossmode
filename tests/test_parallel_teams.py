@@ -1793,6 +1793,91 @@ def test_manager_finish_rejects_failed_worker(registry, tmp_path):
         registry.finish_run(managers[0]["id"], outcome="succeeded", summary="must reject")
 
 
+def _reject_worker_attempt(
+    registry: Registry, child: dict, manager: dict, number: int, *, worker_failed: bool
+) -> dict:
+    worker = registry.start_worker_run(
+        child["id"],
+        manager_run_id=manager["id"],
+        identity={"source": "native", "value": f"retry-worker-{number}"},
+        writer=_writer(registry, f"retry/{number}", f"retry-{number}", f"retry-{number}"),
+    )
+    if worker_failed:
+        registry.finish_run(worker["id"], outcome="failed", summary="worker failed")
+    else:
+        accepted_head = _head(worker["writer_identity"])
+        registry.finish_run(
+            worker["id"],
+            outcome="succeeded",
+            summary="worker complete",
+            accepted_head_sha=accepted_head,
+        )
+        reviewer = registry.start_reviewer_run(
+            child["id"],
+            worker_run_id=worker["id"],
+            identity={"source": "native", "value": f"retry-reviewer-{number}"},
+        )
+        registry.finish_run(reviewer["id"], outcome="succeeded", summary="review complete")
+        registry.add_evaluation(
+            child["id"],
+            run_id=worker["id"],
+            evaluator=f"retry-reviewer-{number}",
+            evaluator_run_id=reviewer["id"],
+            passed=False,
+            evidence="rejected worker attempt",
+            reviewed_head_sha=accepted_head,
+        )
+    registry.transition_task(
+        child["id"],
+        "ready",
+        actor="retry",
+        reason="retry rejected worker attempt",
+    )
+    return worker
+
+
+@pytest.mark.parametrize(
+    ("worker_failed", "negative_message"),
+    [(False, "child task is accepted"), (True, "every worker succeeds")],
+    ids=["rejected", "failed"],
+)
+def test_manager_finish_selects_corrected_worker_attempt(
+    registry, tmp_path, worker_failed, negative_message
+):
+    root, _teams, children, managers = _setup(registry, tmp_path, count=3)
+    rejected = _reject_worker_attempt(
+        registry, children[0], managers[0], 500, worker_failed=worker_failed
+    )
+    with pytest.raises(RegistryError, match=negative_message):
+        registry.finish_run(
+            managers[0]["id"], outcome="succeeded", summary="negative control before retry"
+        )
+
+    corrected, _reviewer = _complete_worker(registry, children[0], managers[0], 501)
+    other_workers = [
+        _complete_worker(registry, children[number], managers[number % 2], number + 502)[0]
+        for number in (1, 2)
+    ]
+
+    for worker in [corrected, *other_workers]:
+        assert registry.get_run(worker["id"])["outcome"] == "succeeded"
+    intervals = (
+        (rejected["id"], "2025-12-31T23:00:00+00:00", "2025-12-31T23:10:00+00:00"),
+        (corrected["id"], "2026-01-01T00:00:00+00:00", "2026-01-01T00:10:00+00:00"),
+        (other_workers[0]["id"], "2026-01-01T00:00:00+00:00", "2026-01-01T00:10:00+00:00"),
+        (other_workers[1]["id"], "2026-01-01T00:02:00+00:00", "2026-01-01T00:03:00+00:00"),
+    )
+    with registry._transaction() as connection:
+        for run_id, started_at, finished_at in intervals:
+            connection.execute(
+                "UPDATE runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                (started_at, finished_at, run_id),
+            )
+    registry.finish_run(managers[0]["id"], outcome="succeeded", summary="manager complete")
+    registry.finish_run(managers[1]["id"], outcome="succeeded", summary="manager complete")
+    assert registry.get_task(root["id"])["state"] == "succeeded"
+
+
 def test_manager_finish_rejects_missing_and_mismatched_review_heads(registry, tmp_path):
     _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
     worker, reviewer = _complete_worker(registry, children[0], managers[0], 99)

@@ -2571,6 +2571,41 @@ class Registry:
     def _team_finalization_error(
         connection: sqlite3.Connection, manager: sqlite3.Row
     ) -> str | None:
+        def select_accepted_workers(
+            worker_rows: list[sqlite3.Row], task_rows: list[sqlite3.Row]
+        ) -> tuple[list[sqlite3.Row], str | None]:
+            workers_by_task: dict[str, list[sqlite3.Row]] = {}
+            for worker_row in worker_rows:
+                workers_by_task.setdefault(worker_row["task_id"], []).append(worker_row)
+            accepted_workers = []
+            for task_row in task_rows:
+                if task_row["state"] == "archived":
+                    continue
+                task_workers = workers_by_task.get(task_row["id"], [])
+                if not task_workers:
+                    return [], "manager cannot finish without worker runs"
+                latest_worker = max(
+                    task_workers,
+                    key=lambda row: (row["started_at"], row["id"]),
+                )
+                if latest_worker["status"] != "finished" or latest_worker["outcome"] != "succeeded":
+                    return [], "manager cannot finish until every worker succeeds"
+                if task_row["state"] != "succeeded":
+                    return [], "manager cannot finish until every child task is accepted"
+                evaluation = connection.execute(
+                    "SELECT passed, reviewed_head_sha FROM evaluations "
+                    "WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (latest_worker["id"],),
+                ).fetchone()
+                if latest_worker["accepted_head_sha"] is None:
+                    return [], "manager cannot finish without an accepted worker head"
+                if evaluation is None or not evaluation["passed"]:
+                    return [], "manager cannot finish until every worker evaluation passes"
+                if evaluation["reviewed_head_sha"] != latest_worker["accepted_head_sha"]:
+                    return [], "manager cannot finish until every worker has an exact-head review"
+                accepted_workers.append(latest_worker)
+            return accepted_workers, None
+
         team_id = manager["team_id"]
         active_child = connection.execute(
             "SELECT id, run_type FROM runs WHERE team_id = ? AND id <> ? "
@@ -2595,28 +2630,13 @@ class Registry:
             (team_id,),
         ).fetchall()
         team_tasks = connection.execute(
-            "SELECT state FROM tasks WHERE team_id = ?", (team_id,)
+            "SELECT id, state FROM tasks WHERE team_id = ?", (team_id,)
         ).fetchall()
         if not workers:
             return "manager cannot finish without worker runs"
-        if any(
-            worker["status"] != "finished" or worker["outcome"] != "succeeded" for worker in workers
-        ):
-            return "manager cannot finish until every worker succeeds"
-        if any(task["state"] not in {"succeeded", "archived"} for task in team_tasks):
-            return "manager cannot finish until every child task is accepted"
-        for worker in workers:
-            evaluation = connection.execute(
-                "SELECT passed, reviewed_head_sha FROM evaluations "
-                "WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
-                (worker["id"],),
-            ).fetchone()
-            if worker["accepted_head_sha"] is None:
-                return "manager cannot finish without an accepted worker head"
-            if evaluation is None or not evaluation["passed"]:
-                return "manager cannot finish until every worker evaluation passes"
-            if evaluation["reviewed_head_sha"] != worker["accepted_head_sha"]:
-                return "manager cannot finish until every worker has an exact-head review"
+        _accepted_workers, team_error = select_accepted_workers(workers, team_tasks)
+        if team_error:
+            return team_error
 
         root_id = manager["task_id"]
         managers = connection.execute(
@@ -2645,25 +2665,18 @@ class Registry:
             "ORDER BY r.started_at, r.id",
             (root_id,),
         ).fetchall()
-        if len(all_workers) < 3:
+        all_tasks = connection.execute(
+            "SELECT id, state FROM tasks WHERE team_id IN "
+            "(SELECT id FROM teams WHERE root_task_id = ?) AND state <> 'archived'",
+            (root_id,),
+        ).fetchall()
+        accepted_workers, root_error = select_accepted_workers(all_workers, all_tasks)
+        if root_error:
+            return root_error
+        if len(accepted_workers) < 3:
             return "parallel acceptance requires at least three workers"
-        for worker in all_workers:
-            evaluation = connection.execute(
-                "SELECT passed, reviewed_head_sha FROM evaluations "
-                "WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
-                (worker["id"],),
-            ).fetchone()
-            if (
-                worker["status"] != "finished"
-                or worker["outcome"] != "succeeded"
-                or worker["accepted_head_sha"] is None
-                or evaluation is None
-                or not evaluation["passed"]
-                or evaluation["reviewed_head_sha"] != worker["accepted_head_sha"]
-            ):
-                return "parallel acceptance requires exact-head review for every worker"
         intervals = []
-        for worker in all_workers:
+        for worker in accepted_workers:
             if worker["finished_at"] is None:
                 continue
             intervals.append(

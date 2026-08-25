@@ -163,13 +163,15 @@ the succeeded task state and existing evaluation. Reviewer admission after
 success remains impossible. Failed, mismatched, or missing evaluation
 evidence rejects post-success settlement.
 
-Finalize a team deterministically: settle turns, finish all workers, release or
-reconcile all claims, finish each linked reviewer, record a passing exact-head
-evaluation for every child, then finish the manager. A manager cannot finish
-while child workers or reviewers are active, while claims remain held, or while
-a child lacks a passing evaluation. Acceptance requires at least three
-overlapping workers under two managers and exact-head review of each accepted
-worker.
+Finalize a team deterministically: settle turns, finish current worker
+attempts, release or reconcile all claims, finish linked reviewers, and record
+a passing exact-head evaluation for every child before finishing the manager.
+For each non-archived child task in `succeeded`, select its latest worker
+attempt as the accepted attempt; historical failed or rejected attempts from a
+retry do not count. A manager cannot finish while child workers or reviewers
+are active, while claims remain held, or while a succeeded child lacks a
+passing exact-head evaluation for its selected attempt. Acceptance requires at
+least three selected accepted workers overlapping under two managers.
 
 For a legacy finished successful team worker whose schema-upgraded writer row has NULL
 `repository_path` and `accepted_head_sha`, use

@@ -284,11 +284,14 @@ When a task has disjoint bounded slices, use the team workflow:
    settlement preserves the succeeded task state and existing evaluation.
    Reviewer admission after success remains impossible. Failed, mismatched,
    and missing evaluation evidence rejects post-success settlement.
-6. Finalize deterministically: settle turns, finish workers, release claims,
-   finish linked reviewers, record a passing exact-head evaluation for every
-   child, then finish the manager. The manager cannot finish while child
-   workers or reviewers are active, while claims remain held, or while any
-   child lacks a passing evaluation.
+6. Finalize deterministically: settle turns, finish current worker attempts,
+   release claims, finish linked reviewers, and record a passing exact-head
+   evaluation for every child before finishing the manager. For each
+   non-archived child task in `succeeded`, select its latest worker attempt as
+   the accepted attempt; historical failed or rejected attempts from a retry
+   do not count. The manager cannot finish while child workers or reviewers are
+   active, while claims remain held, or while a succeeded child lacks a
+   passing exact-head evaluation for its selected attempt.
 
 ### Recover a legacy accepted head
 
@@ -321,8 +324,9 @@ compatible and does not require team or writer metadata. A string evaluator is
 accepted only on that legacy singleton path; team workers require the linked
 successful reviewer run.
 
-The parallel acceptance gate requires at least three overlapping workers under
-two managers and an exact-head review for every accepted worker.
+The parallel acceptance gate requires at least three selected accepted workers
+overlapping under two managers. Each selected accepted worker must have a
+passing evaluation that reviews its exact accepted head.
 
 The registry schema is currently version 9. Initialization applies migrations
 v1 -> v2 through v9 in order; the parallel-team steps add hierarchy and run
