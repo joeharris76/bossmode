@@ -5,8 +5,22 @@ description: Manage, dispatch, and continue tasks using the Bossmode durable con
 
 # Bossmode
 
-Operate from the repository root. The registry is `.bossmode/control.db` unless the user names a
-different database.
+Operate from the repository root. Each checkout or linked worktree owns its own
+`.bossmode/control.db`. The registry is not a shared worktree file.
+
+## Registry Ownership and Schema Compatibility
+
+1. Before reconciling, verify `pwd`, `git rev-parse --show-toplevel`, and the resolved database
+   path. The default database is the current checkout's `.bossmode/control.db`.
+2. Never pass `--db` or set `BOSSMODE_DB` to another worktree's `.bossmode/control.db`. The CLI
+   rejects that path before opening SQLite, inspecting the schema, or running migrations.
+3. `Registry.initialize()` may migrate only the registry owned by the current checkout. If the
+   database reports a newer schema than this checkout supports, stop and return the mismatch as a
+   blocker; do not downgrade, copy over, or override it with a sibling worktree path.
+4. A genuinely shared control plane requires a dedicated supervisor-owned registry location and an
+   explicit adoption protocol. No implicit shared-registry workflow is available in this MVP.
+5. Do not assume commands or schema features from an unmerged worktree are available in this
+   checkout. Run the skill and CLI from the checkout whose source and registry you are reconciling.
 
 ## Command Surface
 

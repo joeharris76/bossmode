@@ -31,6 +31,27 @@ user
 There is no background MVP daemon and no generic executor interface. The registry never sends a
 prompt, creates a pane, grants permission, or decides that terminal text means success.
 
+## Registry and worktree boundary
+
+Each checkout or linked worktree owns its own `.bossmode/control.db`. Worktree-local registries
+keep task history and schema migrations tied to the source that understands them. A registry path
+that resolves to a sibling worktree's standard `.bossmode/control.db` is rejected before Bossmode
+opens SQLite, inspects the schema, or applies a migration.
+
+Before reconciliation, verify the ownership boundary:
+
+```bash
+pwd
+git rev-parse --show-toplevel
+realpath .bossmode/control.db
+```
+
+Do not use `--db` or `BOSSMODE_DB` to point at another worktree's registry. If a database is newer
+than the current checkout supports, run the command from the owning checkout and treat any
+remaining mismatch as a blocker. A genuinely shared control plane needs a dedicated,
+supervisor-owned registry location and an explicit adoption protocol; the MVP does not provide an
+implicit shared-registry mode.
+
 ## Responsibilities
 
 | Actor | Owns | Does not own |

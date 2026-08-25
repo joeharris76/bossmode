@@ -8,8 +8,12 @@ Parsed commands that reach the Bossmode handler write structured JSON to standar
 error and exit `2`. Argparse help and usage remain text: help exits `0`, while missing arguments and
 invalid choices exit `2` before the JSON handler runs.
 
-The global `--db PATH` option selects the registry. It defaults to `.bossmode/control.db` or the
-`BOSSMODE_DB` environment variable.
+The global `--db PATH` option selects the registry. It defaults to the current checkout's
+`.bossmode/control.db` or the `BOSSMODE_DB` environment variable. Each linked worktree owns its
+standard registry path: Bossmode rejects a path resolving to a sibling worktree's
+`.bossmode/control.db` before opening SQLite, inspecting the schema, or applying migrations. Run
+the command from the checkout that owns a newer registry; do not use `--db` to bypass a schema
+mismatch.
 
 ## Installation
 
