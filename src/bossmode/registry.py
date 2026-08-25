@@ -7,10 +7,11 @@ import os
 import re
 import sqlite3
 import stat
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -385,14 +386,18 @@ class Registry:
     def _inspect_existing_schema_version(self) -> int | None:
         if not self.path.exists():
             return None
-        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        if self.path.stat().st_size == 0:
+            return None
+        uri = f"{self.path.resolve().as_uri()}?mode=ro&immutable=1"
         with closing(sqlite3.connect(uri, uri=True)) as connection:
             connection.row_factory = sqlite3.Row
             schema_exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
             ).fetchone()
             if schema_exists is None:
-                return None
+                raise RegistryError(
+                    "existing nonempty registry is missing schema_meta; refusing initialization"
+                )
             versions = connection.execute("SELECT version FROM schema_meta").fetchall()
             if not versions:
                 raise RegistryError("registry schema version is missing")
@@ -416,66 +421,193 @@ class Registry:
                 raise RegistryError(f"no registry migration from schema {probe}")
             probe = step.to_version
 
-    def _create_migration_backup(self, schema_version: int) -> MigrationBackup:
-        backup_directory = self.path.parent / "backups"
-        if backup_directory.exists():
-            mode = backup_directory.lstat().st_mode
-            if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+    @staticmethod
+    def _assert_open_directory_matches_path(path: Path, descriptor: int, label: str) -> None:
+        opened = os.fstat(descriptor)
+        try:
+            observed = os.stat(path, follow_symlinks=False)
+        except OSError as error:
+            raise RegistryError(f"{label} changed while backup was created: {path}") from error
+        if not stat.S_ISDIR(observed.st_mode) or (opened.st_dev, opened.st_ino) != (
+            observed.st_dev,
+            observed.st_ino,
+        ):
+            raise RegistryError(f"{label} changed while backup was created: {path}")
+
+    def _open_migration_backup_directory(self) -> tuple[Path, int, int]:
+        registry_directory = self.path.parent
+        backup_directory = registry_directory / "backups"
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            registry_descriptor = os.open(registry_directory, directory_flags)
+        except OSError as error:
+            raise RegistryError(
+                f"registry directory must be a real directory: {registry_directory}"
+            ) from error
+        try:
+            created = False
+            try:
+                os.mkdir("backups", mode=0o700, dir_fd=registry_descriptor)
+                created = True
+            except FileExistsError:
+                pass
+            try:
+                backup_descriptor = os.open("backups", directory_flags, dir_fd=registry_descriptor)
+            except OSError as error:
                 raise RegistryError(
                     f"registry backup directory must be a real directory: {backup_directory}"
+                ) from error
+            try:
+                if not stat.S_ISDIR(os.fstat(backup_descriptor).st_mode):
+                    raise RegistryError(
+                        f"registry backup directory must be a real directory: {backup_directory}"
+                    )
+                os.fchmod(backup_descriptor, 0o700)
+                os.fsync(backup_descriptor)
+                if created:
+                    os.fsync(registry_descriptor)
+                self._assert_open_directory_matches_path(
+                    registry_directory, registry_descriptor, "registry directory"
                 )
-        else:
-            backup_directory.mkdir(mode=0o700)
-        os.chmod(backup_directory, 0o700)
+                observed_backup = os.stat(
+                    "backups", dir_fd=registry_descriptor, follow_symlinks=False
+                )
+                opened_backup = os.fstat(backup_descriptor)
+                if not stat.S_ISDIR(observed_backup.st_mode) or (
+                    opened_backup.st_dev,
+                    opened_backup.st_ino,
+                ) != (observed_backup.st_dev, observed_backup.st_ino):
+                    raise RegistryError(
+                        f"registry backup directory changed while backup was created: "
+                        f"{backup_directory}"
+                    )
+            except Exception:
+                os.close(backup_descriptor)
+                raise
+        except Exception:
+            os.close(registry_descriptor)
+            raise
+        return backup_directory, registry_descriptor, backup_descriptor
 
+    def _create_migration_backup(self, schema_version: int) -> MigrationBackup:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         backup_stem = f"{self.path.name}.schema-{schema_version}.{timestamp}-{uuid.uuid4().hex[:8]}"
-        temporary_path = backup_directory / f".{backup_stem}.partial"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(temporary_path, flags, 0o600)
-        os.close(descriptor)
-
         source_uri = f"{self.path.resolve().as_uri()}?mode=ro"
-        backup_path: Path | None = None
+        backup_directory, registry_descriptor, backup_descriptor = (
+            self._open_migration_backup_directory()
+        )
         try:
-            with (
-                closing(sqlite3.connect(source_uri, uri=True)) as source,
-                closing(sqlite3.connect(temporary_path)) as destination,
-            ):
-                source.backup(destination)
-                destination.commit()
-            os.chmod(temporary_path, 0o600)
-            self._verify_migration_backup(temporary_path, schema_version)
-            file_descriptor = os.open(temporary_path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
-            try:
-                os.fsync(file_descriptor)
-            finally:
-                os.close(file_descriptor)
-            digest_descriptor = os.open(
-                temporary_path,
-                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-            )
-            with os.fdopen(digest_descriptor, "rb") as backup_file:
-                digest = hashlib.file_digest(backup_file, "sha256").hexdigest()
-            backup_path = backup_directory / f"{backup_stem}.sha256-{digest}.sqlite3"
-            os.link(temporary_path, backup_path, follow_symlinks=False)
-            temporary_path.unlink()
-            directory_descriptor = os.open(
-                backup_directory,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
-            )
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
-            if backup_path is not None:
-                backup_path.unlink(missing_ok=True)
-            raise
-        assert backup_path is not None
-        return MigrationBackup(backup_path, digest)
+            with tempfile.TemporaryDirectory(
+                prefix="bossmode-migration-backup-"
+            ) as staging_directory:
+                staging_path = Path(staging_directory) / "backup.sqlite3"
+                with (
+                    closing(sqlite3.connect(source_uri, uri=True)) as source,
+                    closing(sqlite3.connect(staging_path)) as destination,
+                ):
+                    source.backup(destination)
+                    destination.commit()
+                os.chmod(staging_path, 0o600)
+                self._verify_migration_backup(staging_path, schema_version)
+                with staging_path.open("rb") as staging_file:
+                    digest = hashlib.file_digest(staging_file, "sha256").hexdigest()
+
+                self._assert_open_directory_matches_path(
+                    self.path.parent, registry_descriptor, "registry directory"
+                )
+                temporary_name = f".{backup_stem}.partial"
+                backup_name = f"{backup_stem}.sha256-{digest}.sqlite3"
+                temporary_created = False
+                backup_published = False
+                try:
+                    creation_flags = (
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                    )
+                    destination_descriptor = os.open(
+                        temporary_name,
+                        creation_flags,
+                        0o600,
+                        dir_fd=backup_descriptor,
+                    )
+                    temporary_created = True
+                    try:
+                        source_descriptor = os.open(
+                            staging_path,
+                            os.O_RDONLY
+                            | getattr(os, "O_CLOEXEC", 0)
+                            | getattr(os, "O_NOFOLLOW", 0),
+                        )
+                        try:
+                            while block := os.read(source_descriptor, 1024 * 1024):
+                                view = memoryview(block)
+                                while view:
+                                    written = os.write(destination_descriptor, view)
+                                    view = view[written:]
+                        finally:
+                            os.close(source_descriptor)
+                        os.fchmod(destination_descriptor, 0o600)
+                        os.fsync(destination_descriptor)
+                        os.lseek(destination_descriptor, 0, os.SEEK_SET)
+                        with os.fdopen(os.dup(destination_descriptor), "rb") as backup_file:
+                            published_digest = hashlib.file_digest(
+                                backup_file, "sha256"
+                            ).hexdigest()
+                        if published_digest != digest:
+                            raise RegistryError(
+                                "registry migration backup changed during publication"
+                            )
+                    finally:
+                        os.close(destination_descriptor)
+
+                    os.link(
+                        temporary_name,
+                        backup_name,
+                        src_dir_fd=backup_descriptor,
+                        dst_dir_fd=backup_descriptor,
+                        follow_symlinks=False,
+                    )
+                    backup_published = True
+                    os.unlink(temporary_name, dir_fd=backup_descriptor)
+                    temporary_created = False
+                    os.fsync(backup_descriptor)
+                    self._assert_open_directory_matches_path(
+                        self.path.parent, registry_descriptor, "registry directory"
+                    )
+                    observed_backup = os.stat(
+                        "backups", dir_fd=registry_descriptor, follow_symlinks=False
+                    )
+                    opened_backup = os.fstat(backup_descriptor)
+                    if not stat.S_ISDIR(observed_backup.st_mode) or (
+                        opened_backup.st_dev,
+                        opened_backup.st_ino,
+                    ) != (observed_backup.st_dev, observed_backup.st_ino):
+                        raise RegistryError(
+                            f"registry backup directory changed while backup was created: "
+                            f"{backup_directory}"
+                        )
+                except Exception:
+                    if temporary_created:
+                        with suppress(FileNotFoundError):
+                            os.unlink(temporary_name, dir_fd=backup_descriptor)
+                    if backup_published:
+                        with suppress(FileNotFoundError):
+                            os.unlink(backup_name, dir_fd=backup_descriptor)
+                    with suppress(OSError):
+                        os.fsync(backup_descriptor)
+                    raise
+        finally:
+            os.close(backup_descriptor)
+            os.close(registry_descriptor)
+        return MigrationBackup(backup_directory / backup_name, digest)
 
     @staticmethod
     def _verify_migration_backup(backup_path: Path, schema_version: int) -> None:
@@ -578,6 +710,10 @@ class Registry:
             ),
         )
 
+    @staticmethod
+    def _rollback_schema_transaction(connection: sqlite3.Connection) -> None:
+        connection.rollback()
+
     def _ensure_schema(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         inspected_version = self._inspect_existing_schema_version()
@@ -593,6 +729,13 @@ class Registry:
                         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
                     ).fetchone()
                     if schema_exists is None:
+                        existing_objects = connection.execute(
+                            "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                        ).fetchone()
+                        if existing_objects is not None:
+                            raise RegistryError(
+                                "existing registry is missing schema_meta; refusing initialization"
+                            )
                         self._execute_schema(connection)
                         connection.execute(
                             "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
@@ -639,13 +782,24 @@ class Registry:
                     if step.to_version == SCHEMA_VERSION:
                         return
                 except Exception as error:
-                    connection.rollback()
+                    rollback_error: Exception | None = None
+                    try:
+                        self._rollback_schema_transaction(connection)
+                    except Exception as caught_rollback_error:
+                        rollback_error = caught_rollback_error
                     if backup is not None and migration_step is not None:
-                        raise RegistryError(
+                        migration_error = RegistryError(
                             f"registry migration {migration_step.from_version} -> "
                             f"{migration_step.to_version} failed: {error}; restore from "
                             f"{backup.path} (sha256 {backup.sha256})"
-                        ) from error
+                        )
+                        if rollback_error is not None:
+                            migration_error.add_note(
+                                f"registry migration rollback failed: {rollback_error}"
+                            )
+                        raise migration_error from error
+                    if rollback_error is not None:
+                        error.add_note(f"registry schema rollback failed: {rollback_error}")
                     raise
 
     @staticmethod

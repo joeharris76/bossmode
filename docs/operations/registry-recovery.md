@@ -72,8 +72,45 @@ Use this procedure only after a migration error identifies a backup path and SHA
    ```
 
 4. Copy the verified backup to a new `0600` temporary file in `.bossmode/`. Flush that file, replace
-   `.bossmode/control.db` atomically, and flush the `.bossmode/` directory. Do not copy over a live
-   database or leave old WAL/SHM sidecars beside the restored file.
+   `.bossmode/control.db` atomically, and flush the `.bossmode/` directory. The following procedure
+   also moves the stopped database and any WAL/SHM sidecars into a new recovery directory. Substitute
+   explicit paths; the recovery directory must not already exist.
+
+   ```bash
+   uv run python - BACKUP_PATH .bossmode/control.db RECOVERY_DIRECTORY <<'PY'
+   import os
+   import shutil
+   import sys
+   from pathlib import Path
+
+   backup, database, recovery = map(Path, sys.argv[1:])
+   recovery.mkdir(mode=0o700)
+   for suffix in ("", "-wal", "-shm"):
+       active = database.with_name(f"{database.name}{suffix}")
+       if active.exists():
+           os.replace(active, recovery / active.name)
+
+   temporary = database.with_name(f".{database.name}.restore.partial")
+   flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+   flags |= getattr(os, "O_NOFOLLOW", 0)
+   descriptor = os.open(temporary, flags, 0o600)
+   with backup.open("rb") as source, os.fdopen(descriptor, "wb") as destination:
+       shutil.copyfileobj(source, destination)
+       destination.flush()
+       os.fsync(destination.fileno())
+   os.replace(temporary, database)
+   directory_descriptor = os.open(
+       database.parent,
+       os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+   )
+   try:
+       os.fsync(directory_descriptor)
+   finally:
+       os.close(directory_descriptor)
+   PY
+   ```
+
+   Do not copy over a live database or leave old WAL/SHM sidecars beside the restored file.
 5. Open the restored database read-only. Run `PRAGMA integrity_check`, confirm its schema version,
    and inspect representative task, run, turn, evaluation, and feedback records.
 6. Start only the Bossmode version that supports the restored schema. The current version will try

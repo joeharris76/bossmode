@@ -46,6 +46,45 @@ def migration_lineage(database: Path) -> list[tuple[str, int, int, str]]:
         ).fetchall()
 
 
+def durable_restore_backup(
+    database: Path, backup: Path, expected_sha256: str, recovery_directory: Path
+) -> None:
+    assert file_sha256(backup) == expected_sha256
+    uri = f"{backup.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    recovery_directory.mkdir(mode=0o700)
+    for suffix in ("", "-wal", "-shm"):
+        active_path = database.with_name(f"{database.name}{suffix}")
+        if active_path.exists():
+            os.replace(active_path, recovery_directory / active_path.name)
+
+    temporary_path = database.with_name(f".{database.name}.restore.partial")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary_path, flags, 0o600)
+    try:
+        with backup.open("rb") as source, os.fdopen(descriptor, "wb") as destination:
+            descriptor = -1
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary_path, database)
+        directory_descriptor = os.open(
+            database.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
 def test_fresh_schema_seeds_lineage_without_backup(tmp_path: Path) -> None:
     database = tmp_path / "control.db"
 
@@ -63,6 +102,58 @@ def test_fresh_schema_seeds_lineage_without_backup(tmp_path: Path) -> None:
         assert len(row["checksum"]) == 64
         assert row["backup_path"] is None
         assert row["backup_sha256"] is None
+
+
+def test_existing_zero_length_file_is_safely_initialized(tmp_path: Path) -> None:
+    database = tmp_path / "control.db"
+    database.touch()
+
+    Registry(database).initialize()
+
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_nonempty_sqlite_without_schema_meta_fails_without_mutation_or_backup(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "control.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE unrelated(value TEXT)")
+        connection.execute("INSERT INTO unrelated VALUES ('preserve me')")
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in tmp_path.iterdir()
+    }
+
+    with pytest.raises(RegistryError, match="nonempty registry is missing schema_meta"):
+        Registry(database).initialize()
+
+    after = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in tmp_path.iterdir()}
+    assert after == before
+    assert not (tmp_path / "backups").exists()
+
+
+def test_wal_database_without_schema_meta_preflight_creates_no_sidecars_or_writes(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "control.db"
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        connection.execute("PRAGMA wal_autocheckpoint = 0")
+        connection.execute("CREATE TABLE unrelated(value TEXT)")
+        connection.execute("INSERT INTO unrelated VALUES ('preserve me')")
+        connection.commit()
+        before = {
+            path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in tmp_path.iterdir()
+        }
+
+        with pytest.raises(RegistryError, match="nonempty registry is missing schema_meta"):
+            Registry(database).initialize()
+
+        after = {
+            path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in tmp_path.iterdir()
+        }
+        assert after == before
 
 
 def test_fresh_and_migrated_registries_have_identical_lineage(tmp_path: Path) -> None:
@@ -134,13 +225,31 @@ def test_legacy_migrations_are_individually_bounded_and_backed_up(tmp_path: Path
 
 def test_backup_restores_original_schema_and_records(tmp_path: Path) -> None:
     database = tmp_path / "control.db"
-    failed_database = tmp_path / "control.db.failed"
+    recovery_directory = tmp_path / "failed-registry"
     create_schema_v6(database)
     Registry(database).initialize()
     backup = backup_paths(database)[0]
+    expected_sha256 = file_sha256(backup)
+    database.with_name(f"{database.name}-wal").write_bytes(b"stale WAL")
+    database.with_name(f"{database.name}-shm").write_bytes(b"stale SHM")
+    events: list[str] = []
+    original_fsync = os.fsync
+    original_replace = os.replace
 
-    database.replace(failed_database)
-    shutil.copyfile(backup, database)
+    def recording_fsync(descriptor: int) -> None:
+        mode = os.fstat(descriptor).st_mode
+        events.append("fsync-directory" if stat.S_ISDIR(mode) else "fsync-file")
+        original_fsync(descriptor)
+
+    def recording_replace(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == database:
+            events.append("replace-registry")
+        original_replace(source, destination)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(os, "fsync", recording_fsync)
+        monkeypatch.setattr(os, "replace", recording_replace)
+        durable_restore_backup(database, backup, expected_sha256, recovery_directory)
 
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -153,6 +262,13 @@ def test_backup_restores_original_schema_and_records(tmp_path: Path) -> None:
             connection.execute("SELECT category FROM feedback WHERE id = 'fb_v5'").fetchone()[0]
             == "correction"
         )
+    assert stat.S_IMODE(database.stat().st_mode) == 0o600
+    assert events == ["fsync-file", "replace-registry", "fsync-directory"]
+    assert (recovery_directory / "control.db").exists()
+    assert (recovery_directory / "control.db-wal").read_bytes() == b"stale WAL"
+    assert (recovery_directory / "control.db-shm").read_bytes() == b"stale SHM"
+    assert not database.with_name(f"{database.name}-wal").exists()
+    assert not database.with_name(f"{database.name}-shm").exists()
 
     Registry(database).initialize()
 
@@ -162,7 +278,6 @@ def test_backup_restores_original_schema_and_records(tmp_path: Path) -> None:
         assert connection.execute("SELECT title FROM tasks WHERE id = 'task_v5'").fetchone()[0] == (
             "v5 task"
         )
-    assert failed_database.exists()
     assert len(backup_paths(database)) == 2
 
 
@@ -219,6 +334,36 @@ def test_interrupted_migration_reports_recovery_for_non_sql_failure(
 
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+    assert len(backup_paths(database)) == 1
+
+
+def test_rollback_failure_preserves_original_error_and_recovery_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control.db"
+    create_schema_v6(database)
+    registry = Registry(database)
+
+    def fail_migration(connection: sqlite3.Connection) -> None:
+        Registry._migrate_v6_to_v7(connection)
+        raise RuntimeError("original migration failure")
+
+    def fail_rollback(_connection: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("simulated rollback failure")
+
+    monkeypatch.setattr(registry, "_migrate_v6_to_v7", fail_migration)
+    monkeypatch.setattr(registry, "_rollback_schema_transaction", fail_rollback)
+
+    with pytest.raises(RegistryError) as caught:
+        registry.initialize()
+
+    message = str(caught.value)
+    assert "original migration failure" in message
+    assert "restore from" in message
+    assert "sha256" in message
+    assert (
+        "registry migration rollback failed: simulated rollback failure" in caught.value.__notes__
+    )
     assert len(backup_paths(database)) == 1
 
 
@@ -383,6 +528,66 @@ def test_symlinked_backup_directory_is_rejected_without_migration(tmp_path: Path
     assert list(external.iterdir()) == []
 
 
+def test_new_backup_directory_creation_fsyncs_registry_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control.db"
+    create_schema_v6(database)
+    original_mkdir = os.mkdir
+    original_fsync = os.fsync
+    registry_identity = (tmp_path.stat().st_dev, tmp_path.stat().st_ino)
+    events: list[str] = []
+
+    def recording_mkdir(path: str | Path, *args, **kwargs) -> None:
+        if path == "backups" and kwargs.get("dir_fd") is not None:
+            events.append("mkdir-backups")
+        original_mkdir(path, *args, **kwargs)
+
+    def recording_fsync(descriptor: int) -> None:
+        details = os.fstat(descriptor)
+        if (details.st_dev, details.st_ino) == registry_identity:
+            events.append("fsync-registry-parent")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "mkdir", recording_mkdir)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+
+    Registry(database).initialize()
+
+    assert events == ["mkdir-backups", "fsync-registry-parent"]
+
+
+def test_backup_directory_swap_is_detected_and_cannot_redirect_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control.db"
+    external = tmp_path / "external"
+    moved_backup_directory = tmp_path / "backups-moved"
+    external.mkdir()
+    create_schema_v6(database)
+    original_link = os.link
+    swapped = False
+
+    def swapping_link(source: str | Path, destination: str | Path, *args, **kwargs) -> None:
+        nonlocal swapped
+        if not swapped:
+            (tmp_path / "backups").rename(moved_backup_directory)
+            (tmp_path / "backups").symlink_to(external, target_is_directory=True)
+            swapped = True
+        original_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", swapping_link)
+
+    with pytest.raises(RegistryError, match="backup directory changed"):
+        Registry(database).initialize()
+
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+    assert swapped is True
+    assert list(external.iterdir()) == []
+    assert list(moved_backup_directory.iterdir()) == []
+
+
 def test_backup_publication_uses_exclusive_no_follow_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -393,7 +598,7 @@ def test_backup_publication_uses_exclusive_no_follow_creation(
 
     def recording_open(path: str | Path, flags: int, *args, **kwargs):
         candidate = Path(path)
-        if candidate.parent.name == "backups" and candidate.name.endswith(".partial"):
+        if candidate.name.endswith(".partial") and kwargs.get("dir_fd") is not None:
             observed_flags.append(flags)
         return original_open(path, flags, *args, **kwargs)
 
