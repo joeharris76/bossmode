@@ -7,7 +7,7 @@ precise about commands and state transitions. Most users should start with the
 | User intent | Supervisor responsibility |
 |---|---|
 | Start bounded work | Record the goal, success criteria, permissions, and next action before delegation. |
-| Resume | Reconcile stored records against authoritative live runtime identity. |
+| Resume | Verify stored records against authoritative live runtime identity. |
 | Use an external agent | Reserve the run, create and bind one verified Herdr worker, and correlate each turn. |
 | Call work complete | Record the run result and obtain independent evaluation. |
 | Record a correction | Store sourced feedback and show any proposal without applying it. |
@@ -38,7 +38,7 @@ keep task history and schema migrations tied to the source that understands them
 that resolves to a sibling worktree's standard `.bossmode/control.db` is rejected before Bossmode
 opens SQLite, inspects the schema, or applies a migration.
 
-Before reconciliation, verify the ownership boundary:
+Before running any registry command, verify the ownership boundary:
 
 ```bash
 pwd
@@ -64,15 +64,22 @@ implicit shared-registry mode.
 | Worker | The bounded task and its declared artifacts | Self-approval or policy changes |
 | Reviewer | Independent checks against the task's success criteria | Rewriting a failed result unless separately authorized |
 
-Live native runtime or Herdr state is authoritative for executor identity. Registry identities are durable
-indexes that must be reconciled before every prompt, interruption, continuation, or close.
+Live native runtime or Herdr state is authoritative for executor identity. Registry identities are
+durable indexes that must be verified against live state before every prompt, interruption,
+continuation, or close.
+
+Two different operations are easy to confuse. `bossmode reconcile` converges the registry itself:
+it migrates the schema, materialises promotion proposals, and reports task buckets. Verifying a
+stored worker identity against live Herdr or native runtime state is a separate supervisor
+responsibility that Bossmode never performs for you.
 
 ## Common task lifecycle
 
-1. The supervisor runs `uv run bossmode` to inspect session state and ready tasks.
+1. The supervisor runs `uv run bossmode` to converge the registry and read current state. The
+   command writes: it creates or migrates the registry and materialises promotion proposals.
 2. It records user requests with `bossmode task create`, including success criteria and permission limits.
-3. It selects only the task returned in `dispatch` and starts one run. Dispatch remains empty while
-   another task is running or awaiting evaluation.
+3. It selects only the task returned in `next_task` and starts one run. `next_task` stays `null`
+   while another task is running or awaiting evaluation.
 4. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
    path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) below.
 5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
@@ -93,8 +100,8 @@ indexes that must be reconciled before every prompt, interruption, continuation,
      --thread-id NATIVE_THREAD_OR_TASK_ID
    ```
 
-3. Wait or continue through the runtime's native subagent tools. Before every later message, reconcile
-   the stored ID against live runtime state.
+3. Wait or continue through the runtime's native subagent tools. Before every later message,
+   verify the stored ID against live runtime state.
 4. Record the terminal result with `run finish`. Do not translate a subagent's self-reported success
    into a passing evaluation.
 
@@ -120,7 +127,7 @@ herdr pane split PARENT_PANE_ID --direction right --cwd "$PWD" --no-focus
 herdr agent start worker_1234abcd --kind claude --pane NEW_PANE_ID
 ```
 
-Do not start a second worker if either command returns an uncertain result. Reconcile the
+Do not start a second worker if either command returns an uncertain result. Verify the
 deterministic name with `herdr agent get worker_1234abcd` and `herdr agent list`.
 
 ### 2. Bind only observed identity
@@ -131,19 +138,19 @@ After confirming one matching live worker, record its observed Herdr location:
 uv run bossmode herdr bind RUN_ID \
   --herdr-session bossmode \
   --worker worker_1234abcd \
-  --kind claude \
+  --agent-kind claude \
   --pane-id LIVE_PANE_ID \
   --tab-id LIVE_TAB_ID \
   --workspace-id LIVE_WORKSPACE_ID
 ```
 
-After `herdr agent get` reports a native session, reconcile the same binding with all four fields:
+After `herdr agent get` reports a native session, rebind with all four fields:
 
 ```bash
 uv run bossmode herdr bind RUN_ID \
   --herdr-session bossmode \
   --worker worker_1234abcd \
-  --kind claude \
+  --agent-kind claude \
   --session-source OBSERVED_SOURCE \
   --session-agent OBSERVED_AGENT \
   --session-ref-kind id \
@@ -191,13 +198,15 @@ The result file contract is:
 }
 ```
 
-Allowed terminal statuses are `succeeded`, `blocked`, `failed`, and `unknown`. For success,
+Allowed terminal outcomes are `succeeded`, `blocked`, `failed`, and `unknown`. The result file
+reports the worker's own `status`; the registry validates it and stores it as the turn's `outcome`,
+alongside a `status` of `finished`. For success,
 `turn finish` reads at most 1 MiB from the exact generated path, validates the JSON object, requires
 the matching `turn_id` and `succeeded` status, and stores the validated result:
 
 ```bash
 uv run bossmode turn finish TURN_ID \
-  --status succeeded \
+  --outcome succeeded \
   --lifecycle-evidence done
 ```
 
@@ -211,7 +220,7 @@ before submission and treats the exact result file—not terminal text—as corr
 
 ### 4. Continue the same agent
 
-For a clarification before run completion, reconcile the same worker and start another turn with
+For a clarification before run completion, verify the same worker and start another turn with
 `--purpose clarification`, `correction`, or `review_follow_up`. If evaluation requires a later run,
 transition the task back to `ready`, start a new run, and bind the same live worker and native
 session. Finished-run bindings become `stale`, so they retain history without reserving the live
@@ -219,12 +228,13 @@ worker name. Do not replace a worker merely because its pane moved or the server
 
 ## Recover after interruption
 
-Run `uv run bossmode` (or `bossmode`). Its `active` and `needs_evaluation` entries contain nested runs, Herdr
-bindings, turns, output paths, and validated results. Use `bossmode run show RUN_ID` or
-`bossmode turn show TURN_ID` when you need one exact record, then reconcile that stored
-identity against live native runtime (AGY, Codex) or Herdr state before continuing.
+Run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain
+nested runs, Herdr bindings, turns, output paths, and validated results. Use
+`bossmode run show RUN_ID` or `bossmode turn show TURN_ID` when you need one exact record, then
+verify that stored identity against live native runtime (AGY, Codex) or Herdr state before
+continuing.
 
-## Reconciliation and failure rules
+## Live-identity and failure rules
 
 - Missing, duplicate, foreign, or ambiguous live identity: stop and report `blocked`; do not adopt
   or close anything.

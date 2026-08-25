@@ -25,25 +25,25 @@ Operate from the repository root. Each checkout or linked worktree owns its own
 ## Command Surface
 
 ```text
-bossmode                        # Default: Reconcile project session and return next action
-├── init                        # Install this version's skill into a project
-├── reconcile                   # Explicit default reconciliation command
-├── next                        # Alias for reconcile
+bossmode                        # Default: converge the registry and report state
+├── install-skill               # Install this version's skill into a project
+├── reconcile                   # The default command, named explicitly
 ├── task
 │   ├── create                  # Create a new task with success criteria
 │   ├── list                    # List tasks by state
 │   ├── show <id>               # Show task details and event history
-│   └── transition <id> <state> # Move task between lifecycle states
+│   └── transition <id> <state> # Move a task to ready, blocked, or archived
 ├── run
 │   ├── start <task_id>         # Start an execution run for a worker
-│   ├── finish <run_id>         # Complete a run (moves task to evaluating or error)
+│   ├── finish <run_id>         # Complete a run (task -> evaluating, waiting_user,
+│   │                           #   blocked, or failed)
 │   └── show <run_id>           # Show run details and turn records
 ├── herdr
 │   ├── bind <run_id>           # Link a live Herdr worker pane to a run
 │   └── show <run_id>           # Show Herdr binding and native session info
 ├── turn
 │   ├── start <run_id>          # Open a prompt turn and allocate result path
-│   ├── finish <turn_id>        # Validate turn JSON artifact and mark completed
+│   ├── finish <turn_id>        # Validate turn JSON artifact and record its outcome
 │   └── show <turn_id>          # Show prompt text, digest, and validated result
 ├── evaluate <task_id>          # Record independent evaluation (reviewer != worker)
 ├── feedback <task_id>          # Record user or system feedback with recurrence key
@@ -52,16 +52,16 @@ bossmode                        # Default: Reconcile project session and return 
 │   ├── list                    # List promotion proposals by status
 │   ├── accept <id>             # Accept a proposal for implementation
 │   ├── reject <id>             # Reject a proposal
-│   ├── apply <id>              # Mark an accepted proposal as verified and applied
-│   └── set <id> <status>       # Explicitly set accepted, rejected, or applied
-├── supervisor
-│   └── tick                    # Supervisor-form reconciliation (aliases: reconcile, next)
+│   └── apply <id>              # Mark an accepted proposal as verified and applied
 ├── maintenance                 # Run telemetry analytics, health checks, & promotion scan
 └── schedule
     ├── install                 # Register OS scheduler job (launchd on macOS, crontab on Linux)
     ├── status                  # Inspect registration and available log activity
     └── uninstall               # Cleanly remove OS scheduler job
 ```
+
+`bossmode` and `bossmode reconcile` are the only two spellings of the default
+command, and there are no aliases anywhere in this surface.
 
 ## 1. Intake a Prompt
 
@@ -78,20 +78,21 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 
 ## 2. Reconcile
 
-1. Run `uv run bossmode` (naked execution), `uv run bossmode reconcile`, or
-   `uv run bossmode supervisor tick` to reconcile session state and inspect the JSON output.
-2. Use the nested run, binding, and turn records in `active` and `needs_evaluation` to recover after
+1. Run `uv run bossmode` (naked execution) or `uv run bossmode reconcile` and read the JSON
+   output. This command writes: it creates or migrates the registry and materialises promotion
+   proposals before reporting.
+2. Use the nested run, binding, and turn records in `running` and `evaluating` to recover after
    interruption. Use `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` for exact records.
 3. For every active registry task, reconcile its executor against live state before sending,
    interrupting, completing, or closing it. Use live runtime state for native subagents (AGY, Codex)
    and `herdr agent get/list` for Herdr workers (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`).
    Treat missing, foreign, or ambiguous identity as a blocker; stored IDs are indexes, not capabilities.
-4. Surface `needs_user` and `blocked` items before starting new work when they affect priority or
-   safety. Ask only for the decision the system cannot safely make.
+4. Surface `waiting_user` and `blocked` items before starting new work when they affect priority
+   or safety. Ask only for the decision the system cannot safely make.
 
 ## 3. Dispatch
 
-1. Select only the single task returned in `dispatch`.
+1. Select only the single task returned in `next_task`.
 2. Choose the narrowest role: `researcher` for read-heavy evidence, `worker` for authorized edits,
    or `reviewer` for independent evaluation.
 3. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
@@ -100,7 +101,7 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
    `bossmode run start TASK_ID --role ROLE --thread-id NATIVE_ID`.
 5. For a Herdr worker, reserve the run with `bossmode run start` before creating any layout.
    Derive a unique worker name from the run ID, create it through the official Herdr CLI, then call
-   `bossmode herdr bind`. If binding fails after creation, reconcile the deterministic name;
+   `bossmode herdr bind --agent-kind KIND`. If binding fails after creation, reconcile the deterministic name;
    do not create another worker or close by a stored pane ID.
 6. Use Herdr only when the task explicitly requests an external interactive agent. Do not add an
    agent router or choose providers from historical scores in this spike.
@@ -119,7 +120,7 @@ Before the first external run, follow this command sequence and result contract.
    remain open per run.
 4. Run `herdr agent prompt NAME ENVELOPE --wait` and inspect `blocked`, stalled, unknown, and error
    states separately. Never approve a trust or permission dialog without explicit user authority.
-5. Call `bossmode turn finish TURN_ID --status succeeded` only after the worker settles. It reads
+5. Call `bossmode turn finish TURN_ID --outcome succeeded` only after the worker settles. It reads
    and validates the exact result path; on rejection, preserve `failed` or `unknown` with explicit
    evidence. Never infer success or a path from terminal text.
 6. Re-run `herdr agent get` after the first session-bearing event and bind the structured native
@@ -134,7 +135,8 @@ Before the first external run, follow this command sequence and result contract.
 3. Require an independent evaluation (`reviewer` role or user); self-evaluation is rejected.
 4. Record the evaluation with `bossmode evaluate TASK_ID --run-id RUN_ID --evaluator REVIEWER --passed/--failed --evidence EVIDENCE`;
    only a passing evaluation moves the task to `succeeded`.
-5. Record explicit user corrections or preferences with `bossmode feedback TASK_ID --kind KIND --key KEY --content CONTENT`.
+5. Record explicit user corrections or preferences with
+   `bossmode feedback TASK_ID --category CATEGORY --key KEY --content CONTENT`.
    Choose a stable, narrowly scoped recurrence key.
 
 ## 6. Gated Promotion

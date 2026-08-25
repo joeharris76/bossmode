@@ -25,12 +25,13 @@ Bossmode skill in your project:
 ```bash
 uv tool install ./bossmode-0.1.0-py3-none-any.whl
 cd /path/to/your-project
-bossmode init
+bossmode install-skill
 ```
 
-`bossmode init` creates `.agents/skills/bossmode/SKILL.md`. Running it again is safe when the file
-is identical. It refuses to overwrite a different file or install through a symlinked skill
-directory.
+`bossmode install-skill` creates `.agents/skills/bossmode/SKILL.md`. Running it again is safe when
+the file is identical. It refuses to overwrite a different file or install through a symlinked skill
+directory. It does not create the registry; the first command that needs `.bossmode/control.db`
+creates it.
 
 Then ask an agent that discovers project skills:
 
@@ -134,10 +135,14 @@ historical scores in this MVP.
 - [Example walkthrough](docs/example-walkthrough.md): an end-to-end conversation with failure,
   retry, evaluation, and learning.
 - [Supervisor protocol](docs/agent-workflow.md): canonical agent procedure and recovery rules.
-- [CLI reference](docs/cli-reference.md): exact commands, options, aliases, output, and exit codes.
+- [CLI reference](docs/cli-reference.md): exact commands, options, output, and exit codes.
 - [Herdr runtime boundary](docs/adr/0001-herdr-runtime-boundary.md): why live Herdr state remains
   authoritative.
 - [Agent organization design](docs/adr/0002-agent-organization-design.md): deferred scaling choices.
+- [Task intake and external sources](docs/adr/0003-task-intake-and-external-sources.md): how work
+  reaches the registry.
+- [Registry worktree ownership](docs/adr/0006-registry-worktree-ownership.md): why each checkout
+  owns its own registry.
 
 ## Development and verification
 
