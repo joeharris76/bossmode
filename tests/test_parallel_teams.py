@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 
@@ -805,6 +806,13 @@ def test_team_evaluation_requires_a_successful_linked_reviewer(registry, tmp_pat
 def _admit_redundant_reviewer(registry: Registry, worker: dict) -> dict:
     redundant_id = "run_redundant_reviewer"
     with registry._transaction() as connection:
+        first_reviewer = connection.execute(
+            "SELECT started_at FROM runs WHERE parent_run_id = ? AND run_type = 'reviewer'",
+            (worker["id"],),
+        ).fetchone()
+        redundant_started_at = (
+            datetime.fromisoformat(first_reviewer["started_at"]) + timedelta(microseconds=1)
+        ).isoformat()
         connection.execute(
             """
             INSERT INTO runs(
@@ -820,10 +828,46 @@ def _admit_redundant_reviewer(registry: Registry, worker: dict) -> dict:
                 worker["team_id"],
                 "native",
                 "redundant-reviewer",
-                "9999-01-01T00:00:00+00:00",
+                redundant_started_at,
             ),
         )
     return registry.get_run(redundant_id)
+
+
+def test_failed_reviewer_allows_a_sequential_successful_retry(registry, tmp_path):
+    _root, _teams, children, managers = _setup(registry, tmp_path, count=1)
+    worker = registry.start_worker_run(
+        children[0]["id"],
+        manager_run_id=managers[0]["id"],
+        identity={"source": "native", "value": "sequential-worker"},
+        writer=_writer(
+            registry, "reviewer-sequential/worker", "reviewer-sequential-worker", "sequential"
+        ),
+    )
+    accepted_head = _head(worker["writer_identity"])
+    registry.finish_run(
+        worker["id"],
+        outcome="succeeded",
+        summary="worker complete",
+        accepted_head_sha=accepted_head,
+    )
+
+    failed_reviewer = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "sequential-reviewer-failed"},
+    )
+    registry.finish_run(failed_reviewer["id"], outcome="failed", summary="review failed")
+
+    retry = registry.start_reviewer_run(
+        children[0]["id"],
+        worker_run_id=worker["id"],
+        identity={"source": "native", "value": "sequential-reviewer-retry"},
+    )
+    finished = registry.finish_run(retry["id"], outcome="succeeded", summary="retry passed")
+
+    assert finished["outcome"] == "succeeded"
+    assert registry.get_task(children[0]["id"])["state"] == "evaluating"
 
 
 def test_concurrent_reviewer_admission_allows_only_one_active_reviewer(registry, tmp_path):

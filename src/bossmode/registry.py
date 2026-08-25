@@ -1824,15 +1824,19 @@ class Registry:
 
     @staticmethod
     def _reviewer_is_redundant(connection: sqlite3.Connection, run: sqlite3.Row) -> bool:
-        first_reviewer = connection.execute(
+        earlier_reviewer = connection.execute(
             """
-            SELECT id FROM runs
+            SELECT id, started_at, finished_at FROM runs
             WHERE parent_run_id = ? AND run_type = 'reviewer'
             ORDER BY started_at, id LIMIT 1
             """,
             (run["parent_run_id"],),
         ).fetchone()
-        return first_reviewer is not None and first_reviewer["id"] != run["id"]
+        if earlier_reviewer is None or earlier_reviewer["id"] == run["id"]:
+            return False
+        return earlier_reviewer["finished_at"] is None or (
+            earlier_reviewer["finished_at"] > run["started_at"]
+        )
 
     @staticmethod
     def _require_redundant_reviewer_evidence(

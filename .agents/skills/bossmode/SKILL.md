@@ -154,10 +154,12 @@ singleton compatibility. The reviewer must check the worker's exact Git head
 SHA, and team evaluation must pass that same SHA through
 `evaluate --reviewed-head-sha`; the registry rejects a missing or mismatched
 head.
-Only one reviewer may be active for a worker. If a redundant reviewer was
-already admitted before that guard, it may finish only after the worker has a
-passing exact-head evaluation and the task is `succeeded`; failed, mismatched,
-or unevaluated cases are rejected and the succeeded task state is preserved.
+Admission atomically allows only one active reviewer for a worker, so a
+reviewer started after an earlier reviewer settles is a legitimate sequential
+retry. A redundant reviewer admitted concurrently before that guard may finish
+only after the worker has a passing exact-head evaluation and the task is
+`succeeded`; failed, mismatched, or unevaluated cases are rejected and the
+succeeded task state is preserved.
 
 Finalize a team deterministically: settle turns, finish all workers, release or
 reconcile all claims, finish each linked reviewer, record a passing exact-head
