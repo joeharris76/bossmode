@@ -77,7 +77,7 @@ def list_worktrees(common_dir: Path | str) -> list[dict[str, Any]]:
 
 def read_worktree_admin_id(worktree_gitdir: Path) -> str | None:
     """Return the administrative worktree id from a worktree's gitdir."""
-    # gitdir file lives inside the worktree (e.g. /path/to/wt/.git -> gitdir: /repo/.git/worktrees/<id>)
+    # gitdir inside worktree: /path/to/wt/.git -> gitdir: /repo/.git/worktrees/<id>
     # The admin id is the basename of that worktrees/<id> directory.
     try:
         gitdir_ref = (
@@ -107,10 +107,7 @@ def is_protected_branch(branch: str, *, configured: set[str] | None = None) -> b
     name = branch.removeprefix("refs/heads/").strip()
     if name in PROTECTED_BRANCHES:
         return True
-    if configured and name in configured:
-        return True
-    # bossmode.protected-branch config is queried live; this is scope
-    return False
+    return bool(configured and name in configured)  # live config scope
 
 
 def parse_rev_parse_short_head(head_output: str) -> str:
@@ -333,7 +330,7 @@ def provision_worktree(
 
 
 def _is_clean_worktree(path: Path | str) -> tuple[bool, str]:
-    """Return (is_clean, evidence). Clean means no dirty/untracked according to `git status --porcelain` inside worktree."""
+    """Return (is_clean, evidence) via `git status --porcelain`."""
     res = _run_git(path, "status", "--porcelain", "--untracked-files=all")
     if res.returncode != 0:
         return False, f"git status failed: {res.stderr.strip() or res.stdout.strip()}"
@@ -378,7 +375,7 @@ def reconcile_writer_target(
     expected_common_dir: str | None = None,
     configured_protected: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Target-scoped live reconciliation; returns blocking reasons without mutating external state."""
+    """Target-scoped reconcile; no external mutation."""
     evidence: dict[str, Any] = {}
     blocked: list[str] = []
     # 1. clean state
@@ -452,7 +449,7 @@ def _fence_or_skip(registry: Any, resource_id: str, reason: str = "retire fence"
 # For now expose the contract: retire_writer":
 # 1) fence: ensure resource in retiring (via registry's fence transition if any, or via state check)
 # 2) remove worktree: `git worktree remove <path>` only if reconcile says clean/matched
-# 3) delete branch: `git branch -d <branch>` only after worktree gone and head still matches and accepted head reachable
+# 3) delete branch: `git branch -d` after worktree gone with reachability
 # 4) all steps idempotent: second run finds already removed worktree/branch and succeeds via existence check
 
 
@@ -466,13 +463,13 @@ def retire_writer(
 ) -> dict[str, Any]:
     """Idempotent retire: fence, remove clean matched worktree, then delete unchanged owned branch.
 
-    No `--force`, no `branch -D`, no broad `prune`. Each step verifies live receipt.
+    No forced remove, no forced branch delete, no broad prune. Each step verifies live receipt.
     Returns {retired: bool, evidence: dict}.
     """
     evidence: dict[str, Any] = {}
     full_ref = canonical_branch_ref(branch)
-    # 1. fence - try to move owned resources to retiring/retired via registry if ids known
-    #    For pure git_runtime idempotence, treat fence as best-effort: check worktree still fence-able via lock file
+    # 1. fence - try retiring via registry
+    #    For idempotence, best-effort via lock file
     # 2. live reconciliation gate
     recon = reconcile_writer_target(
         worktree_path=worktree_path,
@@ -513,11 +510,11 @@ def retire_writer(
         evidence["branch_delete"] = "already gone"
         evidence["retired"] = True
         return evidence
-    # Ensure accepted creation_head still reachable via branch tip or remote: check ancestry via merge-base or branch --contains
+    # Ensure creation_head reachable via merge-base or branch --contains
     # Minimal: ensure branch tip equals expected head or is descendant
     tip = branch_check.stdout.strip()
     expected = receipt.get("creation_head") or receipt.get("base_sha") or tip
-    # Accept if tip == expected or tip contains expected as ancestor (simplified: allow any reachable via rev-list)
+    # Accept if tip == expected or ancestor
     reach = _run_git(cwd, "merge-base", "--is-ancestor", expected, tip)
     if reach.returncode != 0:
         # Fallback: check branch --contains expected

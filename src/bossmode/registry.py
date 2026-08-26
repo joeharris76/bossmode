@@ -80,7 +80,7 @@ MIGRATION_V9_TO_V10_SQL = """
 CREATE TABLE IF NOT EXISTS owned_resources (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('herdr_worker', 'git_worktree', 'git_branch')),
-    canonical_key TEXT NOT NULL UNIQUE,
+    canonical_key TEXT NOT NULL,
     owner_task_id TEXT,
     owner_run_id TEXT,
     owner_thread_id TEXT,
@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS owned_resources (
 );
 CREATE INDEX IF NOT EXISTS idx_owned_resources_kind_state ON owned_resources(kind, state);
 CREATE INDEX IF NOT EXISTS idx_owned_resources_owner_task ON owned_resources(owner_task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_resources_canonical_active ON owned_resources(canonical_key) WHERE state NOT IN ('retired', 'orphaned');
 CREATE TABLE IF NOT EXISTS owned_resource_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     resource_id TEXT NOT NULL REFERENCES owned_resources(id) ON DELETE CASCADE,
@@ -397,7 +398,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_turn_per_run
 CREATE TABLE IF NOT EXISTS owned_resources (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('herdr_worker', 'git_worktree', 'git_branch')),
-    canonical_key TEXT NOT NULL UNIQUE,
+    canonical_key TEXT NOT NULL,
     owner_task_id TEXT,
     owner_run_id TEXT,
     owner_thread_id TEXT,
@@ -409,6 +410,7 @@ CREATE TABLE IF NOT EXISTS owned_resources (
 );
 CREATE INDEX IF NOT EXISTS idx_owned_resources_kind_state ON owned_resources(kind, state);
 CREATE INDEX IF NOT EXISTS idx_owned_resources_owner_task ON owned_resources(owner_task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_resources_canonical_active ON owned_resources(canonical_key) WHERE state NOT IN ('retired', 'orphaned');
 CREATE TABLE IF NOT EXISTS owned_resource_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     resource_id TEXT NOT NULL REFERENCES owned_resources(id) ON DELETE CASCADE,
@@ -3499,7 +3501,56 @@ class Registry:
             )
             if existing is not None:
                 if existing["state"] in ("retired", "orphaned"):
-                    raise RegistryError(f"resource already reserved with different owner: {ck}")
+                    # Lifecycle-aware reuse: previous terminal allows new reservation with bumped generation
+                    # Keep history by creating new row with incremented generation
+                    old_gen = int(existing.get("generation") or 1)
+                    # Check if there's still an active with same key (partial index would catch, but also check here)
+                    active = _row(
+                        connection.execute(
+                            "SELECT 1 FROM owned_resources WHERE canonical_key = ? AND state NOT IN ('retired','orphaned') LIMIT 1",
+                            (ck,),
+                        ).fetchone()
+                    )
+                    if active is not None:
+                        raise RegistryError(f"resource already reserved with different owner: {ck}")
+                    rid = _id("res")
+                    now = _now()
+                    receipt_json = _json(creation_receipt) if creation_receipt is not None else None
+                    connection.execute(
+                        """
+                        INSERT INTO owned_resources(
+                            id, kind, canonical_key, owner_task_id, owner_run_id, owner_thread_id,
+                            state, creation_receipt, generation, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?)
+                        """,
+                        (
+                            rid,
+                            k,
+                            ck,
+                            owner_task_id,
+                            owner_run_id,
+                            owner_thread_id,
+                            receipt_json,
+                            old_gen + 1,
+                            now,
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO owned_resource_events(
+                            resource_id, from_state, to_state, actor,
+                            reason, evidence, created_at)
+                        VALUES (?, NULL, 'reserved', ?, ?, ?, ?)
+                        """,
+                        (rid, actor, reason, receipt_json, now),
+                    )
+                    row = _row(
+                        connection.execute(
+                            "SELECT * FROM owned_resources WHERE id = ?", (rid,)
+                        ).fetchone()
+                    )
+                    return self._owned_resource_row(row)  # type: ignore[arg-type]
                 # Idempotent: same owner -> return existing
                 same_owner = (existing["owner_task_id"] or None) == (owner_task_id or None) and (
                     existing["owner_run_id"] or None
