@@ -1952,3 +1952,89 @@ def test_run_finish_cancelled_outcome_returns_task_to_ready(tmp_path):
     )
     assert run2["status"] == "running"
     assert registry.get_task(task["id"])["state"] == "running"
+
+
+def test_worktree_observation_feedback_and_promotions(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Landing Task", goal="Test", success_criteria="Pass")
+
+    # 1. Observation feedback proposes memory
+    fb1 = registry.add_feedback(
+        task["id"],
+        category="observation",
+        recurrence_key="worktree.artifact-landing",
+        content="Copy artifacts from ephemeral worktree before run completion",
+    )
+    assert fb1["category"] == "observation"
+
+    proposals = registry.propose_promotions()
+    assert len(proposals) == 1
+    assert proposals[0]["target_layer"] == "memory"
+    assert proposals[0]["recurrence_key"] == "worktree.artifact-landing"
+
+    # 2. Repeated correction feedback with passing eval proposes skill
+    run = registry.start_run(task["id"], agent_role="worker")
+    registry.finish_run(run["id"], outcome="succeeded", summary="Done")
+    registry.add_evaluation(
+        task["id"],
+        run_id=run["id"],
+        evaluator="reviewer",
+        passed=True,
+        evidence="Artifacts verified in checkout",
+    )
+    registry.add_feedback(
+        task["id"],
+        category="correction",
+        recurrence_key="worktree.artifact-landing",
+        content="Always stage artifacts into project checkout",
+    )
+    registry.add_feedback(
+        task["id"],
+        category="correction",
+        recurrence_key="worktree.artifact-landing",
+        content="Ensure artifacts land before evaluation gate",
+    )
+
+    proposals = registry.propose_promotions()
+    skill_promo = next(p for p in proposals if p["recurrence_key"] == "worktree.artifact-landing")
+    assert skill_promo["target_layer"] == "skill"
+    assert "Repeated correction appeared 2 times" in skill_promo["rationale"]
+
+
+def test_finish_run_validates_artifact_structure(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Artifact Task", goal="Test", success_criteria="Pass")
+    run = registry.start_run(task["id"], agent_role="worker")
+
+    # Invalid artifact shapes
+    with pytest.raises(RegistryError, match="run artifacts must contain non-empty path and kind"):
+        registry.finish_run(
+            run["id"], outcome="succeeded", summary="Done", artifacts=["not-a-dict"]
+        )
+
+    with pytest.raises(RegistryError, match="run artifacts must contain non-empty path and kind"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": "", "kind": "code"}],
+        )
+
+    with pytest.raises(RegistryError, match="run artifacts must contain non-empty path and kind"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": "file.py"}],
+        )
+
+    # Valid artifact shape
+    finished = registry.finish_run(
+        run["id"],
+        outcome="succeeded",
+        summary="Done",
+        artifacts=[{"path": "specs/openapi.json", "kind": "schema", "sha256": "abc123"}],
+    )
+    assert finished["artifacts"] == [
+        {"path": "specs/openapi.json", "kind": "schema", "sha256": "abc123"}
+    ]

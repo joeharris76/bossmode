@@ -138,13 +138,17 @@ Before the first external run, follow this command sequence and result contract.
    task to `evaluating`), `failed` (moves task to `failed`), `blocked` (moves task to `blocked`),
    `waiting_user` (moves task to `waiting_user`), and `cancelled` (returns task directly to `ready`
    for clean re-dispatch without recording a failure).
-2. A successful run is not a passing evaluation; it moves the task to `evaluating`.
-3. Require an independent evaluation (`reviewer` role or user); self-evaluation is rejected.
-4. Record the evaluation with `bossmode evaluate TASK_ID --run-id RUN_ID --evaluator REVIEWER --passed/--failed --evidence EVIDENCE`;
+2. For workers operating in isolated or ephemeral worktrees (e.g. `.claude/worktrees/...`), copy
+   or land declared artifacts into the durable repository checkout before run completion or evaluation
+   so recorded artifact paths remain durable after worktree cleanup.
+3. A successful run is not a passing evaluation; it moves the task to `evaluating`.
+4. Require an independent evaluation (`reviewer` role or user); self-evaluation is rejected. Verify
+   that declared artifacts exist at their recorded repository paths before passing.
+5. Record the evaluation with `bossmode evaluate TASK_ID --run-id RUN_ID --evaluator REVIEWER --passed/--failed --evidence EVIDENCE`;
    only a passing evaluation moves the task to `succeeded`.
-5. Record explicit user corrections or preferences with
-   `bossmode feedback TASK_ID --category CATEGORY --key KEY --content CONTENT`.
-   Choose a stable, narrowly scoped recurrence key.
+6. Record explicit user corrections, preferences, or process observations with
+   `bossmode feedback TASK_ID --category CATEGORY --key KEY --content CONTENT` (categories: `preference`,
+   `correction`, `failure`, `observation`). Choose a stable, narrowly scoped recurrence key.
 
 ## 6. Gated Promotion
 

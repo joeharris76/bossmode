@@ -1791,6 +1791,18 @@ class Registry:
     ) -> dict[str, Any]:
         if outcome not in TERMINAL_RUN_OUTCOMES:
             raise RegistryError(f"invalid run outcome: {outcome}")
+        if artifacts is not None and (
+            not isinstance(artifacts, list)
+            or any(
+                not isinstance(artifact, dict)
+                or not isinstance(artifact.get("path"), str)
+                or not artifact["path"].strip()
+                or not isinstance(artifact.get("kind"), str)
+                or not artifact["kind"].strip()
+                for artifact in artifacts
+            )
+        ):
+            raise RegistryError("run artifacts must contain non-empty path and kind strings")
         with self._transaction() as connection:
             run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:

@@ -946,3 +946,46 @@ def test_cli_errors_write_only_to_stderr_and_exit_two(tmp_path, capsys):
             ]
         )
     assert exc_info.value.code == 2
+
+
+def test_cli_feedback_with_observation_category(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Feedback Task",
+                "--goal",
+                "Test",
+                "--success-criteria",
+                "Pass",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "feedback",
+                task["id"],
+                "--category",
+                "observation",
+                "--key",
+                "worktree.artifact-landing",
+                "--content",
+                "Copy artifacts from isolated worktree before completing run",
+            ]
+        )
+        == 0
+    )
+    fb = json.loads(capsys.readouterr().out)
+    assert fb["category"] == "observation"
+    assert fb["recurrence_key"] == "worktree.artifact-landing"

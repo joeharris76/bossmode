@@ -234,6 +234,25 @@ transition the task back to `ready`, start a new run, and bind the same live wor
 session. Finished-run bindings become `stale`, so they retain history without reserving the live
 worker name. Do not replace a worker merely because its pane moved or the server restarted.
 
+## Artifact durability and worktree landing
+
+When subagents or external workers operate in isolated, branched, or ephemeral worktrees (such as
+Claude Code `.claude/worktrees/...` or temporary workspaces created by agent workflows):
+
+1. **Ephemeral Workspace Risk**: Ephemeral worktrees are subject to automatic cleanup upon worker
+   settlement or command completion. If a worker leaves its generated files only inside an ephemeral
+   worktree directory without committing or landing them into the project repository, those files will
+   be destroyed when the worktree is cleaned up.
+2. **Landing Before Run Completion**: Before completing a run (`bossmode run finish`), copy, cherry-pick,
+   or merge the produced artifact files from the ephemeral worktree into their permanent paths in the
+   primary repository checkout.
+3. **Durable Artifact Manifest**: The `--artifacts-json` manifest recorded in `bossmode run finish`
+   must use durable repository-relative paths (e.g. `specs/openapi.json`), not transient paths inside
+   ephemeral worktree folders (e.g. `.claude/worktrees/wf_...`).
+4. **Pre-Evaluation Integrity Check**: Independent evaluation must verify that declared artifacts
+   actually exist and are intact at their recorded destination paths before recording
+   `bossmode evaluate TASK_ID --passed`.
+
 ## Recover after interruption
 
 Run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain

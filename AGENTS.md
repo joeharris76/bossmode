@@ -19,6 +19,7 @@
 - Never adopt, prompt, replace, or close a Herdr worker from a stored name or pane ID alone.
 - Never approve an agent trust or permission dialog without explicit user authorization.
 - Require external evidence or an independent reviewer before recording a passing evaluation.
+- Ensure artifacts produced in isolated or ephemeral worktrees are durable (persisted or landed in the repository checkout) and verified before recording a passing evaluation.
 - Report `waiting_user` work, protected approvals, and genuine blockers separately.
 
 ## Naming policy
