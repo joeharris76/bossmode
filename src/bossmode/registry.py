@@ -75,6 +75,36 @@ MIGRATION_V8_TO_V9_ID = "20260826_01_reasoning_effort_source"
 MIGRATION_V8_TO_V9_SQL = """
 ALTER TABLE runs ADD COLUMN reasoning_effort_source TEXT;
 """
+MIGRATION_V9_TO_V10_ID = "20260827_01_owned_resources"
+MIGRATION_V9_TO_V10_SQL = """
+CREATE TABLE IF NOT EXISTS owned_resources (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('herdr_worker', 'git_worktree', 'git_branch')),
+    canonical_key TEXT NOT NULL UNIQUE,
+    owner_task_id TEXT,
+    owner_run_id TEXT,
+    owner_thread_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'live', 'retiring', 'retired', 'orphaned')),
+    creation_receipt TEXT,
+    generation INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_owned_resources_kind_state ON owned_resources(kind, state);
+CREATE INDEX IF NOT EXISTS idx_owned_resources_owner_task ON owned_resources(owner_task_id);
+CREATE TABLE IF NOT EXISTS owned_resource_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_id TEXT NOT NULL REFERENCES owned_resources(id) ON DELETE CASCADE,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT,
+    evidence TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_owned_resource_events_resource
+    ON owned_resource_events(resource_id, id);
+"""
 REGISTRY_IDENTITY_TABLE_SQL = """
 CREATE TABLE registry_identity (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -117,6 +147,8 @@ MIGRATION_V7_TO_V8_SQL = "\n".join(
         REGISTRY_IDENTITY_INSERT_CONTRACT,
     )
 )
+
+MIGRATION_V9_TO_V10_RESOURCE_TABLE_SQL = MIGRATION_V9_TO_V10_SQL
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "blocked", "archived"},
@@ -308,6 +340,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_turn_per_run
     ON run_turns(run_id)
     WHERE status = 'running';
 
+CREATE TABLE IF NOT EXISTS owned_resources (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('herdr_worker', 'git_worktree', 'git_branch')),
+    canonical_key TEXT NOT NULL UNIQUE,
+    owner_task_id TEXT,
+    owner_run_id TEXT,
+    owner_thread_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'live', 'retiring', 'retired', 'orphaned')),
+    creation_receipt TEXT,
+    generation INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_owned_resources_kind_state ON owned_resources(kind, state);
+CREATE INDEX IF NOT EXISTS idx_owned_resources_owner_task ON owned_resources(owner_task_id);
+CREATE TABLE IF NOT EXISTS owned_resource_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_id TEXT NOT NULL REFERENCES owned_resources(id) ON DELETE CASCADE,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT,
+    evidence TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_owned_resource_events_resource
+    ON owned_resource_events(resource_id, id);
 CREATE TABLE IF NOT EXISTS maintenance_runs (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL,
@@ -1007,6 +1066,7 @@ class Registry:
             9,
             MIGRATION_V8_TO_V9_SQL,
         )
+
         return {
             1: MigrationStep(None, 1, 2, None, self._migrate_v1_to_v2),
             2: MigrationStep(None, 2, 3, None, self._migrate_v2_to_v3),
@@ -1423,6 +1483,16 @@ class Registry:
                         )
                     self._validate_migration_path(current)
                     if current == SCHEMA_VERSION:
+                        # Soft-create owned-resource tables for DBs created before 1A.
+                        # These are idempotent IF NOT EXISTS and do not require a ledger migration
+                        # because they contain no prior data.
+                        for stmt in MIGRATION_V9_TO_V10_SQL.split(";"):
+                            if stmt.strip():
+                                try:
+                                    connection.execute(stmt)
+                                except sqlite3.OperationalError as exc:
+                                    if "already exists" not in str(exc):
+                                        raise
                         self._validate_migration_ledger(connection, current)
                         self._validate_registry_identity(connection)
                         self._assert_live_repository_authority()
@@ -1704,6 +1774,13 @@ class Registry:
     def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
         """Add reasoning_effort_source to runs table."""
         for statement in MIGRATION_V8_TO_V9_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+
+    @staticmethod
+    def _migrate_v9_to_v10(connection: sqlite3.Connection) -> None:
+        """Add owned-resource ledger with audit events."""
+        for statement in MIGRATION_V9_TO_V10_SQL.split(";"):
             if statement.strip():
                 connection.execute(statement)
 
@@ -3274,3 +3351,311 @@ class Registry:
             raise RegistryError(f"promotion not found: {promotion_id}")
         promotion["evidence"] = json.loads(promotion.pop("evidence_json"))
         return promotion
+
+    # ── Owned resources ─────────────────────────────────────────────
+
+    def _owned_resource_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        d = dict(row) if not isinstance(row, dict) else dict(row)
+        if d.get("creation_receipt") is not None and isinstance(d["creation_receipt"], str):
+            with suppress(Exception):
+                d["creation_receipt"] = json.loads(d["creation_receipt"])
+        return d
+
+    def list_owned_resources(
+        self,
+        kind: str | None = None,
+        state: str | None = None,
+        owner_task_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._read_transaction() as connection:
+            query = "SELECT * FROM owned_resources WHERE 1=1"
+            params: list[Any] = []
+            if kind is not None:
+                query += " AND kind = ?"
+                params.append(kind)
+            if state is not None:
+                query += " AND state = ?"
+                params.append(state)
+            if owner_task_id is not None:
+                query += " AND owner_task_id = ?"
+                params.append(owner_task_id)
+            query += " ORDER BY created_at"
+            rows = connection.execute(query, params).fetchall()
+        return [self._owned_resource_row(r) for r in rows]
+
+    def get_owned_resource(self, resource_id: str) -> dict[str, Any]:
+        with self._read_transaction() as connection:
+            row = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+        if row is None:
+            raise RegistryError(f"owned resource not found: {resource_id}")
+        resource = self._owned_resource_row(row)
+        with self._read_transaction() as connection:
+            events = connection.execute(
+                "SELECT * FROM owned_resource_events WHERE resource_id = ? ORDER BY id",
+                (resource_id,),
+            ).fetchall()
+        resource["events"] = [dict(e) for e in events]
+        return resource
+
+    def reserve_owned_resource(
+        self,
+        *,
+        kind: str,
+        canonical_key: str,
+        owner_task_id: str | None = None,
+        owner_run_id: str | None = None,
+        owner_thread_id: str | None = None,
+        creation_receipt: dict[str, Any] | None = None,
+        actor: str = "worker",
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        from bossmode.resources import (
+            ResourceError,
+            validate_canonical_key,
+            validate_creation_receipt,
+            validate_resource_kind,
+        )
+
+        try:
+            k = validate_resource_kind(kind)
+            ck = validate_canonical_key(canonical_key)
+            validate_creation_receipt(k, creation_receipt)
+        except ResourceError as error:
+            raise RegistryError(str(error)) from error
+        with self._transaction() as connection:
+            existing = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE canonical_key = ?", (ck,)
+                ).fetchone()
+            )
+            if existing is not None:
+                if existing["state"] in ("retired", "orphaned"):
+                    raise RegistryError(f"resource already reserved with different owner: {ck}")
+                # Idempotent: same owner -> return existing
+                same_owner = (existing["owner_task_id"] or None) == (owner_task_id or None) and (
+                    existing["owner_run_id"] or None
+                ) == (owner_run_id or None)
+                if same_owner:
+                    return self._owned_resource_row(existing)
+                raise RegistryError(f"resource already reserved with different owner: {ck}")
+            rid = _id("res")
+            now = _now()
+            receipt_json = _json(creation_receipt) if creation_receipt is not None else None
+            connection.execute(
+                """
+                INSERT INTO owned_resources(
+                    id, kind, canonical_key, owner_task_id, owner_run_id, owner_thread_id,
+                    state, creation_receipt, generation, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, 1, ?, ?)
+                """,
+                (rid, k, ck, owner_task_id, owner_run_id, owner_thread_id, receipt_json, now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO owned_resource_events(
+                    resource_id, from_state, to_state, actor,
+                    reason, evidence, created_at)
+                VALUES (?, NULL, 'reserved', ?, ?, ?, ?)
+                """,
+                (rid, actor, reason, receipt_json, now),
+            )
+            row = _row(
+                connection.execute("SELECT * FROM owned_resources WHERE id = ?", (rid,)).fetchone()
+            )
+        return self._owned_resource_row(row)  # type: ignore[arg-type]
+
+    def bind_owned_resource_live(
+        self,
+        resource_id: str,
+        *,
+        creation_receipt: dict[str, Any],
+        actor: str = "worker",
+        reason: str | None = None,
+        expected_canonical_key: str | None = None,
+    ) -> dict[str, Any]:
+        from bossmode.resources import ResourceError, validate_creation_receipt
+
+        if not isinstance(creation_receipt, dict):
+            raise RegistryError("creation receipt must be a JSON object")
+        with self._transaction() as connection:
+            row = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+            if row is None:
+                raise RegistryError(f"owned resource not found: {resource_id}")
+            try:
+                validate_creation_receipt(row["kind"], creation_receipt)
+            except ResourceError as error:
+                raise RegistryError(str(error)) from error
+            if (
+                expected_canonical_key is not None
+                and row["canonical_key"] != expected_canonical_key
+            ):
+                raise RegistryError(f"canonical key mismatch for {resource_id}")
+            if row["state"] == "live":
+                # Idempotent if receipt matches
+                existing_receipt = (
+                    json.loads(row["creation_receipt"]) if row["creation_receipt"] else None
+                )
+                if existing_receipt == creation_receipt:
+                    return self._owned_resource_row(row)
+                raise RegistryError(f"resource already live with different receipt: {resource_id}")
+            if row["state"] != "reserved":
+                raise RegistryError(
+                    f"resource {resource_id} is not reserved (state={row['state']})"
+                )
+            now = _now()
+            connection.execute(
+                "UPDATE owned_resources SET state='live', "
+                "creation_receipt=?, generation=generation+1, "
+                "updated_at=? WHERE id=?",
+                (_json(creation_receipt), now, resource_id),
+            )
+            connection.execute(
+                "INSERT INTO owned_resource_events(resource_id, from_state, "
+                "to_state, actor, reason, evidence, created_at) "
+                "VALUES (?, ?, 'live', ?, ?, ?, ?)",
+                (resource_id, row["state"], actor, reason, _json(creation_receipt), now),
+            )
+            updated = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+        return self._owned_resource_row(updated)  # type: ignore[arg-type]
+
+    def begin_retirement(
+        self, resource_id: str, *, actor: str = "worker", reason: str | None = None
+    ) -> dict[str, Any]:
+        with self._transaction() as connection:
+            row = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+            if row is None:
+                raise RegistryError(f"owned resource not found: {resource_id}")
+            if row["state"] == "retiring":
+                return self._owned_resource_row(row)
+            if row["state"] not in ("reserved", "live"):
+                raise RegistryError(
+                    f"resource {resource_id} cannot begin retirement from {row['state']}"
+                )
+            now = _now()
+            connection.execute(
+                "UPDATE owned_resources SET state='retiring', updated_at=? WHERE id=?",
+                (now, resource_id),
+            )
+            connection.execute(
+                "INSERT INTO owned_resource_events(resource_id, "
+                "from_state, to_state, actor, reason, created_at) "
+                "VALUES (?, ?, 'retiring', ?, ?, ?)",
+                (resource_id, row["state"], actor, reason, now),
+            )
+            updated = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+        return self._owned_resource_row(updated)  # type: ignore[arg-type]
+
+    def retire_owned_resource(
+        self,
+        resource_id: str,
+        *,
+        actor: str = "worker",
+        reason: str | None = None,
+        evidence: str | None = None,
+    ) -> dict[str, Any]:
+        with self._transaction() as connection:
+            row = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+            if row is None:
+                raise RegistryError(f"owned resource not found: {resource_id}")
+            if row["state"] == "retired":
+                return self._owned_resource_row(row)
+            if row["state"] != "retiring":
+                raise RegistryError(
+                    f"resource {resource_id} is not retiring (state={row['state']})"
+                )
+            now = _now()
+            connection.execute(
+                "UPDATE owned_resources SET state='retired', updated_at=? WHERE id=?",
+                (now, resource_id),
+            )
+            connection.execute(
+                "INSERT INTO owned_resource_events(resource_id, from_state, "
+                "to_state, actor, reason, evidence, created_at) "
+                "VALUES (?, ?, 'retired', ?, ?, ?, ?)",
+                (resource_id, row["state"], actor, reason, evidence, now),
+            )
+            updated = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+        return self._owned_resource_row(updated)  # type: ignore[arg-type]
+
+    def orphan_owned_resource(
+        self,
+        resource_id: str,
+        *,
+        actor: str = "worker",
+        reason: str | None = None,
+        evidence: str | None = None,
+    ) -> dict[str, Any]:
+        with self._transaction() as connection:
+            row = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+            if row is None:
+                raise RegistryError(f"owned resource not found: {resource_id}")
+            if row["state"] == "orphaned":
+                return self._owned_resource_row(row)
+            if row["state"] in ("retired",):
+                raise RegistryError(
+                    f"terminal resource cannot be orphaned: {resource_id} ({row['state']})"
+                )
+            now = _now()
+            connection.execute(
+                "UPDATE owned_resources SET state='orphaned', updated_at=? WHERE id=?",
+                (now, resource_id),
+            )
+            connection.execute(
+                "INSERT INTO owned_resource_events(resource_id, from_state, "
+                "to_state, actor, reason, evidence, created_at) "
+                "VALUES (?, ?, 'orphaned', ?, ?, ?, ?)",
+                (resource_id, row["state"], actor, reason, evidence, now),
+            )
+            updated = _row(
+                connection.execute(
+                    "SELECT * FROM owned_resources WHERE id = ?", (resource_id,)
+                ).fetchone()
+            )
+        return self._owned_resource_row(updated)  # type: ignore[arg-type]
+
+    def reconcile_owned_resources(self) -> list[dict[str, Any]]:
+        """Read-only reconciliation: report observations without mutating state."""
+        rows = self.list_owned_resources()
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            # No live probing in this PR; report current state as observation.
+            if r["state"] in ("retired", "orphaned"):
+                observation = "already_gone"
+            elif r["state"] == "live" or r["state"] == "retiring":
+                observation = "healthy"
+            else:
+                observation = "healthy"
+            result.append({"resource": self._owned_resource_row(r), "observation": observation})
+        return result

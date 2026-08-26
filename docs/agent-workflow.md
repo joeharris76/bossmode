@@ -307,6 +307,29 @@ checkout is the bounded central artifact root.
    `central-copy` files in `.bossmode/artifacts/` — and are intact before recording
    `bossmode evaluate TASK_ID --passed`.
 
+## Owned resources and reconciliation
+
+The registry records every Bossmode-created resource before external creation, binds
+the returned immutable identity afterward, and audits every lifecycle transition.
+Supported kinds are `herdr_worker`, `git_worktree`, and `git_branch` with
+canonical keys (`herdr_worker:session/worker`, `git_worktree:/abs/path`,
+`git_branch:refs/heads/name`) derived without following symlinks. A
+`creation_receipt` captures the live identity (for Herdr, `herdr_session`,
+`worker_name`, `agent_kind`, and the full `session_*` tuple when observed;
+for Git, `path`/`branch`/`head_sha`/`common_dir` or `branch`/`head_sha`)
+and a monotonically increased `generation` disambiguates reused names.
+Lifecycle states are `reserved` → `live` → `retiring` → `retired`, plus
+`orphaned` for foreign, missing, ambiguous, or already-gone observations;
+`retired` and `orphaned` are terminal. Every transition is idempotent and audited
+(`owned_resource_events`); duplicate reservation with the same owner returns the
+existing row, while a different owner, a changed canonical key, or a
+reused terminal key fails closed. Reconciliation (`reconcile_owned_resources`)
+is read-only and reports `missing`/`changed`/`ambiguous`/`foreign`/`already_gone`/`healthy`
+without mutating external state. Deletion is not authorized by a stored display
+name, pane ID, tab ID, path, or branch name alone — it requires a live receipt
+match — and externally attached resources remain observed, never silently adopted
+as owned.
+
 ## Recover after interruption
 
 From the primary checkout, run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain
