@@ -148,6 +148,35 @@ MIGRATION_V7_TO_V8_SQL = "\n".join(
     )
 )
 
+TEAM_STATES = {"planned", "active", "archived"}
+TEAM_OUTCOMES = {"succeeded", "failed", "cancelled"}
+MIGRATION_V9_TO_V10_TEAM_SQL = """
+CREATE TABLE IF NOT EXISTS teams (
+    id TEXT PRIMARY KEY,
+    root_task_id TEXT NOT NULL REFERENCES tasks(id),
+    parent_team_id TEXT REFERENCES teams(id),
+    name TEXT NOT NULL,
+    team_status TEXT NOT NULL CHECK (team_status IN ('planned', 'active', 'archived')),
+    team_outcome TEXT CHECK (team_outcome IN ('succeeded', 'failed', 'cancelled')),
+    agent_kind TEXT NOT NULL,
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (root_task_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_teams_root ON teams(root_task_id);
+CREATE INDEX IF NOT EXISTS idx_teams_parent ON teams(parent_team_id);
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    member_role TEXT NOT NULL CHECK (member_role IN ('manager', 'member')),
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_task ON team_members(task_id);
+ALTER TABLE tasks ADD COLUMN team_id TEXT REFERENCES teams(id);
+ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id);
+"""
 MIGRATION_V9_TO_V10_RESOURCE_TABLE_SQL = MIGRATION_V9_TO_V10_SQL
 
 ALLOWED_TRANSITIONS = {
@@ -202,6 +231,29 @@ CREATE TABLE IF NOT EXISTS registry_identity (
     creation_metadata_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS teams (
+    id TEXT PRIMARY KEY,
+    root_task_id TEXT NOT NULL REFERENCES tasks(id),
+    parent_team_id TEXT REFERENCES teams(id),
+    name TEXT NOT NULL,
+    team_status TEXT NOT NULL CHECK (team_status IN ('planned', 'active', 'archived')),
+    team_outcome TEXT CHECK (team_outcome IN ('succeeded', 'failed', 'cancelled')),
+    agent_kind TEXT NOT NULL,
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (root_task_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_teams_root ON teams(root_task_id);
+CREATE INDEX IF NOT EXISTS idx_teams_parent ON teams(parent_team_id);
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    member_role TEXT NOT NULL CHECK (member_role IN ('manager', 'member')),
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_task ON team_members(task_id);
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -214,6 +266,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority INTEGER NOT NULL DEFAULT 0,
     owner_thread_id TEXT,
     permissions_json TEXT NOT NULL DEFAULT '{}',
+    team_id TEXT REFERENCES teams(id),
+    parent_task_id TEXT REFERENCES tasks(id),
     next_action TEXT,
     blocked_on TEXT,
     created_at TEXT NOT NULL,
@@ -1492,6 +1546,17 @@ class Registry:
                                     connection.execute(stmt)
                                 except sqlite3.OperationalError as exc:
                                     if "already exists" not in str(exc):
+                                        raise
+                        # Hierarchy tables without bumping version: soft-create if missing
+                        for stmt in MIGRATION_V9_TO_V10_TEAM_SQL.split(";"):
+                            if stmt.strip():
+                                try:
+                                    connection.execute(stmt)
+                                except sqlite3.OperationalError as exc:
+                                    if (
+                                        "already exists" not in str(exc)
+                                        and "duplicate column" not in str(exc).lower()
+                                    ):
                                         raise
                         self._validate_migration_ledger(connection, current)
                         self._validate_registry_identity(connection)
@@ -3659,3 +3724,243 @@ class Registry:
                 observation = "healthy"
             result.append({"resource": self._owned_resource_row(r), "observation": observation})
         return result
+
+    # ── Teams (pure hierarchy, no runtime side effects) ────────────────
+
+    TEAM_STATUSES = {"planned", "active", "archived"}  # mirrors spec status
+    TEAM_OUTCOMES = {"succeeded", "failed", "cancelled"}  # mirrors spec outcome
+
+    def create_team(
+        self,
+        root_task_id: str,
+        *,
+        name: str,
+        agent_kind: str,
+        scope: dict[str, Any] | None = None,
+        parent_team_id: str | None = None,
+        team_status: str = "planned",  # noqa: A002
+        actor: str = "user",
+    ) -> dict[str, Any]:
+        if not name or not name.strip():
+            raise RegistryError("team name is required")
+        if team_status not in self.TEAM_STATUSES:  # noqa: SLF001
+            raise RegistryError(f"invalid team status: {team_status}")
+        if not agent_kind or not agent_kind.strip():
+            raise RegistryError("team agent_kind is required")
+        # agent_kind qualified token per naming policy
+        if agent_kind.strip() not in {"pi", "codex", "claude", "agy", "grok", "muse", "native"}:
+            raise RegistryError(f"unsupported team agent_kind: {agent_kind}")
+        # Prevent additive alias: no team_kind alias accepted (single spelling is agent_kind)
+        normalized_name = name.strip()
+        team_id = _id("team")
+        now = _now()
+        with self._transaction() as connection:
+            root = _row(
+                connection.execute(
+                    "SELECT id, team_id, parent_task_id FROM tasks WHERE id = ?", (root_task_id,)
+                ).fetchone()
+            )
+            if root is None:
+                raise RegistryError(f"root task not found: {root_task_id}")
+            # root must be parentless (no parent_task_id) and not already in a team
+            if root["parent_task_id"] is not None:
+                raise RegistryError("team root must be a root task")
+            if root["team_id"] is not None:
+                raise RegistryError("team root already belongs to a team")
+            if parent_team_id is not None:
+                parent = _row(
+                    connection.execute(
+                        "SELECT id, team_status FROM teams WHERE id = ?", (parent_team_id,)
+                    ).fetchone()
+                )
+                if parent is None:
+                    raise RegistryError(f"parent team not found: {parent_team_id}")
+                if parent["team_status"] == "archived":
+                    raise RegistryError("parent team is archived")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO teams(id, root_task_id, parent_team_id, name, team_status,
+                    agent_kind, scope_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        team_id,
+                        root_task_id,
+                        parent_team_id,
+                        normalized_name,
+                        team_status,
+                        agent_kind.strip(),
+                        _json(scope or {}),
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "UNIQUE" in str(exc):
+                    raise RegistryError(
+                        f"team name already exists under root: {normalized_name}"
+                    ) from exc
+                raise
+            # Bind root task to team
+            connection.execute(
+                "UPDATE tasks SET team_id = ?, updated_at = ? WHERE id = ?",
+                (team_id, now, root_task_id),
+            )
+            self._record_event(
+                connection,
+                task_id=root_task_id,
+                event_type="team_created",
+                actor=actor,
+                to_state=None,
+                reason=f"team {team_id} created",
+            )
+        return self.get_team(team_id)
+
+    def get_team(self, team_id: str) -> dict[str, Any]:
+        with self._read_transaction() as connection:
+            team = _row(
+                connection.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+            )
+            if team is None:
+                raise RegistryError(f"team not found: {team_id}")
+            team["scope"] = json.loads(team.pop("scope_json"))
+            team["members"] = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT team_id, task_id, member_role, added_at FROM team_members "
+                    "WHERE team_id = ? ORDER BY added_at",
+                    (team_id,),
+                )
+            ]
+            team["child_team_ids"] = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM teams WHERE parent_team_id = ? ORDER BY created_at", (team_id,)
+                )
+            ]
+            team["task_ids"] = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM tasks WHERE team_id = ? ORDER BY created_at", (team_id,)
+                )
+            ]
+            return team
+
+    def list_teams(self, root_task_id: str | None = None) -> list[dict[str, Any]]:
+        with self._read_transaction() as connection:
+            if root_task_id is not None:
+                rows = connection.execute(
+                    "SELECT * FROM teams WHERE root_task_id = ? ORDER BY created_at",
+                    (root_task_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM teams ORDER BY created_at").fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                d["scope"] = json.loads(d.pop("scope_json"))
+                result.append(d)
+            return result
+
+    def attach_task_to_team(
+        self, task_id: str, team_id: str, *, member_role: str = "member", actor: str = "user"
+    ) -> dict[str, Any]:
+        if member_role not in {"member", "manager"}:
+            raise RegistryError(f"invalid member_role: {member_role}")
+        with self._transaction() as connection:
+            team = _row(
+                connection.execute(
+                    "SELECT id, team_status FROM teams WHERE id = ?", (team_id,)
+                ).fetchone()
+            )
+            if team is None:
+                raise RegistryError(f"team not found: {team_id}")
+            if team["team_status"] == "archived":
+                raise RegistryError("team is archived")
+            task = _row(
+                connection.execute(
+                    "SELECT id, team_id, parent_task_id FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+            )
+            if task is None:
+                raise RegistryError(f"task not found: {task_id}")
+            if task["team_id"] is not None and task["team_id"] != team_id:
+                raise RegistryError("task already belongs to a different team")
+            if task["team_id"] == team_id:
+                # idempotent: ensure membership row exists
+                existing = _row(
+                    connection.execute(
+                        "SELECT 1 FROM team_members WHERE team_id = ? AND task_id = ?",
+                        (team_id, task_id),
+                    ).fetchone()
+                )
+                if existing is not None:
+                    return self.get_team(team_id)
+            # Cardinality: exactly one manager per team
+            if member_role == "manager":
+                existing_mgr = _row(
+                    connection.execute(
+                        "SELECT task_id FROM team_members WHERE team_id = ? "
+                        "AND member_role = 'manager'",
+                        (team_id,),
+                    ).fetchone()
+                )
+                if existing_mgr is not None and existing_mgr["task_id"] != task_id:
+                    raise RegistryError("team already has a manager")
+            now = _now()
+            connection.execute(
+                "UPDATE tasks SET team_id = ?, updated_at = ? WHERE id = ?", (team_id, now, task_id)
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO team_members(team_id, task_id, member_role, added_at) "
+                "VALUES (?, ?, ?, ?)",
+                (team_id, task_id, member_role, now),
+            )
+            self._record_event(
+                connection,
+                task_id=task_id,
+                event_type="team_attached",
+                actor=actor,
+                to_state=None,
+                reason=f"attached to team {team_id} as {member_role}",
+            )
+        return self.get_team(team_id)
+
+    def transition_team(
+        self,
+        team_id: str,
+        *,
+        team_status: str | None = None,
+        team_outcome: str | None = None,
+        actor: str = "user",
+    ) -> dict[str, Any]:
+        if team_status is not None and team_status not in self.TEAM_STATUSES:  # noqa: SLF001
+            raise RegistryError(f"invalid team status: {team_status}")
+        if team_outcome is not None and team_outcome not in self.TEAM_OUTCOMES:  # noqa: SLF001
+            raise RegistryError(f"invalid team outcome: {team_outcome}")
+        with self._transaction() as connection:
+            team = _row(
+                connection.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+            )
+            if team is None:
+                raise RegistryError(f"team not found: {team_id}")
+            cur_status = team["team_status"]
+            cur_outcome = team["team_outcome"]
+            # Status lifecycle: planned -> active -> archived; outcome only on archived
+            allowed = {"planned": {"active", "archived"}, "active": {"archived"}, "archived": set()}
+            if team_status is not None and team_status != cur_status:
+                if team_status not in allowed[cur_status]:
+                    raise RegistryError(f"invalid team transition: {cur_status} -> {team_status}")
+                if team_status == "archived" and cur_outcome is None and team_outcome is None:
+                    raise RegistryError("archived team requires an outcome")
+            if team_outcome is not None and cur_status != "archived" and team_status != "archived":
+                raise RegistryError("outcome may only be set on archived team")
+            new_status = team_status if team_status is not None else cur_status
+            new_outcome = team_outcome if team_outcome is not None else cur_outcome
+            now = _now()
+            connection.execute(
+                "UPDATE teams SET team_status = ?, team_outcome = ?, updated_at = ? WHERE id = ?",
+                (new_status, new_outcome, now, team_id),
+            )
+        return self.get_team(team_id)

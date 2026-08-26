@@ -330,6 +330,10 @@ name, pane ID, tab ID, path, or branch name alone — it requires a live receipt
 match — and externally attached resources remain observed, never silently adopted
 as owned.
 
+## Teams (durable hierarchy)
+
+ADR 0004 defines pure hierarchy: `teams` and `team_members` with `team_status`/`team_outcome` and `agent_kind`, without Herdr tab, writer, claim, evaluator, or reporting runtime. Use `bossmode team {create,show,list,attach-task,transition}`. One canonical spelling; `team_kind` is not accepted; `status`/`outcome` are qualified as `team_status`/`team_outcome`.
+
 ## Recover after interruption
 
 From the primary checkout, run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain

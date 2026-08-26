@@ -340,6 +340,48 @@ def _parser() -> argparse.ArgumentParser:
     )
     sched_status.add_argument("--log-path", help="Path for output log file")
 
+    team = subparsers.add_parser("team", help="Manage durable team hierarchy")
+    team_commands = team.add_subparsers(dest="team_command", required=True)
+    team_create = team_commands.add_parser("create", help="Create a team anchored to a root task")
+    team_create.add_argument("root_task_id", help="Root task that anchors the team")
+    team_create.add_argument("--name", required=True, help="Team name unique under the root task")
+    team_create.add_argument(
+        "--agent-kind", required=True, help="Qualified agent kind for the team (e.g. pi, native)"
+    )
+    team_create.add_argument("--parent-team-id", help="Parent team for nested hierarchy")
+    team_create.add_argument(
+        "--team-status",
+        choices=sorted({"planned", "active", "archived"}),
+        default="planned",
+        help="Team status (default: planned)",
+    )
+    team_create.add_argument(
+        "--scope-json", default="{}", help="JSON scope for the team (default: {})"
+    )
+    team_show = team_commands.add_parser("show", help="Show team details")
+    team_show.add_argument("team_id", help="Team to show")
+    team_list = team_commands.add_parser("list", help="List teams")
+    team_list.add_argument("--root-task-id", help="Filter by root task")
+    team_attach = team_commands.add_parser("attach-task", help="Attach a task to a team")
+    team_attach.add_argument("team_id", help="Team to attach to")
+    team_attach.add_argument("task_id", help="Task to attach")
+    team_attach.add_argument(
+        "--member-role",
+        choices=["member", "manager"],
+        default="member",
+        help="Membership role (default: member)",
+    )
+    team_transition = team_commands.add_parser("transition", help="Transition team status/outcome")
+    team_transition.add_argument("team_id", help="Team to transition")
+    team_transition.add_argument(
+        "--team-status", choices=["planned", "active", "archived"], help="New team status"
+    )
+    team_transition.add_argument(
+        "--team-outcome",
+        choices=["succeeded", "failed", "cancelled"],
+        help="Terminal outcome (only on archived)",
+    )
+
     sched_uninstall = schedule_commands.add_parser("uninstall", help="Uninstall OS scheduler job")
     sched_uninstall.add_argument(
         "--repo-dir",
@@ -521,6 +563,28 @@ def _run(args: argparse.Namespace) -> Any:
         if args.promotion_command == "reject":
             return registry.reject_promotion(args.promotion_id)
         return registry.apply_promotion(args.promotion_id)
+
+    if args.command == "team":
+        if args.team_command == "create":
+            return registry.create_team(
+                args.root_task_id,
+                name=args.name,
+                agent_kind=args.agent_kind,
+                scope=_load_json(args.scope_json, dict),
+                parent_team_id=args.parent_team_id,
+                team_status=args.team_status,
+            )
+        if args.team_command == "show":
+            return registry.get_team(args.team_id)
+        if args.team_command == "list":
+            return registry.list_teams(root_task_id=args.root_task_id)
+        if args.team_command == "attach-task":
+            return registry.attach_task_to_team(
+                args.task_id, args.team_id, member_role=args.member_role
+            )
+        return registry.transition_team(
+            args.team_id, team_status=args.team_status, team_outcome=args.team_outcome
+        )
 
     if args.command == "maintenance":
         return registry.run_maintenance()
