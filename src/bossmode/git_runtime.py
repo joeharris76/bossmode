@@ -450,7 +450,7 @@ def _fence_or_skip(registry: Any, resource_id: str, reason: str = "retire fence"
 # 1) fence: ensure resource in retiring (via registry's fence transition if any, or via state check)
 # 2) remove worktree: `git worktree remove <path>` only if reconcile says clean/matched
 # 3) delete branch: `git branch -d` after worktree gone with reachability
-# 4) all steps idempotent: second run finds already removed worktree/branch and succeeds via existence check
+# 4) idempotent: second run finds already removed
 
 
 def retire_writer(

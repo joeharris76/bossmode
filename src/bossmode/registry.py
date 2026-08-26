@@ -92,7 +92,9 @@ CREATE TABLE IF NOT EXISTS owned_resources (
 );
 CREATE INDEX IF NOT EXISTS idx_owned_resources_kind_state ON owned_resources(kind, state);
 CREATE INDEX IF NOT EXISTS idx_owned_resources_owner_task ON owned_resources(owner_task_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_resources_canonical_active ON owned_resources(canonical_key) WHERE state NOT IN ('retired', 'orphaned');
+CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_owned_resources_canonical_active ON owned_resources(canonical_key)
+    WHERE state NOT IN ('retired', 'orphaned');
 CREATE TABLE IF NOT EXISTS owned_resource_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     resource_id TEXT NOT NULL REFERENCES owned_resources(id) ON DELETE CASCADE,
@@ -410,7 +412,9 @@ CREATE TABLE IF NOT EXISTS owned_resources (
 );
 CREATE INDEX IF NOT EXISTS idx_owned_resources_kind_state ON owned_resources(kind, state);
 CREATE INDEX IF NOT EXISTS idx_owned_resources_owner_task ON owned_resources(owner_task_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_owned_resources_canonical_active ON owned_resources(canonical_key) WHERE state NOT IN ('retired', 'orphaned');
+CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_owned_resources_canonical_active ON owned_resources(canonical_key)
+    WHERE state NOT IN ('retired', 'orphaned');
 CREATE TABLE IF NOT EXISTS owned_resource_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     resource_id TEXT NOT NULL REFERENCES owned_resources(id) ON DELETE CASCADE,
@@ -3501,13 +3505,15 @@ class Registry:
             )
             if existing is not None:
                 if existing["state"] in ("retired", "orphaned"):
-                    # Lifecycle-aware reuse: previous terminal allows new reservation with bumped generation
+                    # Reuse after terminal: bump generation
                     # Keep history by creating new row with incremented generation
                     old_gen = int(existing.get("generation") or 1)
-                    # Check if there's still an active with same key (partial index would catch, but also check here)
+                    # Check active still exists (partial index also guards)
                     active = _row(
                         connection.execute(
-                            "SELECT 1 FROM owned_resources WHERE canonical_key = ? AND state NOT IN ('retired','orphaned') LIMIT 1",
+                            "SELECT 1 FROM owned_resources "
+                            "WHERE canonical_key = ? "
+                            "AND state NOT IN ('retired','orphaned') LIMIT 1",
                             (ck,),
                         ).fetchone()
                     )
