@@ -165,6 +165,18 @@ worker result file reports `outcome` with the same four values; the registry val
 storing it. A successful finish also persists the canonical `result_digest` and normalizes each
 artifact entry.
 
+Owned resources are recorded before external creation and bound after it. Kinds
+are `herdr_worker`, `git_worktree`, and `git_branch`; canonical keys, owner
+`task_id`/`run_id`/`thread_id`, `creation_receipt`, and `generation` are
+persisted with states `reserved`, `live`, `retiring`, `retired`, and
+`orphaned` (`retired`/`orphaned` terminal). Transitions are idempotent and
+audited; duplicate reservation with the same owner returns the existing row,
+while a reused terminal key, different owner, or illegal transition fails
+closed. Reconciliation is read-only and reports
+`missing`/`changed`/`ambiguous`/`foreign`/`already_gone`/`healthy` without
+deletion; external resources remain observed, never silently adopted. Future
+deletion will require a live receipt match, not a name, pane ID, or path alone.
+
 ## Evaluation and feedback
 
 | Command | Required arguments | Optional arguments |
