@@ -7,7 +7,6 @@ worktree is created or deleted at import time.
 
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -115,6 +114,47 @@ def is_protected_branch(branch: str, *, configured: set[str] | None = None) -> b
 
 def parse_rev_parse_short_head(head_output: str) -> str:
     return head_output.strip()
+
+
+def build_writer_receipt(
+    *,
+    common_dir: str,
+    admin_id: str,
+    canonical_path: str,
+    branch: str,
+    base_sha: str,
+    creation_head: str,
+) -> dict[str, str]:
+    """Construct a validated writer ownership receipt."""
+    for field, value in (
+        ("common_dir", common_dir),
+        ("admin_id", admin_id),
+        ("canonical_path", canonical_path),
+        ("branch", branch),
+        ("base_sha", base_sha),
+        ("creation_head", creation_head),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"writer receipt requires non-empty {field}")
+    full_ref = canonical_branch_ref(branch)
+    name = full_ref.removeprefix("refs/heads/")
+    if is_protected_branch(name):
+        raise ValueError(f"protected branch not allowed for writer: {name}")
+    return {
+        "common_dir": common_dir.strip(),
+        "admin_id": admin_id.strip(),
+        "canonical_path": Path(canonical_path).resolve().as_posix()
+        if Path(canonical_path).is_absolute()
+        else canonical_path.strip(),
+        "branch": full_ref,
+        "base_sha": base_sha.strip(),
+        "creation_head": creation_head.strip(),
+    }
+
+
+def primary_checkout_excluded(candidate_path: str, *, primary_checkout: str) -> bool:
+    """True if candidate is not the primary checkout itself."""
+    return Path(candidate_path).resolve() != Path(primary_checkout).resolve()
 
 
 # Expose inventory summary for w0 evidence
