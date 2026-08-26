@@ -106,7 +106,7 @@ evidence. ADR 0005 records the decision gates for reconsidering automatic select
 4. It selects only the task returned in `next_task` and starts one run. `next_task` stays `null`
    while another task is running or awaiting evaluation.
 5. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
-   path (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`) below.
+   path (`pi`, `codex`, `claude`, `agy`, `grok`) below.
 6. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
 7. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
    records that verdict with `evaluate`.
