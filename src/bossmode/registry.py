@@ -645,22 +645,28 @@ class Registry:
             if metadata.st_size == 0:
                 return None, file_identity
             uri = f"{path.as_uri()}?mode=ro&immutable=1"
-            try:
-                with closing(sqlite3.connect(uri, uri=True)) as connection:
-                    cls._assert_database_descriptor_matches_path(path, descriptor)
-                    connection.row_factory = sqlite3.Row
-                    table = connection.execute(
-                        "SELECT 1 FROM sqlite_master "
-                        "WHERE type = 'table' AND name = 'registry_identity'"
-                    ).fetchone()
-                    if table is None:
+            deadline = time.perf_counter() + (SQLITE_BUSY_TIMEOUT_MS / 1_000)
+            while True:
+                try:
+                    with closing(sqlite3.connect(uri, uri=True)) as connection:
                         cls._assert_database_descriptor_matches_path(path, descriptor)
-                        return None, file_identity
-                    cls._validate_registry_identity_schema(connection)
-                    rows = connection.execute("SELECT * FROM registry_identity").fetchall()
-                    cls._assert_database_descriptor_matches_path(path, descriptor)
-            except sqlite3.Error as error:
-                raise RegistryError(f"registry identity is unreadable: {path}") from error
+                        connection.row_factory = sqlite3.Row
+                        table = connection.execute(
+                            "SELECT 1 FROM sqlite_master "
+                            "WHERE type = 'table' AND name = 'registry_identity'"
+                        ).fetchone()
+                        if table is None:
+                            cls._assert_database_descriptor_matches_path(path, descriptor)
+                            return None, file_identity
+                        cls._validate_registry_identity_schema(connection)
+                        rows = connection.execute("SELECT * FROM registry_identity").fetchall()
+                        cls._assert_database_descriptor_matches_path(path, descriptor)
+                    break
+                except sqlite3.Error as error:
+                    transient = "malformed" in str(error).lower()
+                    if not transient or time.perf_counter() >= deadline:
+                        raise RegistryError(f"registry identity is unreadable: {path}") from error
+                    time.sleep(0.005)
         finally:
             os.close(descriptor)
         if len(rows) != 1:

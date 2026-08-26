@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -429,19 +430,23 @@ def test_database_descriptor_guard_rejects_missing_nonregular_and_replaced_files
     database.write_bytes(b"original")
     metadata = database.stat()
     expected = DatabaseFileIdentity(metadata.st_dev, metadata.st_ino)
-    database.unlink()
+    original_descriptor = os.open(database, os.O_RDONLY)
+    try:
+        database.unlink()
 
-    with pytest.raises(RegistryError, match="cannot open registry database safely"):
-        Registry._open_database_descriptor(database, expected)
+        with pytest.raises(RegistryError, match="cannot open registry database safely"):
+            Registry._open_database_descriptor(database, expected)
 
-    database.mkdir()
-    with pytest.raises(RegistryError, match="must be a regular file"):
-        Registry._open_database_descriptor(database, expected)
+        database.mkdir()
+        with pytest.raises(RegistryError, match="must be a regular file"):
+            Registry._open_database_descriptor(database, expected)
 
-    database.rmdir()
-    database.write_bytes(b"replacement")
-    with pytest.raises(RegistryError, match="changed after authority preflight"):
-        Registry._open_database_descriptor(database, expected)
+        database.rmdir()
+        database.write_bytes(b"replacement")
+        with pytest.raises(RegistryError, match="changed after authority preflight"):
+            Registry._open_database_descriptor(database, expected)
+    finally:
+        os.close(original_descriptor)
 
 
 def test_operational_copy_and_wrong_repository_fail_before_mutation(
