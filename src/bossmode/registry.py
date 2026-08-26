@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from bossmode.artifacts import ArtifactError, CentralArtifactStore
+
 TASK_STATES = {
     "backlog",
     "ready",
@@ -317,7 +319,7 @@ CREATE TABLE IF NOT EXISTS maintenance_runs (
 """
 
 
-class RegistryError(RuntimeError):
+class RegistryError(ArtifactError):
     """Raised when a registry invariant is violated."""
 
 
@@ -2353,6 +2355,28 @@ class Registry:
             result = None
             if outcome == "succeeded":
                 result = self._validated_turn_result(dict(turn), expected_summary=summary)
+                run = connection.execute(
+                    "SELECT task_id FROM runs WHERE id = ?", (turn["run_id"],)
+                ).fetchone()
+                identity = connection.execute(
+                    "SELECT registry_id FROM registry_identity WHERE singleton = 1"
+                ).fetchone()
+                if run is None or identity is None:
+                    raise RegistryError("turn is not bound to a valid run and registry")
+                try:
+                    result = CentralArtifactStore(
+                        self.path.parent / "artifacts"
+                    ).validate_result_envelope(
+                        _json(result),
+                        expected_turn_id=turn_id,
+                        expected_run_id=turn["run_id"],
+                        expected_task_id=run["task_id"],
+                        expected_prompt_digest=turn["prompt_digest"],
+                        expected_registry_id=identity["registry_id"],
+                        source_base_dir=Path.cwd(),
+                    )
+                except ArtifactError as error:
+                    raise RegistryError(str(error)) from error
                 summary = result["summary"]
             connection.execute(
                 """
@@ -2516,36 +2540,14 @@ class Registry:
         if artifacts is not None:
             if not isinstance(artifacts, list):
                 raise RegistryError("run artifacts must be a list")
-            for artifact in artifacts:
-                if (
-                    not isinstance(artifact, dict)
-                    or not isinstance(artifact.get("path"), str)
-                    or not artifact["path"].strip()
-                    or not isinstance(artifact.get("kind"), str)
-                    or not artifact["kind"].strip()
-                ):
-                    raise RegistryError(
-                        "run artifacts must contain non-empty path and kind strings"
-                    )
-                stripped_path = artifact["path"].strip()
-                if os.path.isabs(stripped_path) or stripped_path.startswith(("/", "\\")):
-                    raise RegistryError(
-                        "run artifact path must be repository-relative, not absolute: "
-                        f"{stripped_path}"
-                    )
-                parts = Path(stripped_path).parts
-                if ".." in parts:
-                    raise RegistryError(
-                        f"run artifact path cannot contain directory traversal: {stripped_path}"
-                    )
-                if parts and (
-                    parts[0] in {".git", ".claude", "tmp", "temp"}
-                    or any("worktree" in part.lower() for part in parts)
-                ):
-                    raise RegistryError(
-                        "run artifact path points to transient or internal directory: "
-                        f"{stripped_path}"
-                    )
+            store = CentralArtifactStore(self.path.parent / "artifacts")
+            try:
+                artifacts = store.secure_and_adopt_run_artifacts(
+                    artifacts,
+                    source_base_dir=Path.cwd(),
+                )
+            except ArtifactError as error:
+                raise RegistryError(str(error)) from error
         with self._transaction() as connection:
             run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:
@@ -2700,14 +2702,25 @@ class Registry:
                         checkout_root = self.path.parent.parent
                     else:
                         checkout_root = self.path.parent
+                    store = CentralArtifactStore(self.path.parent / "artifacts")
                     for art in run_artifacts:
                         if isinstance(art, dict) and "path" in art:
-                            art_path = checkout_root / art["path"]
-                            if not art_path.exists():
-                                raise RegistryError(
-                                    "evaluation passed requires declared artifact to exist on "
-                                    f"disk: {art['path']}"
-                                )
+                            disposition = art.get("disposition", "accepted-commit")
+                            if disposition == "central-copy":
+                                central_file = store.root / art["path"]
+                                if not central_file.exists():
+                                    raise RegistryError(
+                                        "evaluation passed requires declared central-copy artifact "
+                                        "to exist in central storage: "
+                                        f"{art['path']}"
+                                    )
+                            else:
+                                art_path = checkout_root / art["path"]
+                                if not art_path.exists():
+                                    raise RegistryError(
+                                        "evaluation passed requires declared artifact to exist on "
+                                        f"disk: {art['path']}"
+                                    )
             timestamp = _now()
             connection.execute(
                 """
