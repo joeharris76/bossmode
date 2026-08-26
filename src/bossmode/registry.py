@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import stat
+import subprocess
 import tempfile
 import time
 import uuid
@@ -38,8 +39,14 @@ FEEDBACK_CATEGORIES = {"preference", "correction", "failure", "observation"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MIGRATION_LEDGER_VERSION = 7
+REGISTRY_ROLES = {"operational", "ephemeral"}
+MACOS_SYSTEM_PATH_ALIASES = {
+    Path("/etc"): Path("/private/etc"),
+    Path("/tmp"): Path("/private/tmp"),
+    Path("/var"): Path("/private/var"),
+}
 
 MIGRATION_V6_TO_V7_ID = "20260825_01_migration_durability"
 MIGRATION_V6_TO_V7_SQL = """
@@ -60,6 +67,50 @@ CREATE TABLE applied_migrations (
 CREATE UNIQUE INDEX idx_applied_migrations_transition
     ON applied_migrations(from_version, to_version);
 """
+
+MIGRATION_V7_TO_V8_ID = "20260825_02_registry_identity"
+REGISTRY_IDENTITY_TABLE_SQL = """
+CREATE TABLE registry_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    registry_id TEXT NOT NULL UNIQUE,
+    registry_role TEXT NOT NULL CHECK (registry_role IN ('operational', 'ephemeral')),
+    repository_url TEXT NOT NULL,
+    git_common_dir TEXT NOT NULL,
+    primary_checkout TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    creation_metadata_json TEXT NOT NULL
+)
+"""
+REGISTRY_IDENTITY_GUARD_SQL = (
+    """
+    CREATE TRIGGER registry_identity_immutable_update
+    BEFORE UPDATE ON registry_identity
+    BEGIN
+        SELECT RAISE(ABORT, 'registry identity is immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER registry_identity_immutable_delete
+    BEFORE DELETE ON registry_identity
+    BEGIN
+        SELECT RAISE(ABORT, 'registry identity is immutable');
+    END
+    """,
+)
+REGISTRY_IDENTITY_INSERT_CONTRACT = """
+INSERT INTO registry_identity(
+    singleton, registry_id, registry_role, repository_url,
+    git_common_dir, primary_checkout, created_at, creation_metadata_json
+) VALUES (:singleton, :registry_id, :registry_role, :repository_url,
+          :git_common_dir, :primary_checkout, :created_at, :creation_metadata_json)
+"""
+MIGRATION_V7_TO_V8_SQL = "\n".join(
+    (
+        REGISTRY_IDENTITY_TABLE_SQL,
+        *REGISTRY_IDENTITY_GUARD_SQL,
+        REGISTRY_IDENTITY_INSERT_CONTRACT,
+    )
+)
 
 ALLOWED_TRANSITIONS = {
     "backlog": {"ready", "archived"},
@@ -101,6 +152,17 @@ CREATE TABLE IF NOT EXISTS applied_migrations (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_applied_migrations_transition
     ON applied_migrations(from_version, to_version);
+
+CREATE TABLE IF NOT EXISTS registry_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    registry_id TEXT NOT NULL UNIQUE,
+    registry_role TEXT NOT NULL CHECK (registry_role IN ('operational', 'ephemeral')),
+    repository_url TEXT NOT NULL,
+    git_common_dir TEXT NOT NULL,
+    primary_checkout TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    creation_metadata_json TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -269,6 +331,14 @@ class MigrationBackup:
     sha256: str
 
 
+@dataclass(frozen=True)
+class RepositoryIdentity:
+    repository_url: str
+    git_common_dir: Path
+    primary_checkout: Path
+    current_checkout: Path
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -297,36 +367,360 @@ def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
-def _repository_root(path: Path) -> Path:
-    resolved = path.expanduser().resolve()
-    for candidate in (resolved, *resolved.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    return resolved
+def _absolute_path(path: Path) -> Path:
+    """Return an absolute lexical path without following symlinks."""
+    return Path(os.path.abspath(path.expanduser()))
 
 
-def _validate_registry_ownership(path: Path) -> None:
-    """Reject a standard registry path owned by a different worktree."""
-    resolved = path.expanduser().resolve()
-    if resolved.name != "control.db" or resolved.parent.name != ".bossmode":
-        return
+def _run_git(path: Path, *arguments: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise RegistryError(f"cannot inspect repository identity: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise RegistryError(f"cannot inspect repository identity: {detail}")
+    return result.stdout.strip()
 
-    current_root = _repository_root(Path.cwd())
-    database_root = resolved.parent.parent
-    if database_root == current_root or not (database_root / ".git").exists():
-        return
-    raise RegistryError(
-        "registry path belongs to a different worktree: "
-        f"current={current_root}, database={database_root}; "
-        "run Bossmode from the owning checkout or use a dedicated shared registry"
+
+def _discover_repository_identity(path: Path) -> RepositoryIdentity:
+    current_checkout = Path(_run_git(path, "rev-parse", "--show-toplevel")).resolve()
+    common_output = _run_git(
+        current_checkout,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    )
+    git_common_dir = Path(common_output).resolve()
+    if git_common_dir.name != ".git":
+        raise RegistryError(f"unsupported Git common directory: {git_common_dir}")
+    primary_checkout = git_common_dir.parent.resolve()
+    primary_git = primary_checkout / ".git"
+    try:
+        primary_git_metadata = os.lstat(primary_git)
+    except OSError as error:
+        raise RegistryError(f"cannot inspect primary Git directory: {primary_git}") from error
+    if not stat.S_ISDIR(primary_git_metadata.st_mode) or primary_git.resolve() != git_common_dir:
+        raise RegistryError(
+            f"cannot identify one primary checkout from the Git common directory: {git_common_dir}"
+        )
+    repository_url = _run_git(primary_checkout, "config", "--get", "remote.origin.url")
+    if not repository_url:
+        raise RegistryError("primary checkout has no remote.origin.url")
+    return RepositoryIdentity(
+        repository_url=repository_url,
+        git_common_dir=git_common_dir,
+        primary_checkout=primary_checkout,
+        current_checkout=current_checkout,
     )
 
 
+def _try_discover_repository_identity(path: Path) -> RepositoryIdentity | None:
+    try:
+        return _discover_repository_identity(path)
+    except RegistryError as error:
+        try:
+            probe = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            raise error from None
+        if probe.returncode == 0 and probe.stdout.strip() == "true":
+            raise error
+        return None
+
+
+def _reject_symlink_path(path: Path) -> None:
+    """Reject a database or existing parent component that is a symlink."""
+    absolute = _absolute_path(path)
+    candidates = [absolute, *absolute.parents]
+    for candidate in candidates:
+        try:
+            metadata = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise RegistryError(f"cannot inspect registry path component: {candidate}") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            allowed_target = MACOS_SYSTEM_PATH_ALIASES.get(candidate)
+            if allowed_target is not None and candidate.resolve() == allowed_target:
+                continue
+            raise RegistryError(f"registry path must not contain symlinks: {candidate}")
+
+
 class Registry:
-    def __init__(self, path: str | Path) -> None:
-        _validate_registry_ownership(Path(path))
-        self.path = Path(path)
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        registry_role: str = "ephemeral",
+        repository_identity: RepositoryIdentity | None = None,
+        allow_create: bool = True,
+    ) -> None:
+        if registry_role not in REGISTRY_ROLES:
+            raise RegistryError(f"unsupported registry role: {registry_role}")
+        self.path = _absolute_path(Path(path))
+        self.registry_role = registry_role
+        self.repository_identity = repository_identity
+        self.allow_create = allow_create
         self._schema_ready = False
+
+    @classmethod
+    def create_operational(
+        cls,
+        path: str | Path,
+        *,
+        repository_path: str | Path = ".",
+    ) -> Registry:
+        repository = _discover_repository_identity(Path(repository_path))
+        registry = cls(
+            path,
+            registry_role="operational",
+            repository_identity=repository,
+            allow_create=True,
+        )
+        registry.initialize()
+        return registry
+
+    @classmethod
+    def open_for_command(
+        cls,
+        path: str | Path,
+        *,
+        explicit_path: bool,
+        repository_path: str | Path = ".",
+    ) -> Registry:
+        database = _absolute_path(Path(path))
+        _reject_symlink_path(database)
+        repository = _try_discover_repository_identity(Path(repository_path))
+        raw_identity = cls._read_registry_identity(database)
+        if raw_identity is not None and raw_identity["registry_role"] == "operational":
+            recorded_primary = Path(raw_identity["primary_checkout"])
+            recorded_repository = _discover_repository_identity(recorded_primary)
+            registry = cls(
+                database,
+                registry_role="operational",
+                repository_identity=recorded_repository,
+                allow_create=False,
+            )
+            registry._validate_operational_identity(raw_identity, caller_repository=repository)
+            return registry
+
+        if repository is not None:
+            primary_database = repository.primary_checkout / ".bossmode" / "control.db"
+            current_database = repository.current_checkout / ".bossmode" / "control.db"
+            if database in {primary_database, current_database}:
+                registry = cls(
+                    database,
+                    registry_role="operational",
+                    repository_identity=repository,
+                    allow_create=False,
+                )
+                registry._validate_operational_location()
+                return registry
+
+        if raw_identity is not None and raw_identity["registry_role"] != "ephemeral":
+            raise RegistryError(f"unsupported registry role: {raw_identity['registry_role']}")
+        if not explicit_path and repository is not None:
+            raise RegistryError("operational registry path is not authoritative")
+        return cls(database, registry_role="ephemeral", allow_create=True)
+
+    @staticmethod
+    def _read_registry_identity(path: Path) -> dict[str, Any] | None:
+        if not path.exists() or path.stat().st_size == 0:
+            return None
+        uri = f"{path.as_uri()}?mode=ro&immutable=1"
+        try:
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                table = connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'registry_identity'"
+                ).fetchone()
+                if table is None:
+                    return None
+                rows = connection.execute("SELECT * FROM registry_identity").fetchall()
+        except sqlite3.Error as error:
+            raise RegistryError(f"registry identity is unreadable: {path}") from error
+        if len(rows) != 1:
+            raise RegistryError("registry identity must contain exactly one row")
+        return dict(rows[0])
+
+    def _validate_operational_location(self) -> None:
+        repository = self.repository_identity
+        if repository is None:
+            raise RegistryError("operational registry is missing repository authority")
+        if repository.current_checkout != repository.primary_checkout:
+            raise RegistryError(
+                "operational registry commands must run from the primary checkout: "
+                f"current={repository.current_checkout}, primary={repository.primary_checkout}"
+            )
+        expected = repository.primary_checkout / ".bossmode" / "control.db"
+        if self.path != expected:
+            raise RegistryError(
+                "operational registry must use the primary checkout path: "
+                f"expected={expected}, actual={self.path}"
+            )
+        caller_repository = _try_discover_repository_identity(Path.cwd())
+        if caller_repository is not None:
+            if caller_repository.git_common_dir != repository.git_common_dir:
+                raise RegistryError("caller belongs to a different Git repository")
+            if caller_repository.current_checkout != caller_repository.primary_checkout:
+                raise RegistryError(
+                    "linked worktrees cannot mutate the operational registry: "
+                    f"current={caller_repository.current_checkout}, "
+                    f"primary={caller_repository.primary_checkout}"
+                )
+
+    def _identity_values(self) -> dict[str, str | int]:
+        if self.registry_role == "operational":
+            repository = self.repository_identity
+            if repository is None:
+                raise RegistryError("operational registry is missing repository authority")
+            repository_url = repository.repository_url
+            git_common_dir = str(repository.git_common_dir)
+            primary_checkout = str(repository.primary_checkout)
+        else:
+            repository_url = ""
+            git_common_dir = ""
+            primary_checkout = ""
+        return {
+            "singleton": 1,
+            "registry_role": self.registry_role,
+            "repository_url": repository_url,
+            "git_common_dir": git_common_dir,
+            "primary_checkout": primary_checkout,
+        }
+
+    def _validate_operational_identity(
+        self,
+        identity: dict[str, Any],
+        *,
+        caller_repository: RepositoryIdentity | None = None,
+    ) -> None:
+        if identity["registry_role"] != "operational":
+            raise RegistryError(
+                "operational commands reject a non-operational registry: "
+                f"role={identity['registry_role']}"
+            )
+        expected = self._identity_values()
+        for field in (
+            "registry_role",
+            "repository_url",
+            "git_common_dir",
+            "primary_checkout",
+        ):
+            if identity[field] != expected[field]:
+                raise RegistryError(
+                    f"operational registry identity mismatch for {field}: "
+                    f"expected={expected[field]}, actual={identity[field]}"
+                )
+        expected_path = Path(identity["primary_checkout"]) / ".bossmode" / "control.db"
+        if self.path != expected_path:
+            raise RegistryError(
+                "operational registry was copied or selected through a non-authoritative path: "
+                f"expected={expected_path}, actual={self.path}"
+            )
+        if caller_repository is not None:
+            if caller_repository.git_common_dir != self.repository_identity.git_common_dir:
+                raise RegistryError("caller belongs to a different Git repository")
+            if caller_repository.current_checkout != caller_repository.primary_checkout:
+                raise RegistryError(
+                    "linked worktrees cannot mutate the operational registry: "
+                    f"current={caller_repository.current_checkout}, "
+                    f"primary={caller_repository.primary_checkout}"
+                )
+
+    def _validate_registry_identity(
+        self,
+        connection: sqlite3.Connection,
+    ) -> dict[str, Any]:
+        try:
+            rows = connection.execute("SELECT * FROM registry_identity").fetchall()
+        except sqlite3.Error as error:
+            raise RegistryError("registry identity is missing or unreadable") from error
+        if len(rows) != 1:
+            raise RegistryError("registry identity must contain exactly one row")
+        identity = dict(rows[0])
+        if identity["registry_role"] not in REGISTRY_ROLES:
+            raise RegistryError(f"unsupported registry role: {identity['registry_role']}")
+        if identity["registry_role"] != self.registry_role:
+            raise RegistryError(
+                f"registry role mismatch: expected={self.registry_role}, "
+                f"actual={identity['registry_role']}"
+            )
+        try:
+            creation_metadata = json.loads(identity["creation_metadata_json"])
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RegistryError("registry creation metadata is invalid") from error
+        if not isinstance(creation_metadata, dict):
+            raise RegistryError("registry creation metadata must be an object")
+        if self.registry_role == "operational":
+            self._validate_operational_identity(
+                identity,
+                caller_repository=_try_discover_repository_identity(Path.cwd()),
+            )
+        elif any(
+            identity[field] for field in ("repository_url", "git_common_dir", "primary_checkout")
+        ):
+            raise RegistryError("ephemeral registry must not claim repository authority")
+        identity["creation_metadata"] = creation_metadata
+        return identity
+
+    def _insert_registry_identity(self, connection: sqlite3.Connection) -> None:
+        values = self._identity_values()
+        connection.execute(
+            REGISTRY_IDENTITY_INSERT_CONTRACT,
+            {
+                **values,
+                "registry_id": _id("registry"),
+                "created_at": _now(),
+                "creation_metadata_json": _json({"schema_version": SCHEMA_VERSION}),
+            },
+        )
+
+    def _preflight_schema_access(self) -> None:
+        _reject_symlink_path(self.path)
+        if self.registry_role == "operational":
+            self._validate_operational_location()
+        elif self.path.name == "control.db" and self.path.parent.name == ".bossmode":
+            checkout = self.path.parent.parent
+            repository = _try_discover_repository_identity(checkout)
+            if repository is not None and checkout.resolve() == repository.current_checkout:
+                raise RegistryError(
+                    "ephemeral registry access cannot target a Git checkout's operational path; "
+                    "use `bossmode registry create` from the primary checkout"
+                )
+        raw_identity = self._read_registry_identity(self.path)
+        if raw_identity is not None:
+            if self.registry_role == "operational":
+                self._validate_operational_identity(
+                    raw_identity,
+                    caller_repository=_try_discover_repository_identity(Path.cwd()),
+                )
+            elif raw_identity["registry_role"] != "ephemeral":
+                raise RegistryError(
+                    f"ephemeral access rejects an operational registry: {self.path}"
+                )
+            return
+        if self.registry_role == "operational" and not self.allow_create:
+            raise RegistryError(
+                "operational registry authority is absent; run `bossmode registry create` "
+                "from the primary checkout"
+            )
+
+    def get_registry_identity(self) -> dict[str, Any]:
+        with self._read_transaction() as connection:
+            identity = self._validate_registry_identity(connection)
+        return identity
 
     def initialize(self) -> None:
         """Create or migrate the registry, at most once per instance.
@@ -341,6 +735,7 @@ class Registry:
         """
         if self._schema_ready:
             return
+        self._preflight_schema_access()
         self._ensure_schema()
         self._schema_ready = True
 
@@ -360,6 +755,7 @@ class Registry:
                 f"this build supports {SCHEMA_VERSION}"
             )
         self._validate_migration_ledger(connection, SCHEMA_VERSION)
+        self._validate_registry_identity(connection)
 
     def _migration_plan(self) -> dict[int, MigrationStep]:
         ledger_checksum = _migration_checksum(
@@ -367,6 +763,12 @@ class Registry:
             6,
             7,
             MIGRATION_V6_TO_V7_SQL,
+        )
+        identity_checksum = _migration_checksum(
+            MIGRATION_V7_TO_V8_ID,
+            7,
+            8,
+            MIGRATION_V7_TO_V8_SQL,
         )
         return {
             1: MigrationStep(None, 1, 2, None, self._migrate_v1_to_v2),
@@ -380,6 +782,13 @@ class Registry:
                 7,
                 ledger_checksum,
                 self._migrate_v6_to_v7,
+            ),
+            7: MigrationStep(
+                MIGRATION_V7_TO_V8_ID,
+                7,
+                8,
+                identity_checksum,
+                self._migrate_v7_to_v8,
             ),
         }
 
@@ -410,6 +819,8 @@ class Registry:
                 )
             if current >= MIGRATION_LEDGER_VERSION:
                 self._validate_migration_ledger(connection, current)
+            if current >= 8:
+                self._validate_registry_identity(connection)
             return current
 
     def _validate_migration_path(self, current: int) -> None:
@@ -737,6 +1148,7 @@ class Registry:
                                 "existing registry is missing schema_meta; refusing initialization"
                             )
                         self._execute_schema(connection)
+                        self._insert_registry_identity(connection)
                         connection.execute(
                             "INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,)
                         )
@@ -807,6 +1219,8 @@ class Registry:
         for statement in SCHEMA.split(";"):
             if statement.strip():
                 connection.execute(statement)
+        for statement in REGISTRY_IDENTITY_GUARD_SQL:
+            connection.execute(statement)
 
     @staticmethod
     def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -1014,9 +1428,18 @@ class Registry:
             if statement.strip():
                 connection.execute(statement)
 
+    def _migrate_v7_to_v8(self, connection: sqlite3.Connection) -> None:
+        """Bind the registry to one immutable operational or ephemeral identity."""
+        connection.execute(REGISTRY_IDENTITY_TABLE_SQL)
+        for statement in REGISTRY_IDENTITY_GUARD_SQL:
+            connection.execute(statement)
+        self._insert_registry_identity(connection)
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
+        if self.registry_role == "operational":
+            self._preflight_schema_access()
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -1032,6 +1455,8 @@ class Registry:
     @contextmanager
     def _read_transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
+        if self.registry_role == "operational":
+            self._preflight_schema_access()
         connection = self._connect()
         transaction_started = False
         try:

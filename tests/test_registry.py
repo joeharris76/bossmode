@@ -207,27 +207,16 @@ def test_concurrent_fresh_initialization_is_singleton_and_error_free(tmp_path):
             assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
-def test_registry_rejects_sibling_worktree_before_opening_database(tmp_path, monkeypatch):
-    current_worktree = tmp_path / "current"
-    foreign_worktree = tmp_path / "foreign"
-    for worktree in (current_worktree, foreign_worktree):
-        worktree.mkdir()
-        (worktree / ".git").write_text("gitdir: /tmp/test-worktree\n")
+def test_registry_default_role_is_ephemeral_and_claims_no_repository(tmp_path):
+    registry = Registry(tmp_path / "control.db")
 
-    database = foreign_worktree / ".bossmode" / "control.db"
-    database.parent.mkdir()
-    with closing(sqlite3.connect(database)) as connection:
-        connection.execute("CREATE TABLE schema_meta (version INTEGER NOT NULL)")
-        connection.execute("INSERT INTO schema_meta(version) VALUES (5)")
-    before = database.read_bytes()
-    before_mtime = database.stat().st_mtime_ns
-    monkeypatch.chdir(current_worktree)
+    registry.initialize()
 
-    with pytest.raises(RegistryError, match="belongs to a different worktree"):
-        Registry(database).initialize()
-
-    assert database.read_bytes() == before
-    assert database.stat().st_mtime_ns == before_mtime
+    identity = registry.get_registry_identity()
+    assert identity["registry_role"] == "ephemeral"
+    assert identity["repository_url"] == ""
+    assert identity["git_common_dir"] == ""
+    assert identity["primary_checkout"] == ""
 
 
 def test_registry_allows_current_worktree_database(tmp_path, monkeypatch):
@@ -1295,7 +1284,7 @@ def test_initialize_rejects_corrupt_database(tmp_path):
     database = tmp_path / "control.db"
     database.write_bytes(b"not a sqlite database")
 
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(RegistryError, match="registry identity is unreadable"):
         Registry(database).initialize()
 
 
@@ -1702,9 +1691,9 @@ def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monk
 class _FailingReadConnection:
     """Stands in for a connection, including the in-transaction schema check."""
 
-    def __init__(self, failure_stage, migration_row=None):
+    def __init__(self, failure_stage, migration_rows=None):
         self.failure_stage = failure_stage
-        self.migration_row = migration_row
+        self.migration_rows = migration_rows or []
         self.calls = []
         self.last_statement = None
 
@@ -1721,7 +1710,22 @@ class _FailingReadConnection:
         return (SCHEMA_VERSION,)
 
     def fetchall(self):
-        return [self.migration_row]
+        if "applied_migrations" in self.last_statement:
+            return self.migration_rows
+        if "registry_identity" in self.last_statement:
+            return [
+                {
+                    "singleton": 1,
+                    "registry_id": "registry_test",
+                    "registry_role": "ephemeral",
+                    "repository_url": "",
+                    "git_common_dir": "",
+                    "primary_checkout": "",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "creation_metadata_json": "{}",
+                }
+            ]
+        return []
 
     def commit(self):
         self.calls.append("COMMIT")
@@ -1757,15 +1761,18 @@ def test_read_transaction_begin_failure_preserves_original_error(registry, monke
 def test_read_transaction_rollback_failure_preserves_original_error(
     registry, monkeypatch, failure_stage, message
 ):
-    step = registry._migration_plan()[6]
+    steps = [step for step in registry._migration_plan().values() if step.migration_id]
     connection = _FailingReadConnection(
         failure_stage,
-        {
-            "migration_id": step.migration_id,
-            "from_version": step.from_version,
-            "to_version": step.to_version,
-            "checksum": step.checksum,
-        },
+        [
+            {
+                "migration_id": step.migration_id,
+                "from_version": step.from_version,
+                "to_version": step.to_version,
+                "checksum": step.checksum,
+            }
+            for step in steps
+        ],
     )
     monkeypatch.setattr(registry, "initialize", lambda: None)
     monkeypatch.setattr(registry, "_connect", lambda: connection)

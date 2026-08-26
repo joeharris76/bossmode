@@ -14,6 +14,7 @@ import pytest
 
 from bossmode.registry import (
     MIGRATION_V6_TO_V7_ID,
+    MIGRATION_V7_TO_V8_ID,
     SCHEMA_VERSION,
     Registry,
     RegistryError,
@@ -31,6 +32,26 @@ def create_schema_v6(database: Path) -> None:
 
 def backup_paths(database: Path) -> list[Path]:
     return sorted((database.parent / "backups").glob(f"{database.name}.schema-*.sqlite3"))
+
+
+def backup_versions(database: Path) -> dict[int, list[Path]]:
+    versions: dict[int, list[Path]] = {}
+    for backup in backup_paths(database):
+        with closing(sqlite3.connect(backup)) as connection:
+            version = connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+        versions.setdefault(version, []).append(backup)
+    return versions
+
+
+def create_schema_v7(database: Path) -> None:
+    create_schema_v6(database)
+    registry = Registry(database)
+    step = registry._migration_plan()[6]
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        step.apply(connection)
+        registry._record_applied_migration(connection, step, None)
+        connection.execute("UPDATE schema_meta SET version = 7")
 
 
 def file_sha256(path: Path) -> str:
@@ -90,18 +111,22 @@ def test_fresh_schema_seeds_lineage_without_backup(tmp_path: Path) -> None:
 
     Registry(database).initialize()
 
-    assert SCHEMA_VERSION == 7
+    assert SCHEMA_VERSION == 8
     assert not (tmp_path / "backups").exists()
     with closing(sqlite3.connect(database)) as connection:
         connection.row_factory = sqlite3.Row
-        row = connection.execute("SELECT * FROM applied_migrations").fetchone()
-        assert row is not None
-        assert row["migration_id"] == MIGRATION_V6_TO_V7_ID
-        assert row["from_version"] == 6
-        assert row["to_version"] == 7
-        assert len(row["checksum"]) == 64
-        assert row["backup_path"] is None
-        assert row["backup_sha256"] is None
+        rows = connection.execute("SELECT * FROM applied_migrations ORDER BY to_version").fetchall()
+        assert [row["migration_id"] for row in rows] == [
+            MIGRATION_V6_TO_V7_ID,
+            MIGRATION_V7_TO_V8_ID,
+        ]
+        assert [(row["from_version"], row["to_version"]) for row in rows] == [
+            (6, 7),
+            (7, 8),
+        ]
+        assert all(len(row["checksum"]) == 64 for row in rows)
+        assert all(row["backup_path"] is None for row in rows)
+        assert all(row["backup_sha256"] is None for row in rows)
 
 
 def test_existing_zero_length_file_is_safely_initialized(tmp_path: Path) -> None:
@@ -174,25 +199,29 @@ def test_v6_migration_creates_verified_backup_and_no_team_schema(tmp_path: Path)
     Registry(database).initialize()
 
     backups = backup_paths(database)
-    assert len(backups) == 1
-    backup = backups[0]
-    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
-    assert stat.S_IMODE(backup.parent.stat().st_mode) == 0o700
-    assert backup.name.endswith(f".sha256-{file_sha256(backup)}.sqlite3")
+    assert len(backups) == 2
+    by_version = backup_versions(database)
+    assert set(by_version) == {6, 7}
+    assert all(stat.S_IMODE(backup.stat().st_mode) == 0o600 for backup in backups)
+    assert stat.S_IMODE(backups[0].parent.stat().st_mode) == 0o700
+    assert all(backup.name.endswith(f".sha256-{file_sha256(backup)}.sqlite3") for backup in backups)
     with closing(sqlite3.connect(database)) as connection:
         connection.row_factory = sqlite3.Row
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'teams'"
             ).fetchone()[0]
             == 0
         )
-        migration = connection.execute("SELECT * FROM applied_migrations").fetchone()
+        migration = connection.execute(
+            "SELECT * FROM applied_migrations WHERE migration_id = ?",
+            (MIGRATION_V6_TO_V7_ID,),
+        ).fetchone()
         assert migration["migration_id"] == MIGRATION_V6_TO_V7_ID
-        assert migration["backup_path"] == f"backups/{backup.name}"
-        assert migration["backup_sha256"] == file_sha256(backup)
-    with closing(sqlite3.connect(backup)) as connection:
+        assert migration["backup_path"] == f"backups/{by_version[6][0].name}"
+        assert migration["backup_sha256"] == file_sha256(by_version[6][0])
+    with closing(sqlite3.connect(by_version[6][0])) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         assert connection.execute("SELECT title FROM tasks WHERE id = 'task_v5'").fetchone()[0] == (
@@ -209,18 +238,17 @@ def test_legacy_migrations_are_individually_bounded_and_backed_up(tmp_path: Path
     Registry(database).initialize()
 
     backups = backup_paths(database)
-    assert len(backups) == 2
-    backup_versions: dict[int, Path] = {}
-    for backup in backups:
-        with closing(sqlite3.connect(backup)) as connection:
-            version = connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-            backup_versions[version] = backup
-    assert set(backup_versions) == {5, 6}
+    assert len(backups) == 3
+    by_version = backup_versions(database)
+    assert set(by_version) == {5, 6, 7}
     with closing(sqlite3.connect(database)) as connection:
         connection.row_factory = sqlite3.Row
-        migration = connection.execute("SELECT * FROM applied_migrations").fetchone()
-        assert migration["backup_path"] == f"backups/{backup_versions[6].name}"
-        assert migration["backup_sha256"] == file_sha256(backup_versions[6])
+        migration = connection.execute(
+            "SELECT * FROM applied_migrations WHERE migration_id = ?",
+            (MIGRATION_V6_TO_V7_ID,),
+        ).fetchone()
+        assert migration["backup_path"] == f"backups/{by_version[6][0].name}"
+        assert migration["backup_sha256"] == file_sha256(by_version[6][0])
 
 
 def test_backup_restores_original_schema_and_records(tmp_path: Path) -> None:
@@ -228,7 +256,7 @@ def test_backup_restores_original_schema_and_records(tmp_path: Path) -> None:
     recovery_directory = tmp_path / "failed-registry"
     create_schema_v6(database)
     Registry(database).initialize()
-    backup = backup_paths(database)[0]
+    backup = backup_versions(database)[6][0]
     expected_sha256 = file_sha256(backup)
     database.with_name(f"{database.name}-wal").write_bytes(b"stale WAL")
     database.with_name(f"{database.name}-shm").write_bytes(b"stale SHM")
@@ -274,11 +302,11 @@ def test_backup_restores_original_schema_and_records(tmp_path: Path) -> None:
 
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
         assert connection.execute("SELECT title FROM tasks WHERE id = 'task_v5'").fetchone()[0] == (
             "v5 task"
         )
-    assert len(backup_paths(database)) == 2
+    assert len(backup_paths(database)) == 4
 
 
 def test_failed_migration_rolls_back_and_retains_valid_backup(
@@ -391,7 +419,7 @@ def test_backup_verification_failure_prevents_migration_and_removes_partial_back
 
 
 @pytest.mark.parametrize("corruption", ["missing", "checksum", "unknown", "duplicate"])
-def test_schema_v7_rejects_invalid_migration_lineage_without_mutation(
+def test_schema_v8_rejects_invalid_migration_lineage_without_mutation(
     tmp_path: Path, corruption: str
 ) -> None:
     database = tmp_path / "control.db"
@@ -400,10 +428,15 @@ def test_schema_v7_rejects_invalid_migration_lineage_without_mutation(
         if corruption == "missing":
             connection.execute("DELETE FROM applied_migrations")
         elif corruption == "checksum":
-            connection.execute("UPDATE applied_migrations SET checksum = 'wrong'")
+            connection.execute(
+                "UPDATE applied_migrations SET checksum = 'wrong' WHERE migration_id = ?",
+                (MIGRATION_V7_TO_V8_ID,),
+            )
         elif corruption == "unknown":
             connection.execute(
-                "UPDATE applied_migrations SET migration_id = 'unmerged_branch_migration'"
+                "UPDATE applied_migrations SET migration_id = 'unmerged_branch_migration' "
+                "WHERE migration_id = ?",
+                (MIGRATION_V7_TO_V8_ID,),
             )
         else:
             connection.execute("ALTER TABLE applied_migrations RENAME TO old_migrations")
@@ -448,6 +481,29 @@ def test_pr6_shaped_schema_v7_without_ledger_fails_closed(tmp_path: Path) -> Non
     assert backup_paths(database) == []
 
 
+def test_v7_to_v8_migration_binds_ephemeral_identity_and_backup(tmp_path: Path) -> None:
+    database = tmp_path / "control.db"
+    create_schema_v7(database)
+
+    Registry(database).initialize()
+
+    by_version = backup_versions(database)
+    assert set(by_version) == {7}
+    with closing(sqlite3.connect(database)) as connection:
+        connection.row_factory = sqlite3.Row
+        identity = connection.execute("SELECT * FROM registry_identity").fetchone()
+        assert identity["registry_role"] == "ephemeral"
+        assert identity["repository_url"] == ""
+        assert identity["git_common_dir"] == ""
+        assert identity["primary_checkout"] == ""
+        migration = connection.execute(
+            "SELECT * FROM applied_migrations WHERE migration_id = ?",
+            (MIGRATION_V7_TO_V8_ID,),
+        ).fetchone()
+        assert migration["backup_path"] == f"backups/{by_version[7][0].name}"
+        assert migration["backup_sha256"] == file_sha256(by_version[7][0])
+
+
 def test_newer_schema_fails_closed_before_backup_or_mutation(tmp_path: Path) -> None:
     database = tmp_path / "control.db"
     with closing(sqlite3.connect(database)) as connection, connection:
@@ -464,7 +520,7 @@ def test_newer_schema_fails_closed_before_backup_or_mutation(tmp_path: Path) -> 
     assert backup_paths(database) == []
 
 
-def test_concurrent_v6_initialization_creates_one_backup(tmp_path: Path) -> None:
+def test_concurrent_v6_initialization_creates_one_backup_per_transition(tmp_path: Path) -> None:
     database = tmp_path / "control.db"
     create_schema_v6(database)
     barrier = Barrier(6)
@@ -481,11 +537,11 @@ def test_concurrent_v6_initialization_creates_one_backup(tmp_path: Path) -> None
         errors = [result for result in executor.map(initialize, range(6)) if result]
 
     assert errors == []
-    assert len(backup_paths(database)) == 1
+    assert len(backup_paths(database)) == 2
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
-        assert connection.execute("SELECT COUNT(*) FROM applied_migrations").fetchone()[0] == 1
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 8
+        assert connection.execute("SELECT COUNT(*) FROM applied_migrations").fetchone()[0] == 2
 
 
 def test_backup_includes_committed_wal_records(tmp_path: Path) -> None:
@@ -554,7 +610,7 @@ def test_new_backup_directory_creation_fsyncs_registry_parent(
 
     Registry(database).initialize()
 
-    assert events == ["mkdir-backups", "fsync-registry-parent"]
+    assert events == ["mkdir-backups", "fsync-registry-parent", "mkdir-backups"]
 
 
 def test_backup_directory_swap_is_detected_and_cannot_redirect_publication(
@@ -629,4 +685,4 @@ def test_migration_does_not_prune_existing_backups_before_owned_cleanup_exists(
     Registry(database).initialize()
 
     assert all(path.read_bytes() == b"retained by policy" for path in retained)
-    assert len(backup_paths(database)) == 7
+    assert len(backup_paths(database)) == 8
