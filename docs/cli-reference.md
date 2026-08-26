@@ -177,6 +177,20 @@ closed. Reconciliation is read-only and reports
 deletion; external resources remain observed, never silently adopted. Future
 deletion will require a live receipt match, not a name, pane ID, or path alone.
 
+## Teams
+
+Pure hierarchy: see [supervisor protocol](agent-workflow.md) and ADR [0004](adr/0004-parallel-manager-teams.md).
+
+```
+bossmode team create <root_task_id> --name NAME --agent-kind KIND [--parent-team-id ID] [--team-status {planned,active,archived}] [--scope-json JSON]
+bossmode team show <team_id>
+bossmode team list [--root-task-id ID]
+bossmode team attach-task <team_id> <task_id> [--member-role {member,manager}]
+bossmode team transition <team_id> [--team-status STATUS] [--team-outcome {succeeded,failed,cancelled}]
+```
+
+No alias `team_kind`; keys are `team_status`/`team_outcome`/`agent_kind`.
+
 ## Evaluation and feedback
 
 | Command | Required arguments | Optional arguments |
