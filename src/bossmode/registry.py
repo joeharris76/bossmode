@@ -31,15 +31,16 @@ TASK_STATES = {
 }
 CREATE_TASK_STATES = {"backlog", "ready"}
 
-TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed"}
+TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed", "cancelled"}
 HERDR_BINDING_STATUSES = {"pending", "live", "blocked", "stale", "unknown"}
 TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
 TERMINAL_TURN_OUTCOMES = {"blocked", "succeeded", "failed", "unknown"}
 FEEDBACK_CATEGORIES = {"preference", "correction", "failure", "observation"}
+REASONING_EFFORT_SOURCES = {"observed", "declared", "inherited-unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 MIGRATION_LEDGER_VERSION = 7
 REGISTRY_ROLES = {"operational", "ephemeral"}
 MACOS_SYSTEM_PATH_ALIASES = {
@@ -67,8 +68,11 @@ CREATE TABLE applied_migrations (
 CREATE UNIQUE INDEX idx_applied_migrations_transition
     ON applied_migrations(from_version, to_version);
 """
-
 MIGRATION_V7_TO_V8_ID = "20260825_02_registry_identity"
+MIGRATION_V8_TO_V9_ID = "20260826_01_reasoning_effort_source"
+MIGRATION_V8_TO_V9_SQL = """
+ALTER TABLE runs ADD COLUMN reasoning_effort_source TEXT;
+"""
 REGISTRY_IDENTITY_TABLE_SQL = """
 CREATE TABLE registry_identity (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -113,7 +117,7 @@ MIGRATION_V7_TO_V8_SQL = "\n".join(
 )
 
 ALLOWED_TRANSITIONS = {
-    "backlog": {"ready", "archived"},
+    "backlog": {"ready", "blocked", "archived"},
     "ready": {"blocked", "archived"},
     "running": set(),
     "evaluating": {"ready", "blocked", "archived"},
@@ -201,6 +205,7 @@ CREATE TABLE IF NOT EXISTS runs (
     agent_role TEXT NOT NULL,
     model TEXT,
     reasoning_effort TEXT,
+    reasoning_effort_source TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'finished')),
     outcome TEXT,
     summary TEXT,
@@ -716,10 +721,23 @@ class Registry:
             or created.isoformat() != created_at
         ):
             raise RegistryError("registry creation time is invalid")
-        expected_metadata = _json({"schema_version": SCHEMA_VERSION})
-        if identity["creation_metadata_json"] != expected_metadata:
+        metadata_json = identity["creation_metadata_json"]
+        try:
+            metadata = json.loads(metadata_json)
+        except Exception as error:
+            raise RegistryError(
+                "registry creation metadata does not match the schema contract"
+            ) from error
+        if (
+            not isinstance(metadata, dict)
+            or "schema_version" not in metadata
+            or not isinstance(metadata["schema_version"], int)
+            or metadata["schema_version"] < 8
+            or metadata["schema_version"] > SCHEMA_VERSION
+            or _json(metadata) != metadata_json
+        ):
             raise RegistryError("registry creation metadata does not match the schema contract")
-        return {"schema_version": SCHEMA_VERSION}
+        return metadata
 
     def _validate_operational_location(self) -> None:
         repository = self.repository_identity
@@ -981,6 +999,12 @@ class Registry:
             8,
             MIGRATION_V7_TO_V8_SQL,
         )
+        effort_checksum = _migration_checksum(
+            MIGRATION_V8_TO_V9_ID,
+            8,
+            9,
+            MIGRATION_V8_TO_V9_SQL,
+        )
         return {
             1: MigrationStep(None, 1, 2, None, self._migrate_v1_to_v2),
             2: MigrationStep(None, 2, 3, None, self._migrate_v2_to_v3),
@@ -1001,6 +1025,13 @@ class Registry:
                 identity_checksum,
                 self._migrate_v7_to_v8,
             ),
+            8: MigrationStep(
+                MIGRATION_V8_TO_V9_ID,
+                8,
+                9,
+                effort_checksum,
+                self._migrate_v8_to_v9,
+            ),
         }
 
     def _inspect_existing_schema_version(self) -> int | None:
@@ -1008,29 +1039,32 @@ class Registry:
             return None
         if self.path.stat().st_size == 0:
             return None
-        with self._readonly_connection_context() as connection:
-            schema_exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
-            ).fetchone()
-            if schema_exists is None:
-                raise RegistryError(
-                    "existing nonempty registry is missing schema_meta; refusing initialization"
-                )
-            versions = connection.execute("SELECT version FROM schema_meta").fetchall()
-            if not versions:
-                raise RegistryError("registry schema version is missing")
-            if len(versions) != 1:
-                raise RegistryError("registry schema version must contain exactly one row")
-            current = int(versions[0]["version"])
-            if current > SCHEMA_VERSION:
-                raise RegistryError(
-                    f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
-                )
-            if current >= MIGRATION_LEDGER_VERSION:
-                self._validate_migration_ledger(connection, current)
-            if current >= 8:
-                self._validate_registry_identity(connection)
-            return current
+        try:
+            with self._readonly_connection_context() as connection:
+                schema_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+                ).fetchone()
+                if schema_exists is None:
+                    raise RegistryError(
+                        "existing nonempty registry is missing schema_meta; refusing initialization"
+                    )
+                versions = connection.execute("SELECT version FROM schema_meta").fetchall()
+                if not versions:
+                    raise RegistryError("registry schema version is missing")
+                if len(versions) != 1:
+                    raise RegistryError("registry schema version must contain exactly one row")
+                current = int(versions[0]["version"])
+                if current > SCHEMA_VERSION:
+                    raise RegistryError(
+                        f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
+                    )
+                if current >= MIGRATION_LEDGER_VERSION:
+                    self._validate_migration_ledger(connection, current)
+                if current >= 8:
+                    self._validate_registry_identity(connection)
+                return current
+        except sqlite3.DatabaseError:
+            return None
 
     def _validate_migration_path(self, current: int) -> None:
         plan = self._migration_plan()
@@ -1664,6 +1698,13 @@ class Registry:
             connection.execute(statement)
         self._insert_registry_identity(connection)
 
+    @staticmethod
+    def _migrate_v8_to_v9(connection: sqlite3.Connection) -> None:
+        """Add reasoning_effort_source to runs table."""
+        for statement in MIGRATION_V8_TO_V9_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -1952,7 +1993,15 @@ class Registry:
         thread_id: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
     ) -> dict[str, Any]:
+        if (
+            reasoning_effort_source is not None
+            and reasoning_effort_source not in REASONING_EFFORT_SOURCES
+        ):
+            raise RegistryError(f"invalid reasoning effort source: {reasoning_effort_source}")
+        if reasoning_effort is not None and reasoning_effort_source is None:
+            reasoning_effort_source = "declared"
         run_id = _id("run")
         with self._transaction() as connection:
             task = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -1967,13 +2016,14 @@ class Registry:
             if open_run is not None:
                 raise RegistryError(f"task already has a running run: {open_run['id']}")
             timestamp = _now()
+            clean_thread_id = (thread_id.strip() or None) if thread_id is not None else None
             changed = connection.execute(
                 """
                 UPDATE tasks
                 SET state = 'running', owner_thread_id = ?, updated_at = ?
                 WHERE id = ? AND state = 'ready'
                 """,
-                (thread_id, timestamp, task_id),
+                (clean_thread_id, timestamp, task_id),
             ).rowcount
             if changed != 1:
                 raise RegistryError(f"concurrent task dispatch detected: {task_id}")
@@ -1981,10 +2031,19 @@ class Registry:
                 """
                 INSERT INTO runs(
                     id, task_id, thread_id, agent_role, model, reasoning_effort,
-                    status, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                    reasoning_effort_source, status, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
                 """,
-                (run_id, task_id, thread_id, agent_role, model, reasoning_effort, timestamp),
+                (
+                    run_id,
+                    task_id,
+                    clean_thread_id,
+                    agent_role,
+                    model,
+                    reasoning_effort,
+                    reasoning_effort_source,
+                    timestamp,
+                ),
             )
             self._record_event(
                 connection,
@@ -1994,7 +2053,61 @@ class Registry:
                 from_state="ready",
                 to_state="running",
                 reason=f"dispatched to {agent_role}",
-                evidence=thread_id,
+                evidence=clean_thread_id,
+            )
+        return self.get_run(run_id)
+
+    def bind_run(
+        self,
+        run_id: str,
+        *,
+        thread_id: str,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
+    ) -> dict[str, Any]:
+        if not thread_id or not thread_id.strip():
+            raise RegistryError("run thread_id is required")
+        if (
+            reasoning_effort_source is not None
+            and reasoning_effort_source not in REASONING_EFFORT_SOURCES
+        ):
+            raise RegistryError(f"invalid reasoning effort source: {reasoning_effort_source}")
+        clean_thread_id = thread_id.strip()
+        with self._transaction() as connection:
+            run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["status"] != "running":
+                raise RegistryError(f"run binding requires a running run; found {run['status']}")
+            if run["thread_id"] is not None and run["thread_id"] != clean_thread_id:
+                raise RegistryError("refuse to replace run thread_id")
+            source = reasoning_effort_source
+            if reasoning_effort is not None and source is None:
+                source = (
+                    run["reasoning_effort_source"]
+                    if reasoning_effort == run["reasoning_effort"]
+                    and run["reasoning_effort_source"] is not None
+                    else "declared"
+                )
+            connection.execute(
+                """
+                UPDATE runs
+                SET thread_id = ?,
+                    model = COALESCE(?, model),
+                    reasoning_effort = COALESCE(?, reasoning_effort),
+                    reasoning_effort_source = COALESCE(?, reasoning_effort_source)
+                WHERE id = ? AND status = 'running'
+                """,
+                (clean_thread_id, model, reasoning_effort, source, run_id),
+            )
+            connection.execute(
+                """
+                UPDATE tasks
+                SET owner_thread_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_thread_id, _now(), run["task_id"]),
             )
         return self.get_run(run_id)
 
@@ -2400,6 +2513,39 @@ class Registry:
     ) -> dict[str, Any]:
         if outcome not in TERMINAL_RUN_OUTCOMES:
             raise RegistryError(f"invalid run outcome: {outcome}")
+        if artifacts is not None:
+            if not isinstance(artifacts, list):
+                raise RegistryError("run artifacts must be a list")
+            for artifact in artifacts:
+                if (
+                    not isinstance(artifact, dict)
+                    or not isinstance(artifact.get("path"), str)
+                    or not artifact["path"].strip()
+                    or not isinstance(artifact.get("kind"), str)
+                    or not artifact["kind"].strip()
+                ):
+                    raise RegistryError(
+                        "run artifacts must contain non-empty path and kind strings"
+                    )
+                stripped_path = artifact["path"].strip()
+                if os.path.isabs(stripped_path) or stripped_path.startswith(("/", "\\")):
+                    raise RegistryError(
+                        "run artifact path must be repository-relative, not absolute: "
+                        f"{stripped_path}"
+                    )
+                parts = Path(stripped_path).parts
+                if ".." in parts:
+                    raise RegistryError(
+                        f"run artifact path cannot contain directory traversal: {stripped_path}"
+                    )
+                if parts and (
+                    parts[0] in {".git", ".claude", "tmp", "temp"}
+                    or any("worktree" in part.lower() for part in parts)
+                ):
+                    raise RegistryError(
+                        "run artifact path points to transient or internal directory: "
+                        f"{stripped_path}"
+                    )
         with self._transaction() as connection:
             run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:
@@ -2459,14 +2605,21 @@ class Registry:
                 """,
                 (timestamp, run_id),
             )
-            task_outcome = "evaluating" if outcome == "succeeded" else outcome
+            if outcome == "succeeded":
+                task_outcome = "evaluating"
+            elif outcome == "cancelled":
+                task_outcome = "ready"
+            else:
+                task_outcome = outcome
+            new_blocked_on = None if task_outcome == "ready" else blocked_on
+            new_owner_thread_id = None if task_outcome == "ready" else task["owner_thread_id"]
             changed = connection.execute(
                 """
                 UPDATE tasks
-                SET state = ?, blocked_on = ?, updated_at = ?
+                SET state = ?, blocked_on = ?, owner_thread_id = ?, updated_at = ?
                 WHERE id = ? AND state = 'running'
                 """,
-                (task_outcome, blocked_on, timestamp, run["task_id"]),
+                (task_outcome, new_blocked_on, new_owner_thread_id, timestamp, run["task_id"]),
             ).rowcount
             if changed != 1:
                 raise RegistryError(f"concurrent run completion detected: {run_id}")
@@ -2532,6 +2685,29 @@ class Registry:
                 )
             if run["agent_role"] == evaluator:
                 raise RegistryError("evaluation must be independent from the run agent role")
+            if passed:
+                run_row = connection.execute(
+                    "SELECT artifacts_json FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                if run_row and run_row["artifacts_json"]:
+                    try:
+                        run_artifacts = json.loads(run_row["artifacts_json"])
+                    except Exception:
+                        run_artifacts = []
+                    if self.repository_identity and self.repository_identity.primary_checkout:
+                        checkout_root = Path(self.repository_identity.primary_checkout)
+                    elif self.path.parent.name == ".bossmode":
+                        checkout_root = self.path.parent.parent
+                    else:
+                        checkout_root = self.path.parent
+                    for art in run_artifacts:
+                        if isinstance(art, dict) and "path" in art:
+                            art_path = checkout_root / art["path"]
+                            if not art_path.exists():
+                                raise RegistryError(
+                                    "evaluation passed requires declared artifact to exist on "
+                                    f"disk: {art['path']}"
+                                )
             timestamp = _now()
             connection.execute(
                 """
@@ -2885,6 +3061,7 @@ class Registry:
                 SELECT
                     COALESCE(model, 'unspecified') AS model,
                     COALESCE(reasoning_effort, 'none') AS reasoning_effort,
+                    COALESCE(reasoning_effort_source, 'none') AS reasoning_effort_source,
                     COUNT(*) AS total_runs,
                     COUNT(
                         CASE WHEN tokens IS NOT NULL AND tokens > 0 THEN 1 END
@@ -2895,11 +3072,18 @@ class Registry:
                     ROUND(AVG(COALESCE(duration_seconds, 0)), 1) AS avg_duration_sec,
                     SUM(retries) AS total_retries,
                     ROUND(
-                        AVG(CASE WHEN outcome = 'succeeded' THEN 1.0 ELSE 0.0 END) * 100, 1
+                        AVG(
+                            CASE
+                                WHEN outcome = 'succeeded' THEN 1.0
+                                WHEN outcome = 'cancelled' THEN NULL
+                                ELSE 0.0
+                            END
+                        ) * 100,
+                        1
                     ) AS success_rate_pct
                 FROM runs
                 WHERE status = 'finished'
-                GROUP BY model, reasoning_effort
+                GROUP BY model, reasoning_effort, reasoning_effort_source
                 ORDER BY total_runs DESC
                 """
             ).fetchall()
@@ -2908,6 +3092,7 @@ class Registry:
                 {
                     "model": row["model"],
                     "reasoning_effort": row["reasoning_effort"],
+                    "reasoning_effort_source": row["reasoning_effort_source"],
                     "total_runs": row["total_runs"],
                     "runs_with_tokens": row["runs_with_tokens"],
                     "avg_tokens": row["avg_tokens"],

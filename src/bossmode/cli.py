@@ -13,6 +13,7 @@ from bossmode.bootstrap import BootstrapError, install_project_skill
 from bossmode.registry import (
     CREATE_TASK_STATES,
     FEEDBACK_CATEGORIES,
+    REASONING_EFFORT_SOURCES,
     TASK_STATES,
     TERMINAL_RUN_OUTCOMES,
     TERMINAL_TURN_OUTCOMES,
@@ -140,6 +141,26 @@ def _parser() -> argparse.ArgumentParser:
     run_start.add_argument("--thread-id", help="Live native thread or subagent task ID")
     run_start.add_argument("--model", help="Model identifier, recorded for telemetry")
     run_start.add_argument("--reasoning-effort", help="Reasoning effort, recorded for telemetry")
+    run_start.add_argument(
+        "--reasoning-effort-source",
+        choices=sorted(REASONING_EFFORT_SOURCES),
+        help="Provenance of reasoning effort value: observed, declared, or inherited-unknown",
+    )
+
+    run_bind = run_commands.add_parser(
+        "bind", help="Bind native subagent executor identity to a running run"
+    )
+    run_bind.add_argument("run_id", help="Run to bind; must be running")
+    run_bind.add_argument(
+        "--thread-id", required=True, help="Live native thread or subagent task ID"
+    )
+    run_bind.add_argument("--model", help="Model identifier, recorded for telemetry")
+    run_bind.add_argument("--reasoning-effort", help="Reasoning effort, recorded for telemetry")
+    run_bind.add_argument(
+        "--reasoning-effort-source",
+        choices=sorted(REASONING_EFFORT_SOURCES),
+        help="Provenance of reasoning effort value: observed, declared, or inherited-unknown",
+    )
 
     run_show = run_commands.add_parser("show", help="Show run details")
     run_show.add_argument("run_id", help="Run ID to show")
@@ -417,6 +438,15 @@ def _run(args: argparse.Namespace) -> Any:
                 thread_id=args.thread_id,
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
+                reasoning_effort_source=args.reasoning_effort_source,
+            )
+        if args.run_command == "bind":
+            return registry.bind_run(
+                args.run_id,
+                thread_id=args.thread_id,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+                reasoning_effort_source=args.reasoning_effort_source,
             )
         if args.run_command == "show":
             return registry.get_run(args.run_id)

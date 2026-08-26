@@ -40,8 +40,9 @@ bossmode                        # Default: converge the registry and report stat
 │   └── transition <id> <state> # Move a task to ready, blocked, or archived
 ├── run
 │   ├── start <task_id>         # Start an execution run for a worker
+│   ├── bind <run_id>           # Bind native executor identity to a running run
 │   ├── finish <run_id>         # Complete a run (task -> evaluating, waiting_user,
-│   │                           #   blocked, or failed)
+│   │                           #   blocked, failed, or cancelled)
 │   └── show <run_id>           # Show run details and turn records
 ├── herdr
 │   ├── bind <run_id>           # Link a live Herdr worker pane to a run
@@ -83,9 +84,10 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 
 ## 2. Reconcile
 
-1. From the primary checkout, run `uv run bossmode` (naked execution) or
-   `uv run bossmode reconcile` and read the JSON output. This command validates the existing
-   authority, then may write promotion proposals; it never creates or upgrades the registry.
+1. From the primary checkout, run `uv run bossmode` (or `uv run bossmode reconcile`; or
+   `uv run --project /path/to/bossmode bossmode` from a consuming repo without `bossmode` on PATH)
+   and read the JSON output. This command validates the existing authority, then may write
+   promotion proposals; it never creates or upgrades the registry.
 2. Use the nested run, binding, and turn records in `running` and `evaluating` to recover after
    interruption. Use `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` for exact records.
 3. For every active registry task, reconcile its executor against live state before sending,
@@ -107,8 +109,10 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
    independence.
 4. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
    required structured return format.
-5. For a native subagent (e.g. AGY, Codex), spawn it and record the returned thread or task ID with
-   `bossmode run start TASK_ID --role ROLE --thread-id NATIVE_ID`.
+5. For a native subagent (e.g. AGY, Codex), reserve the run first with
+   `bossmode run start TASK_ID --role ROLE`, spawn the subagent, and bind the returned thread or
+   task ID with `bossmode run bind RUN_ID --thread-id NATIVE_ID` (or pass `--thread-id` at start if
+   already known).
 6. For a Herdr worker, reserve the run with `bossmode run start` before creating any layout.
    Derive a unique worker name from the run ID, create it through the official Herdr CLI, then call
    `bossmode herdr bind --agent-kind KIND`. If binding fails after creation, reconcile the deterministic name;
@@ -141,14 +145,21 @@ Before the first external run, follow this command sequence and result contract.
 ## 5. Complete and Evaluate
 
 1. When the agent finishes, record the run outcome, summary, artifact manifest, model/runtime
-   information, retries, and timing with `bossmode run finish`.
-2. A successful run is not a passing evaluation; it moves the task to `evaluating`.
-3. Require an independent evaluation (`reviewer` role or user); self-evaluation is rejected.
-4. Record the evaluation with `bossmode evaluate TASK_ID --run-id RUN_ID --evaluator REVIEWER --passed/--failed --evidence EVIDENCE`;
+   information, retries, and timing with `bossmode run finish`. Outcomes are `succeeded` (moves
+   task to `evaluating`), `failed` (moves task to `failed`), `blocked` (moves task to `blocked`),
+   `waiting_user` (moves task to `waiting_user`), and `cancelled` (returns task directly to `ready`
+   for clean re-dispatch without recording a failure).
+2. For workers operating in isolated or ephemeral worktrees (e.g. `.claude/worktrees/...`), copy
+   or land declared artifacts into the durable repository checkout before run completion or evaluation
+   so recorded artifact paths remain durable after worktree cleanup.
+3. A successful run is not a passing evaluation; it moves the task to `evaluating`.
+4. Require an independent evaluation (`reviewer` role or user); self-evaluation is rejected. Verify
+   that declared artifacts exist at their recorded repository paths before passing.
+5. Record the evaluation with `bossmode evaluate TASK_ID --run-id RUN_ID --evaluator REVIEWER --passed/--failed --evidence EVIDENCE`;
    only a passing evaluation moves the task to `succeeded`.
-5. Record explicit user corrections or preferences with
-   `bossmode feedback TASK_ID --category CATEGORY --key KEY --content CONTENT`.
-   Choose a stable, narrowly scoped recurrence key.
+6. Record explicit user corrections, preferences, or process observations with
+   `bossmode feedback TASK_ID --category CATEGORY --key KEY --content CONTENT` (categories: `preference`,
+   `correction`, `failure`, `observation`). Choose a stable, narrowly scoped recurrence key.
 
 ## 6. Gated Promotion
 

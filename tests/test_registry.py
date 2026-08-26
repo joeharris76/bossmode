@@ -81,6 +81,7 @@ def test_dispatch_and_completion_are_transactional(registry):
     task_after_run = registry.get_task(task["id"])
     assert task_after_run["state"] == "evaluating"
 
+    (registry.path.parent / "result.md").write_text("# Result\n")
     registry.add_evaluation(
         task["id"],
         run_id=run["id"],
@@ -1742,7 +1743,7 @@ class _FailingReadConnection:
                     "git_common_dir": "",
                     "primary_checkout": "",
                     "created_at": "2026-01-01T00:00:00+00:00",
-                    "creation_metadata_json": '{"schema_version":8}',
+                    "creation_metadata_json": f'{{"schema_version":{SCHEMA_VERSION}}}',
                 }
             ]
         return []
@@ -1803,3 +1804,383 @@ def test_read_transaction_rollback_failure_preserves_original_error(
 
     assert "read transaction rollback failed: rollback failed" in caught.value.__notes__
     assert connection.calls[-2:] == ["ROLLBACK", "CLOSE"]
+
+
+def test_backlog_to_blocked_transition(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(
+        title="Backlog Task",
+        goal="Wait for dependency",
+        success_criteria="Unblocked",
+        state="backlog",
+    )
+    assert task["state"] == "backlog"
+
+    # Transition directly from backlog to blocked
+    blocked_task = registry.transition_task(
+        task["id"],
+        "blocked",
+        actor="supervisor",
+        reason="Waiting for upstream",
+        blocked_on="upstream-dep-01",
+    )
+    assert blocked_task["state"] == "blocked"
+    assert blocked_task["blocked_on"] == "upstream-dep-01"
+
+    # Verify reconcile reports the task in blocked
+    state = registry.reconcile()
+    assert any(t["id"] == task["id"] for t in state["blocked"])
+    assert state["next_task"] is None
+
+    # Transition from blocked to ready
+    ready_task = registry.transition_task(
+        task["id"],
+        "ready",
+        actor="supervisor",
+        reason="Upstream merged",
+    )
+    assert ready_task["state"] == "ready"
+    assert ready_task["blocked_on"] is None
+
+
+def test_run_bind_attaches_native_thread_and_metadata(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(
+        title="Native Task",
+        goal="Run native worker",
+        success_criteria="Pass",
+    )
+
+    # 1. Reserve run before spawning native worker
+    run = registry.start_run(task["id"], agent_role="worker")
+    assert run["thread_id"] is None
+    assert run["model"] is None
+    assert run["reasoning_effort"] is None
+    assert run["reasoning_effort_source"] is None
+
+    persisted_task = registry.get_task(task["id"])
+    assert persisted_task["state"] == "running"
+    assert persisted_task["owner_thread_id"] is None
+
+    # 2. Bind native executor identity after spawn
+    bound_run = registry.bind_run(
+        run["id"],
+        thread_id="native_subagent_42",
+        model="claude-3-7-sonnet",
+        reasoning_effort="high",
+        reasoning_effort_source="observed",
+    )
+    assert bound_run["thread_id"] == "native_subagent_42"
+    assert bound_run["model"] == "claude-3-7-sonnet"
+    assert bound_run["reasoning_effort"] == "high"
+    assert bound_run["reasoning_effort_source"] == "observed"
+
+    persisted_task = registry.get_task(task["id"])
+    assert persisted_task["owner_thread_id"] == "native_subagent_42"
+
+    # 3. Idempotent re-bind with same thread_id
+    rebound = registry.bind_run(run["id"], thread_id="native_subagent_42")
+    assert rebound["thread_id"] == "native_subagent_42"
+
+    # 4. Refuse replacing thread_id with different value
+    with pytest.raises(RegistryError, match="refuse to replace run thread_id"):
+        registry.bind_run(run["id"], thread_id="different_thread_99")
+
+    # 5. Refuse empty thread_id
+    with pytest.raises(RegistryError, match="run thread_id is required"):
+        registry.bind_run(run["id"], thread_id="   ")
+
+    # 6. Refuse binding non-existent run
+    with pytest.raises(RegistryError, match="run not found: missing_run"):
+        registry.bind_run("missing_run", thread_id="tid")
+
+    # 7. Refuse binding finished run
+    registry.finish_run(run["id"], outcome="succeeded", summary="Finished")
+    with pytest.raises(RegistryError, match="requires a running run"):
+        registry.bind_run(run["id"], thread_id="native_subagent_42")
+
+
+def test_reasoning_effort_source_validation_and_defaults(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="T", goal="G", success_criteria="S")
+
+    # Invalid source is rejected
+    with pytest.raises(RegistryError, match="invalid reasoning effort source: invalid-source"):
+        registry.start_run(
+            task["id"],
+            agent_role="worker",
+            reasoning_effort_source="invalid-source",
+        )
+
+    # Reasoning effort without source defaults to declared
+    run = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        model="sonnet-5",
+        reasoning_effort="high",
+    )
+    assert run["reasoning_effort"] == "high"
+    assert run["reasoning_effort_source"] == "declared"
+
+
+def test_run_finish_cancelled_outcome_returns_task_to_ready(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Cancellation Task", goal="Test", success_criteria="Pass")
+
+    run = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        thread_id="worker_thread_1",
+        model="opus-4",
+    )
+    assert registry.get_task(task["id"])["state"] == "running"
+
+    # Finish run as cancelled (e.g. supervisor changed model mid-flight)
+    finished_run = registry.finish_run(
+        run["id"],
+        outcome="cancelled",
+        summary="Model changed mid-flight before work started",
+    )
+    assert finished_run["status"] == "finished"
+    assert finished_run["outcome"] == "cancelled"
+
+    # Task immediately returns to ready in one step
+    persisted_task = registry.get_task(task["id"])
+    assert persisted_task["state"] == "ready"
+    assert persisted_task["owner_thread_id"] is None
+    assert persisted_task["blocked_on"] is None
+
+    # Reconcile immediately offers task as next dispatchable
+    state = registry.reconcile()
+    assert state["next_task"]["id"] == task["id"]
+    assert state["running"] == []
+
+    # Verify task events
+    events = persisted_task["events"]
+    cancelled_event = next(e for e in events if e["from_state"] == "running")
+    assert cancelled_event["to_state"] == "ready"
+    assert "Model changed mid-flight" in cancelled_event["reason"]
+
+    # Re-dispatch with new model succeeds cleanly
+    run2 = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        thread_id="worker_thread_2",
+        model="sonnet-5",
+        reasoning_effort="high",
+    )
+    assert run2["status"] == "running"
+    assert registry.get_task(task["id"])["state"] == "running"
+
+
+def test_worktree_observation_feedback_and_promotions(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Landing Task", goal="Test", success_criteria="Pass")
+
+    # 1. Observation feedback proposes memory
+    fb1 = registry.add_feedback(
+        task["id"],
+        category="observation",
+        recurrence_key="worktree.artifact-landing",
+        content="Copy artifacts from ephemeral worktree before run completion",
+    )
+    assert fb1["category"] == "observation"
+
+    proposals = registry.propose_promotions()
+    assert len(proposals) == 1
+    assert proposals[0]["target_layer"] == "memory"
+    assert proposals[0]["recurrence_key"] == "worktree.artifact-landing"
+
+    # 2. Repeated correction feedback with passing eval proposes skill
+    run = registry.start_run(task["id"], agent_role="worker")
+    registry.finish_run(run["id"], outcome="succeeded", summary="Done")
+    registry.add_evaluation(
+        task["id"],
+        run_id=run["id"],
+        evaluator="reviewer",
+        passed=True,
+        evidence="Artifacts verified in checkout",
+    )
+    registry.add_feedback(
+        task["id"],
+        category="correction",
+        recurrence_key="worktree.artifact-landing",
+        content="Always stage artifacts into project checkout",
+    )
+    registry.add_feedback(
+        task["id"],
+        category="correction",
+        recurrence_key="worktree.artifact-landing",
+        content="Ensure artifacts land before evaluation gate",
+    )
+
+    proposals = registry.propose_promotions()
+    skill_promo = next(p for p in proposals if p["recurrence_key"] == "worktree.artifact-landing")
+    assert skill_promo["target_layer"] == "skill"
+    assert "Repeated correction appeared 2 times" in skill_promo["rationale"]
+
+
+def test_finish_run_validates_artifact_structure(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Artifact Task", goal="Test", success_criteria="Pass")
+    run = registry.start_run(task["id"], agent_role="worker")
+
+    # Invalid artifact shapes
+    with pytest.raises(RegistryError, match="run artifacts must contain non-empty path and kind"):
+        registry.finish_run(
+            run["id"], outcome="succeeded", summary="Done", artifacts=["not-a-dict"]
+        )
+
+    with pytest.raises(RegistryError, match="run artifacts must contain non-empty path and kind"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": "", "kind": "code"}],
+        )
+
+    with pytest.raises(RegistryError, match="run artifacts must contain non-empty path and kind"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": "file.py"}],
+        )
+
+    # Valid artifact shape
+    finished = registry.finish_run(
+        run["id"],
+        outcome="succeeded",
+        summary="Done",
+        artifacts=[{"path": "specs/openapi.json", "kind": "schema", "sha256": "abc123"}],
+    )
+    assert finished["artifacts"] == [
+        {"path": "specs/openapi.json", "kind": "schema", "sha256": "abc123"}
+    ]
+
+
+def test_finish_run_rejects_nondurable_artifact_paths(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Artifact Path Task", goal="Test", success_criteria="Pass")
+    run = registry.start_run(task["id"], agent_role="worker")
+
+    # Absolute path
+    with pytest.raises(RegistryError, match="must be repository-relative, not absolute"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": "/tmp/output.json", "kind": "schema"}],
+        )
+
+    # Directory traversal
+    with pytest.raises(RegistryError, match="cannot contain directory traversal"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": "../parent.json", "kind": "schema"}],
+        )
+
+    # Ephemeral / worktree directory
+    with pytest.raises(RegistryError, match="points to transient or internal directory"):
+        registry.finish_run(
+            run["id"],
+            outcome="succeeded",
+            summary="Done",
+            artifacts=[{"path": ".claude/worktrees/wf_123/output.json", "kind": "schema"}],
+        )
+
+
+def test_add_evaluation_requires_declared_artifacts_to_exist_on_disk(tmp_path):
+    registry = Registry(tmp_path / ".bossmode" / "control.db")
+    task = registry.create_task(title="Eval Artifact Task", goal="Test", success_criteria="Pass")
+    run = registry.start_run(task["id"], agent_role="worker")
+    registry.finish_run(
+        run["id"],
+        outcome="succeeded",
+        summary="Done",
+        artifacts=[{"path": "specs/openapi.json", "kind": "schema"}],
+    )
+
+    # File does not exist yet -> passing evaluation fails
+    with pytest.raises(
+        RegistryError, match="declared artifact to exist on disk: specs/openapi.json"
+    ):
+        registry.add_evaluation(
+            task["id"],
+            run_id=run["id"],
+            evaluator="reviewer",
+            passed=True,
+            evidence="checked",
+        )
+
+    # Failed evaluation does not require artifacts to exist
+    failed_eval = registry.add_evaluation(
+        task["id"],
+        run_id=run["id"],
+        evaluator="reviewer",
+        passed=False,
+        evidence="missing artifacts",
+    )
+    assert failed_eval["passed"] == 0
+
+    # Create the artifact file -> now passing evaluation succeeds on a fresh task
+    task2 = registry.create_task(title="Eval Artifact Task 2", goal="Test", success_criteria="Pass")
+    run2 = registry.start_run(task2["id"], agent_role="worker")
+    registry.finish_run(
+        run2["id"],
+        outcome="succeeded",
+        summary="Done 2",
+        artifacts=[{"path": "specs/openapi.json", "kind": "schema"}],
+    )
+    artifact_file = tmp_path / "specs" / "openapi.json"
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text("{}")
+
+    passed_eval = registry.add_evaluation(
+        task2["id"],
+        run_id=run2["id"],
+        evaluator="reviewer",
+        passed=True,
+        evidence="artifact present on disk",
+    )
+    assert passed_eval["passed"] == 1
+
+
+def test_start_run_with_blank_thread_id_allows_subsequent_bind(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Blank Thread Task", goal="Test", success_criteria="Pass")
+    run = registry.start_run(task["id"], agent_role="worker", thread_id="   ")
+    assert run["thread_id"] is None
+
+    bound = registry.bind_run(run["id"], thread_id="native-thread-123")
+    assert bound["thread_id"] == "native-thread-123"
+
+
+def test_bind_run_replacement_effort_resets_provenance_to_declared(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Effort Task", goal="Test", success_criteria="Pass")
+    run = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        reasoning_effort="medium",
+        reasoning_effort_source="observed",
+    )
+    assert run["reasoning_effort"] == "medium"
+    assert run["reasoning_effort_source"] == "observed"
+
+    # Replacing effort without explicit source resets to declared
+    bound = registry.bind_run(run["id"], thread_id="t1", reasoning_effort="high")
+    assert bound["reasoning_effort"] == "high"
+    assert bound["reasoning_effort_source"] == "declared"
+
+    # Explicit source is respected
+    bound2 = registry.bind_run(
+        run["id"],
+        thread_id="t1",
+        reasoning_effort="high",
+        reasoning_effort_source="observed",
+    )
+    assert bound2["reasoning_effort"] == "high"
+    assert bound2["reasoning_effort_source"] == "observed"

@@ -88,6 +88,7 @@ def test_maintenance_telemetry_aggregations(tmp_path: Path) -> None:
 
     claude_stats = next(t for t in telemetry if t["model"] == "claude-3-7-sonnet")
     assert claude_stats["reasoning_effort"] == "high"
+    assert claude_stats["reasoning_effort_source"] == "declared"
     assert claude_stats["total_runs"] == 2
     assert claude_stats["runs_with_tokens"] == 2
     assert claude_stats["avg_tokens"] == 8000.0
@@ -96,11 +97,65 @@ def test_maintenance_telemetry_aggregations(tmp_path: Path) -> None:
 
     pi_stats = next(t for t in telemetry if t["model"] == "pi-base")
     assert pi_stats["reasoning_effort"] == "none"
+    assert pi_stats["reasoning_effort_source"] == "none"
     assert pi_stats["total_runs"] == 1
     assert pi_stats["runs_with_tokens"] == 0
     assert pi_stats["avg_tokens"] is None
     assert pi_stats["avg_duration_sec"] == 5.0
     assert pi_stats["success_rate_pct"] == 100.0
+
+
+def test_maintenance_telemetry_with_reasoning_effort_sources(tmp_path: Path) -> None:
+    db_path = tmp_path / "control.db"
+    registry = Registry(db_path)
+
+    # Run 1: declared high effort
+    t1 = registry.create_task(title="T1", goal="G1", success_criteria="Pass")
+    r1 = registry.start_run(
+        t1["id"],
+        agent_role="worker",
+        model="sonnet-5",
+        reasoning_effort="high",
+        reasoning_effort_source="declared",
+    )
+    registry.finish_run(r1["id"], outcome="succeeded", summary="Done 1", tokens=1000)
+
+    # Run 2: observed high effort
+    t2 = registry.create_task(title="T2", goal="G2", success_criteria="Pass")
+    r2 = registry.start_run(
+        t2["id"],
+        agent_role="worker",
+        model="sonnet-5",
+        reasoning_effort="high",
+        reasoning_effort_source="observed",
+    )
+    registry.finish_run(r2["id"], outcome="succeeded", summary="Done 2", tokens=1200)
+
+    # Run 3: inherited-unknown effort
+    t3 = registry.create_task(title="T3", goal="G3", success_criteria="Pass")
+    r3 = registry.start_run(
+        t3["id"],
+        agent_role="worker",
+        model="sonnet-5",
+        reasoning_effort_source="inherited-unknown",
+    )
+    registry.finish_run(r3["id"], outcome="succeeded", summary="Done 3", tokens=800)
+
+    report = registry.run_maintenance()
+    telemetry = report["telemetry"]
+    assert len(telemetry) == 3
+
+    declared = next(t for t in telemetry if t["reasoning_effort_source"] == "declared")
+    assert declared["reasoning_effort"] == "high"
+    assert declared["avg_tokens"] == 1000.0
+
+    observed = next(t for t in telemetry if t["reasoning_effort_source"] == "observed")
+    assert observed["reasoning_effort"] == "high"
+    assert observed["avg_tokens"] == 1200.0
+
+    inherited = next(t for t in telemetry if t["reasoning_effort_source"] == "inherited-unknown")
+    assert inherited["reasoning_effort"] == "none"
+    assert inherited["avg_tokens"] == 800.0
 
 
 def test_maintenance_detects_orphaned_turns_and_warning_health(tmp_path: Path) -> None:
@@ -208,3 +263,28 @@ def test_cli_maintenance_command(tmp_path: Path, capsys) -> None:
     assert "id" in data
     assert data["database"]["integrity"] == "ok"
     assert data["health"]["status"] == "healthy"
+
+
+def test_maintenance_telemetry_ignores_cancelled_runs_in_success_rate(tmp_path: Path) -> None:
+    db_path = tmp_path / "control.db"
+    registry = Registry(db_path)
+
+    # 1. Run that was cancelled alone -> success_rate_pct is None, not 0.0
+    task1 = registry.create_task(title="Task 1", goal="Goal 1", success_criteria="Pass")
+    run1 = registry.start_run(task1["id"], agent_role="worker", model="model-cancel")
+    registry.finish_run(run1["id"], outcome="cancelled", summary="Cancelled")
+
+    report = registry.run_maintenance()
+    stats = next(t for t in report["telemetry"] if t["model"] == "model-cancel")
+    assert stats["total_runs"] == 1
+    assert stats["success_rate_pct"] is None
+
+    # 2. Add a succeeded run to the same model group -> success_rate_pct is 100.0 (1/1 evaluated)
+    task2 = registry.create_task(title="Task 2", goal="Goal 2", success_criteria="Pass")
+    run2 = registry.start_run(task2["id"], agent_role="worker", model="model-cancel")
+    registry.finish_run(run2["id"], outcome="succeeded", summary="Done")
+
+    report2 = registry.run_maintenance()
+    stats2 = next(t for t in report2["telemetry"] if t["model"] == "model-cancel")
+    assert stats2["total_runs"] == 2
+    assert stats2["success_rate_pct"] == 100.0

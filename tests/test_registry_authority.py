@@ -85,7 +85,7 @@ def test_registry_create_binds_immutable_primary_identity(
     assert identity["repository_url"] == REPOSITORY_URL
     assert Path(identity["git_common_dir"]) == repository / ".git"
     assert Path(identity["primary_checkout"]) == repository
-    assert identity["creation_metadata"] == {"schema_version": 8}
+    assert identity["creation_metadata"] == {"schema_version": 9}
     with closing(sqlite3.connect(database)) as connection:
         with pytest.raises(sqlite3.IntegrityError, match="registry identity is immutable"):
             connection.execute("UPDATE registry_identity SET repository_url = 'changed'")
@@ -111,8 +111,10 @@ def test_only_registry_create_can_upgrade_schema_v7_operational_history(
     assert main(["registry", "create"]) == 0
     identity = Registry.open_for_command(database, explicit_path=False).get_registry_identity()
     first_registry_id = identity["registry_id"]
-    backups = list((database.parent / "backups").glob("control.db.schema-7.*.sqlite3"))
-    assert len(backups) == 1
+    backups_v7 = list((database.parent / "backups").glob("control.db.schema-7.*.sqlite3"))
+    backups_v8 = list((database.parent / "backups").glob("control.db.schema-8.*.sqlite3"))
+    assert len(backups_v7) == 1
+    assert len(backups_v8) == 1
     assert identity["registry_role"] == "operational"
     assert identity["repository_url"] == REPOSITORY_URL
     with closing(sqlite3.connect(database)) as connection:
@@ -124,7 +126,7 @@ def test_only_registry_create_can_upgrade_schema_v7_operational_history(
     assert main(["registry", "create"]) == 0
     repeated = Registry.open_for_command(database, explicit_path=False).get_registry_identity()
     assert repeated["registry_id"] == first_registry_id
-    assert len(list((database.parent / "backups").glob("*.sqlite3"))) == 1
+    assert len(list((database.parent / "backups").glob("*.sqlite3"))) == 2
 
 
 def test_v7_to_v8_revalidates_live_origin_after_backup_and_rolls_back(
