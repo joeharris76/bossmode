@@ -23,7 +23,7 @@ user
   -> supervisor (any coordinator: AGY, Codex, Claude, Pi, Grok, Muse)
        -> registry CLI / SQLite (durable control record)
        -> native subagent tools ------> native subagent (e.g. Codex, AGY)
-       -> official Herdr CLI ---------> external agent (pi, codex, claude, agy, grok, muse)
+       -> official Herdr CLI ---------> external agent (pi, codex, claude, agy, grok)
        -> independent reviewer -------> evaluation
   <- material result, blocker, or approval request
 ```
@@ -65,7 +65,7 @@ history. There is no merge-back or adoption command.
 | Supervisor (Any Agent) | Reconciliation, one-at-a-time dispatch, prompt envelopes, evidence checks, and state transitions | Vendor session internals |
 | Registry | Durable task/run/turn IDs, state machines, prompt digests, artifact paths, evaluations, and feedback | Live agent identity or liveness |
 | Native runtime | Native subagent creation, messaging, waiting, and live task identity | MVP task state |
-| Herdr | External agent processes (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`), panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
+| Herdr | External agent processes (`pi`, `codex`, `claude`, `agy`, `grok`), panes, lifecycle observations, and native session restoration | Turn correlation or MVP success criteria |
 | Worker | The bounded task and its declared artifacts | Self-approval or policy changes |
 | Reviewer | Independent checks against the task's success criteria | Rewriting a failed result unless separately authorized |
 
@@ -78,6 +78,22 @@ operational schema. `bossmode reconcile` is open-only: it validates the existing
 materialises promotion proposals, and reports task buckets. Verifying a stored worker identity
 against live Herdr or native runtime state is a separate supervisor responsibility that Bossmode
 never performs for you.
+
+## Select an executor explicitly
+
+Choose the task role and execution path as separate decisions. Use the narrowest role that can
+complete the bounded task: researcher for read-heavy evidence, worker for authorized changes, or
+reviewer for independent evaluation. Then choose an agent from current capabilities, permissions,
+interaction needs, and availability. Honor a user-requested agent when it is available and within
+scope.
+
+Use a native subagent only when the host runtime provides the required lifecycle and identity
+controls. Use Herdr when the task explicitly requests an external interactive agent or needs a
+visible pane and durable detach/reattach behavior, and verify the selected kind against live Herdr
+state. Do not route automatically from historical scores, model names, pricing, or provider labels.
+The registry's model and reasoning fields are caller-supplied telemetry, not proof of what ran. A
+different provider or model-family label does not replace independent evaluation and artifact
+evidence. ADR 0005 records the decision gates for reconsidering automatic selection.
 
 ## Common task lifecycle
 
