@@ -122,7 +122,11 @@ moves `running` to `evaluating`, `waiting_user`, `blocked`, `failed`, or directl
 | `run finish RUN_ID` | `RUN_ID`, `--outcome`, `--summary` | `--artifacts-json ARRAY`, `--tokens`, `--duration-seconds`, `--retries`, `--blocked-on` |
 
 Run outcomes are `waiting_user`, `blocked`, `succeeded`, `failed`, and `cancelled`. A successful run moves its
-task to `evaluating`, not final success. A `cancelled` run returns its task directly to `ready` for re-dispatch
+task to `evaluating`, not final success; each artifact in `--artifacts-json` is repository-relative
+(never absolute, never worktree-internal) and is secured as `accepted-commit` (committed on the
+accepted head) or `central-copy` (copied into `.bossmode/artifacts/` via the descriptor-bound
+store with `O_NOFOLLOW`/`fstat` checks, bounded by `MAX_ARTIFACT_SIZE_BYTES` and
+`MAX_ARTIFACTS_PER_RUN`). A `cancelled` run returns its task directly to `ready` for re-dispatch
 without counting as a failure.
 
 `--reasoning-effort-source` records provenance for reasoning effort values: `observed` (measured from runtime), `declared` (explicitly requested by supervisor), or `inherited-unknown` (inherited runtime default). Defaults to `declared` when reasoning effort is provided without an explicit source.
@@ -149,11 +153,17 @@ Turn purposes are `task`, `correction`, `clarification`, and `review_follow_up`.
 are `blocked`, `succeeded`, `failed`, and `unknown`. A successful finish validates the exact bounded
 JSON result allocated by `turn start`; terminal text alone is not success evidence. `--summary` is
 required when the outcome is `blocked`, `failed`, or `unknown`. For `succeeded`, the validated result
-file supplies the summary; an optional `--summary` must match that file exactly.
+file supplies the summary; an optional `--summary` must match that file exactly. The validated
+envelope must bind to the exact `registry_id`, `task_id`, `run_id`, `turn_id`, prompt digest,
+accepted head, and `outcome`; a canonical SHA-256 digest over the sorted-keys JSON is computed and
+persisted for integrity and replay correlation, not as cryptographic authentication. Declared
+artifacts are repository-relative with a disposition (`accepted-commit` or `central-copy`) and are
+validated beneath the trusted central root without absolute worker paths.
 
 A turn records `status` (`running` or `finished`) and `outcome` separately, matching runs. The
 worker result file reports `outcome` with the same four values; the registry validates it before
-storing it.
+storing it. A successful finish also persists the canonical `result_digest` and normalizes each
+artifact entry.
 
 ## Evaluation and feedback
 

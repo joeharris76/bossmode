@@ -360,3 +360,114 @@ def test_secure_and_adopt_run_artifacts(tmp_path):
     # Verify central copy is present in central store
     assert (store_dir / "data" / "result.json").exists()
     assert (store_dir / "data" / "result.json").read_text() == '{"key": "val"}'
+
+
+def test_artifact_store_rejects_prefix_collision(tmp_path):
+    """Adoption must not confuse sibling names that share a string prefix."""
+    store_dir = tmp_path / "central_store"
+    worktree_dir = tmp_path / "worktree"
+    worktree_dir.mkdir()
+    (worktree_dir / "reports").mkdir()
+    (worktree_dir / "reports-evil").mkdir()
+    (worktree_dir / "reports" / "ok.txt").write_text("ok")
+    (worktree_dir / "reports-evil" / "bad.txt").write_text("bad")
+    store = CentralArtifactStore(store_dir)
+    # reports/ok.txt must resolve under reports, not bleed into reports-evil.
+    data = store.read_bounded_bytes("reports/ok.txt", base_dir=worktree_dir)
+    assert data == b"ok"
+    # Central store adopts under the exact relative path; sibling prefix is distinct.
+    store.adopt_file_to_central("reports/ok.txt", source_base_dir=worktree_dir)
+    assert (store_dir / "reports" / "ok.txt").exists()
+    assert not (store_dir / "reports-evil").exists()
+    # Descriptor walk must not resolve reports-evil when asked for reports/ok.txt.
+    # If containment used startswith, "reports-evil/bad.txt".startswith("reports")
+    # would incorrectly pass; descriptor walk prevents that by construction.
+    data2 = store.read_bounded_bytes("reports-evil/bad.txt", base_dir=worktree_dir)
+    assert data2 == b"bad"
+
+
+def test_artifact_store_rejects_fifo_and_device_special_files(tmp_path):
+    store_dir = tmp_path / "central_store"
+    worktree_dir = tmp_path / "worktree"
+    worktree_dir.mkdir()
+    fifo = worktree_dir / "pipe"
+    try:
+        import os
+
+        os.mkfifo(fifo)
+    except (AttributeError, OSError, NotImplementedError):
+        pytest.skip("mkfifo not available")
+    store = CentralArtifactStore(store_dir)
+    with pytest.raises(ArtifactError, match="regular file"):
+        store.read_bounded_bytes("pipe", base_dir=worktree_dir)
+    with pytest.raises(ArtifactError, match="regular file"):
+        store.adopt_file_to_central("pipe", source_base_dir=worktree_dir)
+
+
+def test_artifact_store_swap_race_mitigated_by_held_descriptor(tmp_path):
+    """Held parent descriptor keeps the original directory even after path swap."""
+    import os
+
+    store_dir = tmp_path / "central_store"
+    worktree_dir = tmp_path / "worktree"
+    worktree_dir.mkdir()
+    (worktree_dir / "a").mkdir()
+    (worktree_dir / "a" / "file.txt").write_text("original")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "file.txt").write_text("evil")
+    store = CentralArtifactStore(store_dir)
+    # First hold the parent descriptor before any swap.
+    base = worktree_dir.resolve()
+    parent_fd = store._open_directory_descriptor(base, ("a",), create=False)
+    try:
+        # Swap the path on disk while descriptor is held.
+        (worktree_dir / "a").rename(tmp_path / "a_orig")
+        (worktree_dir / "a").symlink_to(outside)
+        # Reading via the held descriptor still sees the original file, not the symlink target.
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open("file.txt", flags, dir_fd=parent_fd)
+        try:
+            data = os.read(fd, 64)
+        finally:
+            os.close(fd)
+        assert data == b"original"
+        # But a fresh walk that re-resolves the path must reject the symlink parent.
+        with pytest.raises(ArtifactError, match="cannot be a symlink"):
+            store.read_bounded_bytes("a/file.txt", base_dir=worktree_dir)
+    finally:
+        os.close(parent_fd)
+        if (worktree_dir / "a").is_symlink():
+            (worktree_dir / "a").unlink()
+            (tmp_path / "a_orig").rename(worktree_dir / "a")
+        elif not (worktree_dir / "a").exists():
+            (tmp_path / "a_orig").rename(worktree_dir / "a")
+
+
+def test_validate_result_envelope_rejects_replayed_turn_id():
+    store = CentralArtifactStore("/tmp/unused")
+    payload = {
+        "turn_id": "turn_right",
+        "outcome": "succeeded",
+        "summary": "done",
+        "artifacts": [{"path": "a.txt", "kind": "file"}],
+    }
+    raw = json.dumps(payload).encode()
+    # Replaying the same payload under a different expected turn_id must fail.
+    with pytest.raises(ArtifactError, match="turn result ID mismatch"):
+        store.validate_result_envelope(raw, expected_turn_id="turn_other")
+
+
+def test_validate_result_envelope_rejects_absolute_path_outside_source(tmp_path):
+    store = CentralArtifactStore(tmp_path / "central")
+    # Absolute path outside source_base_dir must be rejected as repository-relative.
+    payload = {
+        "turn_id": "t1",
+        "outcome": "succeeded",
+        "summary": "done",
+        "artifacts": [{"path": "/tmp/evil.txt", "kind": "file"}],
+    }
+    with pytest.raises(ArtifactError, match="repository-relative"):
+        store.validate_result_envelope(
+            json.dumps(payload), expected_turn_id="t1", source_base_dir=tmp_path
+        )

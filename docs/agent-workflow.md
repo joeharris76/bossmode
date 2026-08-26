@@ -220,7 +220,8 @@ Logical task: Produce the requested report
 herdr agent prompt worker_1234abcd "ENVELOPED_PROMPT" --wait
 ```
 
-The result file contract is:
+The worker writes its result to the allocated turn path. For a Herdr turn,
+the file contract is:
 
 ```json
 {
@@ -231,11 +232,26 @@ The result file contract is:
 }
 ```
 
+For isolated worktrees, the same bounded JSON contract applies and artifact
+paths are repository-relative (for example `specs/openapi.json`), never
+absolute or worktree-internal. The central artifact boundary resolves each path
+by construction beneath a trusted root descriptor with `O_NOFOLLOW` and
+post-open `fstat` validation, not a string-prefix check. Each artifact is
+recorded with a disposition (`accepted-commit` or `central-copy`) and an
+envelope digest; a SHA-256 `result_digest` is computed over the canonical
+JSON (sorted keys, no whitespace) and stored for integrity and replay
+correlation. That digest is not cryptographic authentication — a worker that
+knows the fields can recompute it — and workers must not declare absolute
+worker paths as artifacts.
+
 Allowed terminal outcomes are `succeeded`, `blocked`, `failed`, and `unknown`. The result file
 reports the worker's `outcome`; the registry validates it and stores it alongside a `status` of
-`finished`, matching runs. For success,
-`turn finish` reads at most 1 MiB from the exact generated path, validates the JSON object, requires
-the matching `turn_id` and `succeeded` status, and stores the validated result:
+`finished`, matching runs. A successful envelope must bind to the exact
+`registry_id`, `task_id`, `run_id`, `turn_id`, prompt digest, accepted head, and
+`outcome`; `turn finish` rejects a replayed or mismatched envelope and records
+the canonical digest. For success, `turn finish` reads at most 1 MiB from the
+exact generated path, validates the JSON object, requires the matching `turn_id`
+and `succeeded` status, and stores the validated result:
 
 ```bash
 uv run bossmode turn finish TURN_ID \
@@ -259,23 +275,36 @@ transition the task back to `ready`, start a new run, and bind the same live wor
 session. Finished-run bindings become `stale`, so they retain history without reserving the live
 worker name. Do not replace a worker merely because its pane moved or the server restarted.
 
-## Artifact durability and worktree landing
+## Artifact durability, central adoption, and worktree landing
 
 When subagents or external workers operate in isolated, branched, or ephemeral worktrees (such as
-Claude Code `.claude/worktrees/...` or temporary workspaces created by agent workflows):
+Claude Code `.claude/worktrees/...` or temporary workspaces created by agent workflows), the
+operational checkout remains the durable owner while `.bossmode/artifacts/` in the primary
+checkout is the bounded central artifact root.
 
 1. **Ephemeral Workspace Risk**: Ephemeral worktrees are subject to automatic cleanup upon worker
    settlement or command completion. If a worker leaves its generated files only inside an ephemeral
    worktree directory without committing or landing them into the project repository, those files will
    be destroyed when the worktree is cleaned up.
-2. **Landing Before Run Completion**: Before completing a run (`bossmode run finish`), copy, cherry-pick,
+2. **Adopt or Commit Before Teardown**: Before a worktree can be retired, each declared artifact
+   must be durable as either `accepted-commit` (present in an accepted Git commit) or
+   `central-copy` (copied into the primary checkout's `.bossmode/artifacts/` through the
+   descriptor-bound adoption path). Closeout must block while any artifact remains only in a
+   removable worktree.
+3. **Landing Before Run Completion**: Before completing a run (`bossmode run finish`), copy, cherry-pick,
    or merge the produced artifact files from the ephemeral worktree into their permanent paths in the
-   primary repository checkout.
-3. **Durable Artifact Manifest**: The `--artifacts-json` manifest recorded in `bossmode run finish`
+   primary repository checkout, or adopt them as `central-copy`. The adoption implementation
+   holds a directory descriptor on the trusted central root and validates each component with
+   `O_NOFOLLOW` and post-open `fstat` (no `realpath.startswith` prefix check); worker-controlled
+   symlinks, prefix collisions (`reports` vs `reports-evil`), swap races, oversized or special
+   files, and absolute paths are rejected.
+4. **Durable Artifact Manifest**: The `--artifacts-json` manifest recorded in `bossmode run finish`
    must use durable repository-relative paths (e.g. `specs/openapi.json`), not transient paths inside
-   ephemeral worktree folders (e.g. `.claude/worktrees/wf_...`).
-4. **Pre-Evaluation Integrity Check**: Independent evaluation must verify that declared artifacts
-   actually exist and are intact at their recorded destination paths before recording
+   ephemeral worktree folders (e.g. `.claude/worktrees/wf_...`) and not absolute worker paths.
+   The envelope digest is for integrity and correlation; it does not authenticate provenance.
+5. **Pre-Evaluation Integrity Check**: Independent evaluation must verify that declared artifacts
+   actually exist at their recorded destination — `accepted-commit` files on the accepted head,
+   `central-copy` files in `.bossmode/artifacts/` — and are intact before recording
    `bossmode evaluate TASK_ID --passed`.
 
 ## Recover after interruption
