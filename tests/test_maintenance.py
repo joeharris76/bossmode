@@ -263,3 +263,28 @@ def test_cli_maintenance_command(tmp_path: Path, capsys) -> None:
     assert "id" in data
     assert data["database"]["integrity"] == "ok"
     assert data["health"]["status"] == "healthy"
+
+
+def test_maintenance_telemetry_ignores_cancelled_runs_in_success_rate(tmp_path: Path) -> None:
+    db_path = tmp_path / "control.db"
+    registry = Registry(db_path)
+
+    # 1. Run that was cancelled alone -> success_rate_pct is None, not 0.0
+    task1 = registry.create_task(title="Task 1", goal="Goal 1", success_criteria="Pass")
+    run1 = registry.start_run(task1["id"], agent_role="worker", model="model-cancel")
+    registry.finish_run(run1["id"], outcome="cancelled", summary="Cancelled")
+
+    report = registry.run_maintenance()
+    stats = next(t for t in report["telemetry"] if t["model"] == "model-cancel")
+    assert stats["total_runs"] == 1
+    assert stats["success_rate_pct"] is None
+
+    # 2. Add a succeeded run to the same model group -> success_rate_pct is 100.0 (1/1 evaluated)
+    task2 = registry.create_task(title="Task 2", goal="Goal 2", success_criteria="Pass")
+    run2 = registry.start_run(task2["id"], agent_role="worker", model="model-cancel")
+    registry.finish_run(run2["id"], outcome="succeeded", summary="Done")
+
+    report2 = registry.run_maintenance()
+    stats2 = next(t for t in report2["telemetry"] if t["model"] == "model-cancel")
+    assert stats2["total_runs"] == 2
+    assert stats2["success_rate_pct"] == 100.0

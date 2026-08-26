@@ -721,10 +721,23 @@ class Registry:
             or created.isoformat() != created_at
         ):
             raise RegistryError("registry creation time is invalid")
-        expected_metadata = _json({"schema_version": SCHEMA_VERSION})
-        if identity["creation_metadata_json"] != expected_metadata:
+        metadata_json = identity["creation_metadata_json"]
+        try:
+            metadata = json.loads(metadata_json)
+        except Exception as error:
+            raise RegistryError(
+                "registry creation metadata does not match the schema contract"
+            ) from error
+        if (
+            not isinstance(metadata, dict)
+            or "schema_version" not in metadata
+            or not isinstance(metadata["schema_version"], int)
+            or metadata["schema_version"] < 8
+            or metadata["schema_version"] > SCHEMA_VERSION
+            or _json(metadata) != metadata_json
+        ):
             raise RegistryError("registry creation metadata does not match the schema contract")
-        return {"schema_version": SCHEMA_VERSION}
+        return metadata
 
     def _validate_operational_location(self) -> None:
         repository = self.repository_identity
@@ -984,7 +997,7 @@ class Registry:
             MIGRATION_V7_TO_V8_ID,
             7,
             8,
-            REGISTRY_IDENTITY_TABLE_SQL + "\n" + "\n".join(REGISTRY_IDENTITY_GUARD_SQL),
+            MIGRATION_V7_TO_V8_SQL,
         )
         effort_checksum = _migration_checksum(
             MIGRATION_V8_TO_V9_ID,
@@ -2003,7 +2016,7 @@ class Registry:
             if open_run is not None:
                 raise RegistryError(f"task already has a running run: {open_run['id']}")
             timestamp = _now()
-            clean_thread_id = thread_id.strip() if thread_id is not None else None
+            clean_thread_id = (thread_id.strip() or None) if thread_id is not None else None
             changed = connection.execute(
                 """
                 UPDATE tasks
@@ -2070,11 +2083,12 @@ class Registry:
             if run["thread_id"] is not None and run["thread_id"] != clean_thread_id:
                 raise RegistryError("refuse to replace run thread_id")
             source = reasoning_effort_source
-            if source is None and reasoning_effort is not None:
+            if reasoning_effort is not None and source is None:
                 source = (
-                    "declared"
-                    if run["reasoning_effort_source"] is None
-                    else run["reasoning_effort_source"]
+                    run["reasoning_effort_source"]
+                    if reasoning_effort == run["reasoning_effort"]
+                    and run["reasoning_effort_source"] is not None
+                    else "declared"
                 )
             connection.execute(
                 """
@@ -2499,18 +2513,39 @@ class Registry:
     ) -> dict[str, Any]:
         if outcome not in TERMINAL_RUN_OUTCOMES:
             raise RegistryError(f"invalid run outcome: {outcome}")
-        if artifacts is not None and (
-            not isinstance(artifacts, list)
-            or any(
-                not isinstance(artifact, dict)
-                or not isinstance(artifact.get("path"), str)
-                or not artifact["path"].strip()
-                or not isinstance(artifact.get("kind"), str)
-                or not artifact["kind"].strip()
-                for artifact in artifacts
-            )
-        ):
-            raise RegistryError("run artifacts must contain non-empty path and kind strings")
+        if artifacts is not None:
+            if not isinstance(artifacts, list):
+                raise RegistryError("run artifacts must be a list")
+            for artifact in artifacts:
+                if (
+                    not isinstance(artifact, dict)
+                    or not isinstance(artifact.get("path"), str)
+                    or not artifact["path"].strip()
+                    or not isinstance(artifact.get("kind"), str)
+                    or not artifact["kind"].strip()
+                ):
+                    raise RegistryError(
+                        "run artifacts must contain non-empty path and kind strings"
+                    )
+                stripped_path = artifact["path"].strip()
+                if os.path.isabs(stripped_path) or stripped_path.startswith(("/", "\\")):
+                    raise RegistryError(
+                        "run artifact path must be repository-relative, not absolute: "
+                        f"{stripped_path}"
+                    )
+                parts = Path(stripped_path).parts
+                if ".." in parts:
+                    raise RegistryError(
+                        f"run artifact path cannot contain directory traversal: {stripped_path}"
+                    )
+                if parts and (
+                    parts[0] in {".git", ".claude", "tmp", "temp"}
+                    or any("worktree" in part.lower() for part in parts)
+                ):
+                    raise RegistryError(
+                        "run artifact path points to transient or internal directory: "
+                        f"{stripped_path}"
+                    )
         with self._transaction() as connection:
             run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:
@@ -2650,6 +2685,29 @@ class Registry:
                 )
             if run["agent_role"] == evaluator:
                 raise RegistryError("evaluation must be independent from the run agent role")
+            if passed:
+                run_row = connection.execute(
+                    "SELECT artifacts_json FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                if run_row and run_row["artifacts_json"]:
+                    try:
+                        run_artifacts = json.loads(run_row["artifacts_json"])
+                    except Exception:
+                        run_artifacts = []
+                    if self.repository_identity and self.repository_identity.primary_checkout:
+                        checkout_root = Path(self.repository_identity.primary_checkout)
+                    elif self.path.parent.name == ".bossmode":
+                        checkout_root = self.path.parent.parent
+                    else:
+                        checkout_root = self.path.parent
+                    for art in run_artifacts:
+                        if isinstance(art, dict) and "path" in art:
+                            art_path = checkout_root / art["path"]
+                            if not art_path.exists():
+                                raise RegistryError(
+                                    "evaluation passed requires declared artifact to exist on "
+                                    f"disk: {art['path']}"
+                                )
             timestamp = _now()
             connection.execute(
                 """
@@ -3014,7 +3072,14 @@ class Registry:
                     ROUND(AVG(COALESCE(duration_seconds, 0)), 1) AS avg_duration_sec,
                     SUM(retries) AS total_retries,
                     ROUND(
-                        AVG(CASE WHEN outcome = 'succeeded' THEN 1.0 ELSE 0.0 END) * 100, 1
+                        AVG(
+                            CASE
+                                WHEN outcome = 'succeeded' THEN 1.0
+                                WHEN outcome = 'cancelled' THEN NULL
+                                ELSE 0.0
+                            END
+                        ) * 100,
+                        1
                     ) AS success_rate_pct
                 FROM runs
                 WHERE status = 'finished'
