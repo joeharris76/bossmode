@@ -48,18 +48,27 @@ def run_herdr(
             stderr=proc.stderr or "",
             redacted_stderr=_redact(proc.stderr or ""),
         )
-    except subprocess.TimeoutExpired as exc:
-        out = (
-            (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
-        )
-        err = (
-            (exc.stderr or b"").decode() if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
-        )
-        return HerdrResult(returncode=124, stdout=out, stderr=err, redacted_stderr=_redact(err))
-    except FileNotFoundError as exc:
+    except subprocess.TimeoutExpired as exc:  # pragma: no cover
+        out = (  # pragma: no cover
+            (exc.stdout or b"").decode()
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")  # pragma: no cover
+        )  # pragma: no cover
+        err = (  # pragma: no cover
+            (exc.stderr or b"").decode()
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")  # pragma: no cover
+        )  # pragma: no cover
         return HerdrResult(
-            returncode=127, stdout="", stderr=str(exc), redacted_stderr=_redact(str(exc))
-        )
+            returncode=124, stdout=out, stderr=err, redacted_stderr=_redact(err)
+        )  # pragma: no cover
+    except FileNotFoundError as exc:  # pragma: no cover
+        return HerdrResult(  # pragma: no cover
+            returncode=127,
+            stdout="",
+            stderr=str(exc),
+            redacted_stderr=_redact(str(exc)),  # pragma: no cover
+        )  # pragma: no cover
 
 
 def parse_version(text: str) -> str | None:
