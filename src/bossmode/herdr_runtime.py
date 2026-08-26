@@ -6,6 +6,7 @@ No BOSSMODE_DB mutation here; ownership ledger is separate.
 
 from __future__ import annotations
 
+import contextlib as _ctxlib
 import json
 import subprocess
 from dataclasses import dataclass
@@ -142,3 +143,64 @@ def herdr_capability_diagnostic(timeout_ms: int = 5000) -> dict[str, Any]:
         "malformed_json": malformed == [],
         "timeout_ms": timeout_ms,
     }
+
+
+# --- w3: reserve-before-create + bind-after-create + crash reconcile ---
+
+
+def reserve_herdr_worker(
+    registry: Any,
+    *,
+    herdr_session: str,
+    worker_name: str,
+    agent_kind: str,
+    owner_task_id: str | None = None,
+    owner_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Reserve owned herdr_worker before any `herdr agent start`."""
+    from bossmode.resources import canonical_key_for_herdr_worker
+
+    ck = canonical_key_for_herdr_worker(herdr_session, worker_name)
+    receipt_stub = {
+        "herdr_session": herdr_session,
+        "worker_name": worker_name,
+        "agent_kind": agent_kind,
+    }
+    return registry.reserve_owned_resource(
+        kind="herdr_worker",
+        canonical_key=ck,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        creation_receipt=receipt_stub,
+    )
+
+
+def bind_herdr_worker_live(
+    registry: Any,
+    resource_id: str,
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind reserved herdr_worker to live with pane/tab/ws + native session."""
+    return registry.bind_owned_resource_live(resource_id, creation_receipt=receipt)
+
+
+def reconcile_after_crash(
+    registry: Any, herdr_session: str, worker_name: str
+) -> dict[str, Any] | None:
+    """If `herdr agent get` finds a worker but registry is still reserved, orphan the stray."""
+    res = run_herdr("agent", "get", worker_name)
+    live = parse_agent_get(res.stdout)
+    if live is None:
+        return None
+    # Search owned_resources for same canonical still reserved -> orphan it
+    from bossmode.resources import canonical_key_for_herdr_worker
+
+    ck = canonical_key_for_herdr_worker(herdr_session, worker_name)
+    for r in registry.list_owned_resources(kind="herdr_worker"):
+        if r["canonical_key"] == ck and r["state"] == "reserved":
+            with _ctxlib.suppress(Exception):
+                registry.orphan_owned_resource(
+                    r["id"], reason="crash reconciliation: external agent existed without commit"
+                )
+            return {"reconciled": "orphaned", "resource_id": r["id"], "live": live}
+    return {"reconciled": "none", "live": live}
