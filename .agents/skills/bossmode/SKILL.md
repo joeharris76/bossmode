@@ -1,32 +1,37 @@
 ---
 name: bossmode
-description: Manage, dispatch, and continue tasks using the Bossmode durable control plane. Reconcile runtime state, orchestrate native subagents (AGY, Codex) or external Herdr workers (pi, codex, claude, agy, grok, muse), enforce independent evaluation gates, and propose gated promotions.
+description: Manage, dispatch, and continue tasks using the Bossmode durable control plane. Reconcile runtime state, orchestrate native subagents (AGY, Codex) or external Herdr workers (pi, codex, claude, agy, grok), enforce independent evaluation gates, and propose gated promotions.
 ---
 
 # Bossmode
 
-Operate from the repository root. Each checkout or linked worktree owns its own
-`.bossmode/control.db`. The registry is not a shared worktree file.
+Operate from the repository's primary checkout. Its `.bossmode/control.db` is the one operational
+authority for every linked worktree.
 
 ## Registry Ownership and Schema Compatibility
 
-1. Before reconciling, verify `pwd`, `git rev-parse --show-toplevel`, and the resolved database
-   path. The default database is the current checkout's `.bossmode/control.db`.
-2. Never pass `--db` or set `BOSSMODE_DB` to another worktree's `.bossmode/control.db`. The CLI
-   rejects that path before opening SQLite, inspecting the schema, or running migrations.
-3. `Registry.initialize()` may migrate only the registry owned by the current checkout. If the
-   database reports a newer schema than this checkout supports, stop and return the mismatch as a
-   blocker; do not downgrade, copy over, or override it with a sibling worktree path.
-4. A genuinely shared control plane requires a dedicated supervisor-owned registry location and an
-   explicit adoption protocol. No implicit shared-registry workflow is available in this MVP.
-5. Do not assume commands or schema features from an unmerged worktree are available in this
-   checkout. Run the skill and CLI from the checkout whose source and registry you are reconciling.
+1. Before first use, run `bossmode registry create` from the primary checkout. This is the only
+   operational creation and upgrade spelling.
+2. Before reconciling, verify `pwd`, `git rev-parse --show-toplevel`, the Git common directory, and
+   that the checkout is primary. Every other operational command is open-only.
+3. Never pass `--db` or set `BOSSMODE_DB` to a linked-worktree, copied, symlinked, nonstandard,
+   wrong-repository, or ephemeral database. Identity validation rejects it before filesystem or
+   SQLite mutation.
+4. The registry's immutable ID, operational role, repository URL, Git common directory, and
+   primary checkout are authority. Repository relocation or origin changes are blockers; do not
+   copy, rebind, import, or replace the database.
+5. Explicit non-repository databases are ephemeral certification state. They cannot be adopted or
+   merged into operational history.
+6. Do not assume commands or schema features from an unmerged worktree are available in the
+   primary checkout.
 
 ## Command Surface
 
 ```text
 bossmode                        # Default: converge the registry and report state
 ├── install-skill               # Install this version's skill into a project
+├── registry
+│   └── create                  # Create or upgrade the primary operational authority
 ├── reconcile                   # The default command, named explicitly
 ├── task
 │   ├── create                  # Create a new task with success criteria
@@ -79,15 +84,15 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 
 ## 2. Reconcile
 
-1. Run `bossmode` (or `bossmode reconcile`; use `uv run bossmode` inside the Bossmode repo or
+1. From the primary checkout, run `uv run bossmode` (or `uv run bossmode reconcile`; or
    `uv run --project /path/to/bossmode bossmode` from a consuming repo without `bossmode` on PATH)
-   and read the JSON output. This command writes: it creates or migrates the registry and
-   materialises promotion proposals before reporting.
+   and read the JSON output. This command validates the existing authority, then may write
+   promotion proposals; it never creates or upgrades the registry.
 2. Use the nested run, binding, and turn records in `running` and `evaluating` to recover after
    interruption. Use `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` for exact records.
 3. For every active registry task, reconcile its executor against live state before sending,
    interrupting, completing, or closing it. Use live runtime state for native subagents (AGY, Codex)
-   and `herdr agent get/list` for Herdr workers (`pi`, `codex`, `claude`, `agy`, `grok`, `muse`).
+   and `herdr agent get/list` for Herdr workers (`pi`, `codex`, `claude`, `agy`, `grok`).
    Treat missing, foreign, or ambiguous identity as a blocker; stored IDs are indexes, not capabilities.
 4. Surface `waiting_user` and `blocked` items before starting new work when they affect priority
    or safety. Ask only for the decision the system cannot safely make.
@@ -97,19 +102,25 @@ delegating it. Preserve the user's outcome and limits; do not add adjacent work.
 1. Select only the single task returned in `next_task`.
 2. Choose the narrowest role: `researcher` for read-heavy evidence, `worker` for authorized edits,
    or `reviewer` for independent evaluation.
-3. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
+3. Choose the executor explicitly from the task's required capabilities, permissions, interaction
+   mode, and current availability. Honor a user-requested agent when it is available and in scope.
+   Treat model and reasoning metadata as caller-supplied telemetry, not proof of the provider,
+   model family, or model that ran. Provider or model-family labels do not prove reviewer
+   independence.
+4. Give the agent the task ID, goal, success criteria, permission limits, relevant evidence, and
    required structured return format.
-4. For a native subagent (e.g. AGY, Codex), reserve the run first with
+5. For a native subagent (e.g. AGY, Codex), reserve the run first with
    `bossmode run start TASK_ID --role ROLE`, spawn the subagent, and bind the returned thread or
    task ID with `bossmode run bind RUN_ID --thread-id NATIVE_ID` (or pass `--thread-id` at start if
    already known).
-5. For a Herdr worker, reserve the run with `bossmode run start` before creating any layout.
+6. For a Herdr worker, reserve the run with `bossmode run start` before creating any layout.
    Derive a unique worker name from the run ID, create it through the official Herdr CLI, then call
    `bossmode herdr bind --agent-kind KIND`. If binding fails after creation, reconcile the deterministic name;
    do not create another worker or close by a stored pane ID.
-6. Use Herdr only when the task explicitly requests an external interactive agent. Do not add an
-   agent router or choose providers from historical scores in this spike.
-7. Do not run parallel writers against the same paths.
+7. Use Herdr only when the task explicitly requests an external interactive agent. Verify the
+   selected kind against the live, release-matched Herdr command surface. Do not add an agent router
+   or choose providers from historical scores in this spike.
+8. Do not run parallel writers against the same paths.
 
 ## 4. Correlate Herdr Turns
 
@@ -170,6 +181,8 @@ Before the first external run, follow this command sequence and result contract.
    - `bossmode schedule install --interval 3600` (registers LaunchAgent on macOS, crontab on Linux).
    - `bossmode schedule status` to inspect registration and available log activity.
    - `bossmode schedule uninstall` to cleanly remove the OS background job.
+   The validated registry's primary checkout owns the job. Omit `--repo-dir` or require it to match
+   that owner exactly.
 
 ## 8. Report
 

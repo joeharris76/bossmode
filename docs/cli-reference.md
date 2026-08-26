@@ -8,12 +8,11 @@ Parsed commands that reach the Bossmode handler write structured JSON to standar
 error and exit `2`. Argparse help and usage remain text: help exits `0`, while missing arguments and
 invalid choices exit `2` before the JSON handler runs.
 
-The global `--db PATH` option selects the registry. It defaults to the current checkout's
-`.bossmode/control.db` or the `BOSSMODE_DB` environment variable. Each linked worktree owns its
-standard registry path: Bossmode rejects a path resolving to a sibling worktree's
-`.bossmode/control.db` before opening SQLite, inspecting the schema, or applying migrations. Run
-the command from the checkout that owns a newer registry; do not use `--db` to bypass a schema
-mismatch.
+The global `--db PATH` option selects a registry. The default is `.bossmode/control.db` or the
+`BOSSMODE_DB` environment variable. In a Git repository, the primary checkout's default path is
+the one operational authority. `--db` cannot redirect that authority to a linked worktree,
+nonstandard path, copy, symlink, wrong repository, or ephemeral database. Explicit
+non-repository paths are ephemeral test or certification registries and cannot become operational.
 
 ## Installation
 
@@ -27,8 +26,27 @@ matches this Bossmode version, and it refuses to overwrite different content or 
 skill directory.
 
 `install-skill` never opens a registry. It rejects the global `--db` option rather than accepting
-and discarding it, and it does not create `.bossmode/control.db`. The registry is created on the
-first command that needs it.
+and discarding it, and it does not create `.bossmode/control.db`.
+
+## Registry authority
+
+| Command | Purpose |
+|---|---|
+| `bossmode registry create` | Create or upgrade the one primary-checkout operational registry. |
+
+This is the only registry-creation spelling. `init`, `registry init`, and `registry open` are not
+aliases and fail as invalid commands.
+
+The command must run from an unambiguous primary checkout and must target its canonical
+`.bossmode/control.db`. It records one immutable `registry_identity` row containing `registry_id`,
+`registry_role`, `repository_url`, `git_common_dir`, `primary_checkout`, `created_at`, and creation
+metadata. On a schema upgrade, the command retains the existing checksum-bound migration and
+verified-backup behavior.
+
+Every other operational command is open-only. It fails before directory creation, SQLite
+write-open, initialization, or migration when the database or identity is absent, the caller is a
+linked worktree, or any stored and live identity field differs. Repository relocation and origin
+changes require a future explicit adoption protocol; this release does not silently rebind them.
 
 ## Reconciliation
 
@@ -39,11 +57,11 @@ first command that needs it.
 
 These are the only two spellings. There are no aliases.
 
-Reconciliation is read-shaped but performs real writes. It creates the registry and applies any
-pending schema migration, then materialises promotion proposals from recorded feedback before
-reporting. Treat it as a mutating command, not an inspection.
+Reconciliation is open-only but performs real writes after authority validation: it materialises
+promotion proposals from recorded feedback before reporting. It never creates or upgrades the
+operational registry. Treat it as a mutating command, not an inspection.
 
-Before changing an existing schema, Bossmode creates and verifies a private SQLite backup under
+Before `registry create` changes an existing schema, Bossmode creates and verifies a private SQLite backup under
 the registry directory's `backups/` subdirectory. Migration IDs and checksums are recorded in
 `applied_migrations`; missing, unknown, duplicate, or changed lineage fails closed before registry
 writes. Bossmode never prunes these backups. A migration failure reports the recovery path and
@@ -175,10 +193,14 @@ represent only exact supported intervals: below one hour, use a whole number of 
 divides evenly into an hour; from one hour through one day, use a whole number of hours that
 divides evenly into a day. Custom `--cron` expressions are Linux-only and override the interval
 there; launchd rejects them. Installation and removal mutate host state, so they require explicit
-user authorization.
+user authorization. All scheduler commands require the operational authority. They use its
+recorded primary checkout, reject a different `--repo-dir`, and return the owning `registry_id` and
+`repository_url`.
 
 ## Operational rules
 
+- Run `bossmode registry create` once from the primary checkout and again only for an explicit
+  supported schema upgrade.
 - Run the naked `bossmode` command before dispatch and after material state changes.
 - Dispatch only the single task returned in `next_task`.
 - Reserve an external run before creating its Herdr worker.

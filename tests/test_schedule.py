@@ -24,6 +24,17 @@ from bossmode.scheduler import (
 )
 
 
+def operational_registry(repository: Path) -> MagicMock:
+    registry = MagicMock()
+    registry.get_registry_identity.return_value = {
+        "registry_id": "registry_schedule_test",
+        "registry_role": "operational",
+        "repository_url": "https://example.com/acme/bossmode.git",
+        "primary_checkout": str(repository),
+    }
+    return registry
+
+
 def test_get_repo_hash_deterministic(tmp_path: Path) -> None:
     h1 = get_repo_hash(tmp_path)
     h2 = get_repo_hash(tmp_path)
@@ -392,7 +403,9 @@ def test_schedule_install_rejects_invalid_requests(tmp_path: Path, kwargs, messa
 
 
 def test_cli_schedule_commands(tmp_path: Path, capsys) -> None:
+    registry = operational_registry(tmp_path)
     with (
+        patch("bossmode.cli.Registry.open_for_command", return_value=registry),
         patch("bossmode.cli.install_schedule") as mock_install,
         patch("bossmode.cli.get_schedule_status") as mock_status,
         patch("bossmode.cli.uninstall_schedule") as mock_uninstall,
@@ -405,19 +418,30 @@ def test_cli_schedule_commands(tmp_path: Path, capsys) -> None:
         assert main(["schedule", "install", "--interval", "1800"]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "installed"
+        assert out["registry_id"] == "registry_schedule_test"
+        mock_install.assert_called_once()
+        assert mock_install.call_args.args[0] == tmp_path
 
         # status
         assert main(["schedule", "status"]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "loaded"
+        assert out["registry_id"] == "registry_schedule_test"
+        mock_status.assert_called_once_with(tmp_path, log_path=None)
 
         # uninstall
         assert main(["schedule", "uninstall"]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "uninstalled"
+        assert out["registry_id"] == "registry_schedule_test"
+        mock_uninstall.assert_called_once_with(tmp_path)
 
 
-def test_cli_serializes_scheduler_errors(capsys) -> None:
-    with patch("bossmode.cli.install_schedule", side_effect=SchedulerError("scheduler failed")):
+def test_cli_serializes_scheduler_errors(tmp_path: Path, capsys) -> None:
+    registry = operational_registry(tmp_path)
+    with (
+        patch("bossmode.cli.Registry.open_for_command", return_value=registry),
+        patch("bossmode.cli.install_schedule", side_effect=SchedulerError("scheduler failed")),
+    ):
         assert main(["schedule", "install"]) == 2
     assert json.loads(capsys.readouterr().err) == {"error": "scheduler failed"}

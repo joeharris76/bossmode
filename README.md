@@ -3,7 +3,7 @@
 Stop babysitting coding agents. Bossmode makes you the CEO of `Get-It-Done`.
 
 A `bossmode` supervisor agent manages teams of native subagents and external agents such as Pi,
-Claude, Codex, Grok, AGY, and Muse—so far—while they carry out bounded project tasks. You describe
+Claude, Codex, Grok, and AGY—so far—while they carry out bounded project tasks. You describe
 the outcome in a prompt. The supervisor handles task records, delegation, recovery, evidence, and
 independent evaluation.
 
@@ -26,12 +26,19 @@ Bossmode skill in your project:
 uv tool install ./bossmode-0.1.0-py3-none-any.whl
 cd /path/to/your-project
 bossmode install-skill
+bossmode registry create
 ```
 
 `bossmode install-skill` creates `.agents/skills/bossmode/SKILL.md`. Running it again is safe when
 the file is identical. It refuses to overwrite a different file or install through a symlinked skill
-directory. It does not create the registry; the first command that needs `.bossmode/control.db`
-creates it.
+directory. It does not create the registry. `bossmode registry create` is the one explicit creation
+and upgrade command for the operational registry at the primary checkout's
+`.bossmode/control.db`. Linked worktrees cannot create, migrate, or write that authority.
+
+The primary-checkout registry is the repository's single durable task, run, evaluation, and
+resource history. Worker worktrees hold code changes only; removing one cannot remove or strand
+operational bookkeeping. Explicit non-repository `--db` paths are ephemeral certification
+registries and cannot be adopted into operational history.
 
 Then ask an agent that discovers project skills:
 
@@ -121,13 +128,18 @@ final success. Bossmode also keeps these decisions separate:
 Bossmode has no provider-specific transport adapters. Its registry and CLI record generic agent
 roles and Herdr bindings. The deterministic test suite exercises those control records for AGY,
 Codex, Claude, Pi, Grok, and Muse, but it does not start those agents. The documented Herdr path
-uses the official Herdr CLI for all six named kinds; the current automated UAT has not certified any
-of them with a live Herdr canary.
+uses the official Herdr CLI only for Pi, Claude, Codex, AGY, and Grok, which are supported start
+kinds in the release-matched Herdr 0.8.2 command surface. Generic registry tests for another label,
+including Muse, do not certify that label as a launchable Herdr kind. The current automated UAT has
+not certified any agent kind with a live Herdr canary.
 
 Use a native subagent only when the host runtime supports that agent. Ask for Herdr when you need an
 external interactive agent, a visible pane, or durable detach and reattach behavior, and verify the
 chosen kind against live Herdr state before relying on it. Bossmode does not choose a provider from
-historical scores in this MVP.
+historical scores in this MVP. Choose explicitly by the task's required capabilities, permissions,
+interaction mode, and current availability. Stored model and reasoning metadata is telemetry, not
+proof of the provider, model family, or model that ran; different labels do not replace independent
+evaluation.
 
 ## Documentation
 
@@ -141,8 +153,10 @@ historical scores in this MVP.
 - [Agent organization design](docs/adr/0002-agent-organization-design.md): deferred scaling choices.
 - [Task intake and external sources](docs/adr/0003-task-intake-and-external-sources.md): how work
   reaches the registry.
-- [Registry worktree ownership](docs/adr/0006-registry-worktree-ownership.md): why each checkout
-  owns its own registry.
+- [Deferred executor selection](docs/adr/0005-defer-executor-selection.md): why executor choice is
+  explicit and capability-based rather than automatic.
+- [Registry authority](docs/adr/0006-registry-worktree-ownership.md): why the primary checkout owns
+  the repository's single operational registry.
 
 ## Development and verification
 

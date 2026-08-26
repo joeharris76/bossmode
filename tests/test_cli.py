@@ -476,12 +476,11 @@ def test_cli_maintenance_subcommand(tmp_path, capsys):
     assert report["health"]["status"] == "healthy"
 
 
-def test_cli_schedule_subcommands(tmp_path, capsys, monkeypatch):
+def test_cli_schedule_subcommands_require_operational_authority(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert main(["schedule", "status"]) == 0
-    status = json.loads(capsys.readouterr().out)
-    assert "status" in status
-    assert "platform" in status
+    assert main(["schedule", "status"]) == 2
+    error = json.loads(capsys.readouterr().err)
+    assert "operational registry authority" in error["error"]
 
 
 def test_cli_default_and_reconcile_are_the_only_reconciliation_spellings(tmp_path, capsys):
@@ -709,6 +708,8 @@ def _bound_run(database: Path, capsys) -> dict:
         ["supervisor", "next"],
         ["next"],
         ["init"],
+        ["registry", "init"],
+        ["registry", "open"],
         # Retired subcommands.
         ["task", "add", "--title", "T", "--goal", "G", "--success-criteria", "S"],
         ["promotion", "set", "promo_1", "accepted"],
