@@ -38,3 +38,15 @@ Add provider-specific resume code only if an isolated canary proves that Herdr c
 required native session after the individual agent process exits. Do not add a generic executor or
 MCP layer until a second concrete implementation demonstrates behavior that the official Herdr CLI
 or socket API cannot provide.
+
+## Worker lifecycle (2a)
+
+Owned worker = `owned_resources` `herdr_worker` with `canonical_key = herdr_worker:<session>/<name>` and receipt `{herdr_session, worker_name, agent_kind, pane_id, tab_id, workspace_id, session_source, session_agent, session_ref_kind, session_value?}`. Attached = observed without our reservation.
+
+Contracts:
+- Reserve `herdr_worker` before `herdr agent start`; on crash, `herdr agent get <name>` reconciles missing/foreign and we orphan.
+- Identity = `pane_id` + `workspace_id`/`tab_id` + `agent_session {source,kind,value}` — must match receipt; pane movement changes `pane_id`, server restart may clear `agent_session` but name+receipt still required.
+- Missing-worker retire is success only if no active with same canonical; name reuse after `retired/orphaned` requires generation bump via partial-unique index.
+- Never close on stored name/pane alone.
+
+Capability failures: missing `herdr` (127), timeout (124), malformed JSON — all `blocked` not `failed` for close-gate.
