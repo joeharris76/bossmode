@@ -527,9 +527,9 @@ def test_provision_branch_orphan_on_git_failure(tmp_path, monkeypatch):
     ).stdout.strip()
     r1 = git_runtime.provision_branch(reg, branch="feat/error-branch", base_sha=base, cwd=repo)
     assert r1["state"] in ("live", "reserved")
-    # Second attempt with same canonical but different owner? Actually branch already exists as git branch, second provision with same branch but git will fail because branch exists, should trigger orphan path via mock
+    # Second provision same canonical already exists; reuses reserved
     monkeypatch.setattr(git_runtime, "_run_git", fake_run_git)
-    r2 = git_runtime.provision_branch(reg, branch="feat/error-branch-2", base_sha=base, cwd=repo)
+    _ = git_runtime.provision_branch(reg, branch="feat/error-branch-2", base_sha=base, cwd=repo)
     # This is different branch, not error. Use same branch name but mock to fail
     # Create a new registry DB to avoid duplicate key, force git failure on provision
     reg2 = Registry(tmp_path / "err-branch2.db")

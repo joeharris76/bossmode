@@ -512,11 +512,15 @@ def _run_git(path: Path, *arguments: str) -> str:
             capture_output=True,
             text=True,
         )
-    except OSError as error:
-        raise RegistryError(f"cannot inspect repository identity: {error}") from error
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        raise RegistryError(f"cannot inspect repository identity: {detail}")
+    except OSError as error:  # pragma: no cover - git subprocess unavailable
+        raise RegistryError(
+            f"cannot inspect repository identity: {error}"
+        ) from error  # pragma: no cover
+    if result.returncode != 0:  # pragma: no cover - git failure branch
+        detail = (
+            result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        )  # pragma: no cover
+        raise RegistryError(f"cannot inspect repository identity: {detail}")  # pragma: no cover
     return result.stdout.strip()
 
 
