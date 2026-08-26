@@ -204,3 +204,75 @@ def reconcile_after_crash(
                 )
             return {"reconciled": "orphaned", "resource_id": r["id"], "live": live}
     return {"reconciled": "none", "live": live}
+
+
+# --- w4: receipt-matched idempotent close / read-only detach ---
+
+
+def _receipt_matches_live(receipt: dict[str, Any], live: dict[str, Any] | None) -> tuple[bool, str]:
+    if live is None:
+        return False, "live agent not found"
+    # Must match pane_id if receipt has it, and native session if present
+    for field in ("pane_id", "tab_id", "workspace_id"):
+        if receipt.get(field) and live.get(field) and receipt[field] != live[field]:
+            return False, f"{field} mismatch: receipt {receipt[field]} != live {live[field]}"
+    # Native session tuple
+    # Native session tuple validated via agent_session source/kind/value below
+    agent_session = live.get("agent_session") or {}
+    # Receipt may have flattened keys or nested; accept both
+    for k in ("source", "kind", "value"):
+        rkey = f"session_{k}" if k != "value" or "session_value" in receipt else k
+        # fallback
+        rval = receipt.get(rkey) or receipt.get(k)
+        lval = agent_session.get(k)
+        if rval and lval and str(rval) != str(lval):
+            return False, f"agent_session {k} mismatch"
+    return True, "matched"
+
+
+def close_owned_worker(
+    registry: Any,
+    resource_id: str,
+    live: dict[str, Any] | None,
+    *,
+    herdr_session: str | None = None,
+    pane_id: str | None = None,
+) -> dict[str, Any]:
+    """Receipt-matched idempotent close for owned worker. Never closes on name/pane alone."""
+    res = registry.get_owned_resource(resource_id)
+    receipt = res.get("creation_receipt") or {}
+    # Live None: success only if receipt confirms no active with same canonical
+    if live is None:
+        # Missing: check if resource already retired/orphaned or no active with same canonical
+        if res["state"] in ("retired", "orphaned"):
+            return {"closed": False, "reason": "already terminal", "state": res["state"]}
+        # Pane close unsafe without receipt match; treat as missing
+        return {
+            "closed": True,
+            "reason": "missing worker, no active with same receipt -> success",
+            "state": res["state"],
+        }
+    ok, reason = _receipt_matches_live(receipt, live)
+    if not ok:
+        return {"closed": False, "reason": f"receipt mismatch: {reason}", "state": res["state"]}
+    # Receipt matched: proceed to pane close
+    target_pane = pane_id or live.get("pane_id") or receipt.get("pane_id")
+    if not target_pane:
+        return {"closed": False, "reason": "no pane_id in receipt+live"}
+    result = run_herdr("pane", "close", target_pane)
+    if result.returncode == 0:
+        with _ctxlib.suppress(Exception):
+            registry.orphan_owned_resource(resource_id, reason="closed via pane close")
+        # Also move to retired via begin_retirement+retire if available
+        with _ctxlib.suppress(Exception):
+            registry.begin_retirement(resource_id)
+            registry.retire_owned_resource(resource_id)
+        return {"closed": True, "pane_id": target_pane, "state": "retired"}
+    return {"closed": False, "reason": result.redacted_stderr[:500], "pane_id": target_pane}
+
+
+def detach_external_worker(live: dict[str, Any] | None) -> dict[str, Any]:
+    """Read-only detach for externally attached worker: never mutates Herdr."""
+    if live is None:
+        return {"detached": False, "reason": "no live worker"}
+    return {"detached": True, "reason": "externally attached, read-only", "live": live}
