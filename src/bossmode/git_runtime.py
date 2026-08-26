@@ -69,7 +69,10 @@ def parse_worktree_porcelain(
 def list_worktrees(common_dir: Path | str) -> list[dict[str, Any]]:
     """Invoke porcelain from the primary checkout that owns *common_dir*."""
     # Caller is expected to pass common_dir's owner checkout path; prefer common_dir itself.
-    res = _run_git(common_dir, "worktree", "list", "--porcelain")
+    try:
+        res = _run_git(common_dir, "worktree", "list", "--porcelain")
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"git worktree list failed: {exc}") from exc
     if res.returncode != 0:
         raise RuntimeError(res.stderr.strip() or res.stdout.strip() or "git worktree list failed")
     return parse_worktree_porcelain(res.stdout)
