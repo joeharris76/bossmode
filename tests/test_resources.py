@@ -260,13 +260,17 @@ def test_retry_after_crash_reserved_stays_reserved(tmp_path):
 
 
 def test_identity_reuse_after_terminal(tmp_path):
-    """After retired, reusing same canonical key would be a different logical object."""
+    """After retired, reusing same canonical key succeeds as new generation (partial uniqueness)."""
     reg = Registry(tmp_path / "control.db")
     ck = canonical_key_for_git_branch("feat/reuse")
     r = reg.reserve_owned_resource(kind="git_branch", canonical_key=ck)
     reg.begin_retirement(r["id"])
     reg.retire_owned_resource(r["id"])
-    # Re-reserving same key should fail closed (already owned, terminal) rather than silently adopt.
+    # w5: retired allows reuse as new generation
+    r2 = reg.reserve_owned_resource(kind="git_branch", canonical_key=ck)
+    assert r2["generation"] == r["generation"] + 1
+    assert r2["id"] != r["id"]
+    # But while the new one is active, a third reserve must fail (partial uniqueness)
     with pytest.raises(RegistryError, match="already reserved"):
         reg.reserve_owned_resource(kind="git_branch", canonical_key=ck)
 
