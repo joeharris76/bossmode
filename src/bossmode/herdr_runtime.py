@@ -130,3 +130,15 @@ def probe_supported_version(timeout_ms: int = 5000) -> dict[str, Any]:
         ],
         "redacted_note": "stderr redacted of homedir; no tokens logged",
     }
+
+
+# --- w2 helpers already present as run_herdr/parse_*; add w2 completeness note ---
+def herdr_capability_diagnostic(timeout_ms: int = 5000) -> dict[str, Any]:
+    """Enumerate capability failures without side effects."""
+    missing = run_herdr("no-such-subcommand-xyz", timeout_ms=timeout_ms)
+    malformed = parse_agent_list("not json")
+    return {
+        "missing_binary_case": missing.returncode,
+        "malformed_json": malformed == [],
+        "timeout_ms": timeout_ms,
+    }
