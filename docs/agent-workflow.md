@@ -90,20 +90,28 @@ responsibility that Bossmode never performs for you.
 
 ## Native subagent path (Codex, AGY, etc.)
 
-1. Create a bounded native subagent (via Codex task tools, AGY `invoke_subagent`, etc.) with the
-   task ID, goal, success criteria, allowed actions, evidence, and required response fields.
-2. Record the live thread or subagent task ID:
+1. Reserve the run in Bossmode first:
 
    ```bash
-   uv run bossmode run start TASK_ID \
-     --role researcher \
-     --thread-id NATIVE_THREAD_OR_TASK_ID
+   bossmode run start TASK_ID --role worker
    ```
 
-3. Wait or continue through the runtime's native subagent tools. Before every later message,
+2. Create a bounded native subagent (via Codex task tools, AGY `invoke_subagent`, etc.) with the
+   task ID, goal, success criteria, allowed actions, evidence, and required response fields.
+3. Bind the live thread or subagent task ID to the reserved run:
+
+   ```bash
+   bossmode run bind RUN_ID \
+     --thread-id NATIVE_THREAD_OR_TASK_ID \
+     --model claude-sonnet-5 \
+     --reasoning-effort high \
+     --reasoning-effort-source observed
+   ```
+
+   (Alternatively, if the thread ID is already known before starting the run, pass `--thread-id` directly to `run start`.)
+4. Wait or continue through the runtime's native subagent tools. Before every later message,
    verify the stored ID against live runtime state.
-4. Record the terminal result with `run finish`. Do not translate a subagent's self-reported success
-   into a passing evaluation.
+5. Record the terminal result with `run finish`. Outcomes are `succeeded` (moves task to `evaluating`), `failed` (moves task to `failed`), `blocked` (moves task to `blocked`), `waiting_user` (moves task to `waiting_user`), and `cancelled` (returns task directly to `ready` for clean re-dispatch without recording a failure). Do not translate a subagent's self-reported success into a passing evaluation.
 
 Native subagent tasks do not need `herdr bind` or turn records. Those records close a specific
 correlation gap in Herdr's interactive-agent transport.

@@ -30,15 +30,16 @@ TASK_STATES = {
 }
 CREATE_TASK_STATES = {"backlog", "ready"}
 
-TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed"}
+TERMINAL_RUN_OUTCOMES = {"waiting_user", "blocked", "succeeded", "failed", "cancelled"}
 HERDR_BINDING_STATUSES = {"pending", "live", "blocked", "stale", "unknown"}
 TURN_PURPOSES = {"task", "correction", "clarification", "review_follow_up"}
 TERMINAL_TURN_OUTCOMES = {"blocked", "succeeded", "failed", "unknown"}
 FEEDBACK_CATEGORIES = {"preference", "correction", "failure", "observation"}
+REASONING_EFFORT_SOURCES = {"observed", "declared", "inherited-unknown"}
 HERDR_NAME_PATTERN = r"^[a-z][a-z0-9_-]{0,31}$"
 MAX_TURN_RESULT_BYTES = 1_048_576
 SQLITE_BUSY_TIMEOUT_MS = 5_000
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MIGRATION_LEDGER_VERSION = 7
 
 MIGRATION_V6_TO_V7_ID = "20260825_01_migration_durability"
@@ -60,9 +61,13 @@ CREATE TABLE applied_migrations (
 CREATE UNIQUE INDEX idx_applied_migrations_transition
     ON applied_migrations(from_version, to_version);
 """
+MIGRATION_V7_TO_V8_ID = "20260826_01_reasoning_effort_source"
+MIGRATION_V7_TO_V8_SQL = """
+ALTER TABLE runs ADD COLUMN reasoning_effort_source TEXT;
+"""
 
 ALLOWED_TRANSITIONS = {
-    "backlog": {"ready", "archived"},
+    "backlog": {"ready", "blocked", "archived"},
     "ready": {"blocked", "archived"},
     "running": set(),
     "evaluating": {"ready", "blocked", "archived"},
@@ -139,6 +144,7 @@ CREATE TABLE IF NOT EXISTS runs (
     agent_role TEXT NOT NULL,
     model TEXT,
     reasoning_effort TEXT,
+    reasoning_effort_source TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'finished')),
     outcome TEXT,
     summary TEXT,
@@ -368,6 +374,12 @@ class Registry:
             7,
             MIGRATION_V6_TO_V7_SQL,
         )
+        v7_to_v8_checksum = _migration_checksum(
+            MIGRATION_V7_TO_V8_ID,
+            7,
+            8,
+            MIGRATION_V7_TO_V8_SQL,
+        )
         return {
             1: MigrationStep(None, 1, 2, None, self._migrate_v1_to_v2),
             2: MigrationStep(None, 2, 3, None, self._migrate_v2_to_v3),
@@ -381,6 +393,13 @@ class Registry:
                 ledger_checksum,
                 self._migrate_v6_to_v7,
             ),
+            7: MigrationStep(
+                MIGRATION_V7_TO_V8_ID,
+                7,
+                8,
+                v7_to_v8_checksum,
+                self._migrate_v7_to_v8,
+            ),
         }
 
     def _inspect_existing_schema_version(self) -> int | None:
@@ -389,28 +408,31 @@ class Registry:
         if self.path.stat().st_size == 0:
             return None
         uri = f"{self.path.resolve().as_uri()}?mode=ro&immutable=1"
-        with closing(sqlite3.connect(uri, uri=True)) as connection:
-            connection.row_factory = sqlite3.Row
-            schema_exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
-            ).fetchone()
-            if schema_exists is None:
-                raise RegistryError(
-                    "existing nonempty registry is missing schema_meta; refusing initialization"
-                )
-            versions = connection.execute("SELECT version FROM schema_meta").fetchall()
-            if not versions:
-                raise RegistryError("registry schema version is missing")
-            if len(versions) != 1:
-                raise RegistryError("registry schema version must contain exactly one row")
-            current = int(versions[0]["version"])
-            if current > SCHEMA_VERSION:
-                raise RegistryError(
-                    f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
-                )
-            if current >= MIGRATION_LEDGER_VERSION:
-                self._validate_migration_ledger(connection, current)
-            return current
+        try:
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                schema_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+                ).fetchone()
+                if schema_exists is None:
+                    raise RegistryError(
+                        "existing nonempty registry is missing schema_meta; refusing initialization"
+                    )
+                versions = connection.execute("SELECT version FROM schema_meta").fetchall()
+                if not versions:
+                    raise RegistryError("registry schema version is missing")
+                if len(versions) != 1:
+                    raise RegistryError("registry schema version must contain exactly one row")
+                current = int(versions[0]["version"])
+                if current > SCHEMA_VERSION:
+                    raise RegistryError(
+                        f"registry schema {current} is newer than supported {SCHEMA_VERSION}"
+                    )
+                if current >= MIGRATION_LEDGER_VERSION:
+                    self._validate_migration_ledger(connection, current)
+                return current
+        except sqlite3.DatabaseError:
+            return None
 
     def _validate_migration_path(self, current: int) -> None:
         plan = self._migration_plan()
@@ -1014,6 +1036,13 @@ class Registry:
             if statement.strip():
                 connection.execute(statement)
 
+    @staticmethod
+    def _migrate_v7_to_v8(connection: sqlite3.Connection) -> None:
+        """Add reasoning_effort_source to runs table."""
+        for statement in MIGRATION_V7_TO_V8_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+
     @contextmanager
     def _transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
@@ -1243,7 +1272,15 @@ class Registry:
         thread_id: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
     ) -> dict[str, Any]:
+        if (
+            reasoning_effort_source is not None
+            and reasoning_effort_source not in REASONING_EFFORT_SOURCES
+        ):
+            raise RegistryError(f"invalid reasoning effort source: {reasoning_effort_source}")
+        if reasoning_effort is not None and reasoning_effort_source is None:
+            reasoning_effort_source = "declared"
         run_id = _id("run")
         with self._transaction() as connection:
             task = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -1258,13 +1295,14 @@ class Registry:
             if open_run is not None:
                 raise RegistryError(f"task already has a running run: {open_run['id']}")
             timestamp = _now()
+            clean_thread_id = thread_id.strip() if thread_id is not None else None
             changed = connection.execute(
                 """
                 UPDATE tasks
                 SET state = 'running', owner_thread_id = ?, updated_at = ?
                 WHERE id = ? AND state = 'ready'
                 """,
-                (thread_id, timestamp, task_id),
+                (clean_thread_id, timestamp, task_id),
             ).rowcount
             if changed != 1:
                 raise RegistryError(f"concurrent task dispatch detected: {task_id}")
@@ -1272,10 +1310,19 @@ class Registry:
                 """
                 INSERT INTO runs(
                     id, task_id, thread_id, agent_role, model, reasoning_effort,
-                    status, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+                    reasoning_effort_source, status, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
                 """,
-                (run_id, task_id, thread_id, agent_role, model, reasoning_effort, timestamp),
+                (
+                    run_id,
+                    task_id,
+                    clean_thread_id,
+                    agent_role,
+                    model,
+                    reasoning_effort,
+                    reasoning_effort_source,
+                    timestamp,
+                ),
             )
             self._record_event(
                 connection,
@@ -1285,7 +1332,60 @@ class Registry:
                 from_state="ready",
                 to_state="running",
                 reason=f"dispatched to {agent_role}",
-                evidence=thread_id,
+                evidence=clean_thread_id,
+            )
+        return self.get_run(run_id)
+
+    def bind_run(
+        self,
+        run_id: str,
+        *,
+        thread_id: str,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_effort_source: str | None = None,
+    ) -> dict[str, Any]:
+        if not thread_id or not thread_id.strip():
+            raise RegistryError("run thread_id is required")
+        if (
+            reasoning_effort_source is not None
+            and reasoning_effort_source not in REASONING_EFFORT_SOURCES
+        ):
+            raise RegistryError(f"invalid reasoning effort source: {reasoning_effort_source}")
+        clean_thread_id = thread_id.strip()
+        with self._transaction() as connection:
+            run = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise RegistryError(f"run not found: {run_id}")
+            if run["status"] != "running":
+                raise RegistryError(f"run binding requires a running run; found {run['status']}")
+            if run["thread_id"] is not None and run["thread_id"] != clean_thread_id:
+                raise RegistryError("refuse to replace run thread_id")
+            source = reasoning_effort_source
+            if source is None and reasoning_effort is not None:
+                source = (
+                    "declared"
+                    if run["reasoning_effort_source"] is None
+                    else run["reasoning_effort_source"]
+                )
+            connection.execute(
+                """
+                UPDATE runs
+                SET thread_id = ?,
+                    model = COALESCE(?, model),
+                    reasoning_effort = COALESCE(?, reasoning_effort),
+                    reasoning_effort_source = COALESCE(?, reasoning_effort_source)
+                WHERE id = ? AND status = 'running'
+                """,
+                (clean_thread_id, model, reasoning_effort, source, run_id),
+            )
+            connection.execute(
+                """
+                UPDATE tasks
+                SET owner_thread_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_thread_id, _now(), run["task_id"]),
             )
         return self.get_run(run_id)
 
@@ -1750,14 +1850,21 @@ class Registry:
                 """,
                 (timestamp, run_id),
             )
-            task_outcome = "evaluating" if outcome == "succeeded" else outcome
+            if outcome == "succeeded":
+                task_outcome = "evaluating"
+            elif outcome == "cancelled":
+                task_outcome = "ready"
+            else:
+                task_outcome = outcome
+            new_blocked_on = None if task_outcome == "ready" else blocked_on
+            new_owner_thread_id = None if task_outcome == "ready" else task["owner_thread_id"]
             changed = connection.execute(
                 """
                 UPDATE tasks
-                SET state = ?, blocked_on = ?, updated_at = ?
+                SET state = ?, blocked_on = ?, owner_thread_id = ?, updated_at = ?
                 WHERE id = ? AND state = 'running'
                 """,
-                (task_outcome, blocked_on, timestamp, run["task_id"]),
+                (task_outcome, new_blocked_on, new_owner_thread_id, timestamp, run["task_id"]),
             ).rowcount
             if changed != 1:
                 raise RegistryError(f"concurrent run completion detected: {run_id}")
@@ -2176,6 +2283,7 @@ class Registry:
                 SELECT
                     COALESCE(model, 'unspecified') AS model,
                     COALESCE(reasoning_effort, 'none') AS reasoning_effort,
+                    COALESCE(reasoning_effort_source, 'none') AS reasoning_effort_source,
                     COUNT(*) AS total_runs,
                     COUNT(
                         CASE WHEN tokens IS NOT NULL AND tokens > 0 THEN 1 END
@@ -2190,7 +2298,7 @@ class Registry:
                     ) AS success_rate_pct
                 FROM runs
                 WHERE status = 'finished'
-                GROUP BY model, reasoning_effort
+                GROUP BY model, reasoning_effort, reasoning_effort_source
                 ORDER BY total_runs DESC
                 """
             ).fetchall()
@@ -2199,6 +2307,7 @@ class Registry:
                 {
                     "model": row["model"],
                     "reasoning_effort": row["reasoning_effort"],
+                    "reasoning_effort_source": row["reasoning_effort_source"],
                     "total_runs": row["total_runs"],
                     "runs_with_tokens": row["runs_with_tokens"],
                     "avg_tokens": row["avg_tokens"],

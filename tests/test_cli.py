@@ -724,3 +724,225 @@ def test_cli_rejects_every_retired_spelling(tmp_path, removed):
     with pytest.raises(SystemExit) as exit_info:
         main(["--db", str(database), *removed])
     assert exit_info.value.code == 2
+
+
+def test_cli_task_transition_backlog_to_blocked(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Backlog Task",
+                "--goal",
+                "Wait for upstream",
+                "--success-criteria",
+                "Unblocked",
+                "--state",
+                "backlog",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+    assert task["state"] == "backlog"
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "transition",
+                task["id"],
+                "blocked",
+                "--actor",
+                "supervisor",
+                "--reason",
+                "Waiting for upstream merged contracts",
+                "--blocked-on",
+                "bossmode-upstream-pkg",
+            ]
+        )
+        == 0
+    )
+    transitioned = json.loads(capsys.readouterr().out)
+    assert transitioned["state"] == "blocked"
+    assert transitioned["blocked_on"] == "bossmode-upstream-pkg"
+
+
+def test_cli_run_bind_and_reasoning_effort_source(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Task 1",
+                "--goal",
+                "Goal 1",
+                "--success-criteria",
+                "Pass",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    # 1. Start run without thread-id
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "start",
+                task["id"],
+                "--role",
+                "worker",
+            ]
+        )
+        == 0
+    )
+    run = json.loads(capsys.readouterr().out)
+    assert run["thread_id"] is None
+
+    # 2. Bind thread-id and effort metadata
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "bind",
+                run["id"],
+                "--thread-id",
+                "native_thread_xyz",
+                "--model",
+                "claude-sonnet-5",
+                "--reasoning-effort",
+                "high",
+                "--reasoning-effort-source",
+                "observed",
+            ]
+        )
+        == 0
+    )
+    bound_run = json.loads(capsys.readouterr().out)
+    assert bound_run["thread_id"] == "native_thread_xyz"
+    assert bound_run["model"] == "claude-sonnet-5"
+    assert bound_run["reasoning_effort"] == "high"
+    assert bound_run["reasoning_effort_source"] == "observed"
+
+
+def test_cli_run_finish_cancelled(tmp_path, capsys):
+    database = tmp_path / "control.db"
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "task",
+                "create",
+                "--title",
+                "Cancel Task",
+                "--goal",
+                "Goal",
+                "--success-criteria",
+                "Pass",
+            ]
+        )
+        == 0
+    )
+    task = json.loads(capsys.readouterr().out)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "start",
+                task["id"],
+                "--role",
+                "worker",
+                "--thread-id",
+                "th_1",
+            ]
+        )
+        == 0
+    )
+    run = json.loads(capsys.readouterr().out)
+
+    # Finish as cancelled
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "finish",
+                run["id"],
+                "--outcome",
+                "cancelled",
+                "--summary",
+                "User requested model change",
+            ]
+        )
+        == 0
+    )
+    finished = json.loads(capsys.readouterr().out)
+    assert finished["outcome"] == "cancelled"
+
+    # Task is back in ready
+    assert main(["--db", str(database), "task", "show", task["id"]]) == 0
+    show_task = json.loads(capsys.readouterr().out)
+    assert show_task["state"] == "ready"
+
+
+def test_cli_errors_write_only_to_stderr_and_exit_two(tmp_path, capsys):
+    database = tmp_path / "control.db"
+
+    # 1. Non-existent task transition
+    exit_code = main(
+        [
+            "--db",
+            str(database),
+            "task",
+            "transition",
+            "task_missing",
+            "ready",
+            "--actor",
+            "supervisor",
+            "--reason",
+            "test",
+        ]
+    )
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err_json = json.loads(captured.err)
+    assert err_json == {"error": "task not found: task_missing"}
+
+    # 2. Invalid reasoning effort source choice
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--db",
+                str(database),
+                "run",
+                "start",
+                "task_1",
+                "--role",
+                "worker",
+                "--reasoning-effort-source",
+                "bad_source",
+            ]
+        )
+    assert exc_info.value.code == 2

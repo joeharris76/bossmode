@@ -81,7 +81,7 @@ allowed changes:
 
 | From | To |
 |---|---|
-| `backlog` | `ready`, `archived` |
+| `backlog` | `ready`, `blocked`, `archived` |
 | `ready` | `blocked`, `archived` |
 | `evaluating` | `ready`, `blocked`, `archived` |
 | `waiting_user` | `ready`, `blocked`, `archived` |
@@ -91,19 +91,23 @@ allowed changes:
 | `running`, `archived` | no explicit `task transition` target |
 
 Lifecycle commands own the remaining changes: `run start` moves `ready` to `running`; `run finish`
-moves `running` to `evaluating`, `waiting_user`, `blocked`, or `failed`; and evaluation moves
+moves `running` to `evaluating`, `waiting_user`, `blocked`, `failed`, or directly back to `ready` (on `cancelled`); and evaluation moves
 `evaluating` to `succeeded` or `failed`.
 
 ## Runs
 
 | Command | Required arguments | Optional arguments |
 |---|---|---|
-| `run start TASK_ID` | `TASK_ID`, `--role` | `--thread-id`, `--model`, `--reasoning-effort` |
+| `run start TASK_ID` | `TASK_ID`, `--role` | `--thread-id`, `--model`, `--reasoning-effort`, `--reasoning-effort-source` |
+| `run bind RUN_ID` | `RUN_ID`, `--thread-id` | `--model`, `--reasoning-effort`, `--reasoning-effort-source` |
 | `run show RUN_ID` | `RUN_ID` | — |
 | `run finish RUN_ID` | `RUN_ID`, `--outcome`, `--summary` | `--artifacts-json ARRAY`, `--tokens`, `--duration-seconds`, `--retries`, `--blocked-on` |
 
-Run outcomes are `waiting_user`, `blocked`, `succeeded`, and `failed`. A successful run moves its
-task to `evaluating`, not final success.
+Run outcomes are `waiting_user`, `blocked`, `succeeded`, `failed`, and `cancelled`. A successful run moves its
+task to `evaluating`, not final success. A `cancelled` run returns its task directly to `ready` for re-dispatch
+without counting as a failure.
+
+`--reasoning-effort-source` records provenance for reasoning effort values: `observed` (measured from runtime), `declared` (explicitly requested by supervisor), or `inherited-unknown` (inherited runtime default). Defaults to `declared` when reasoning effort is provided without an explicit source.
 
 ## Herdr bindings
 

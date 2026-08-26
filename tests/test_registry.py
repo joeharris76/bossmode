@@ -1702,9 +1702,9 @@ def test_turn_result_rejects_symlinked_parent_component(registry, tmp_path, monk
 class _FailingReadConnection:
     """Stands in for a connection, including the in-transaction schema check."""
 
-    def __init__(self, failure_stage, migration_row=None):
+    def __init__(self, failure_stage, migration_rows=None):
         self.failure_stage = failure_stage
-        self.migration_row = migration_row
+        self.migration_rows = migration_rows or []
         self.calls = []
         self.last_statement = None
 
@@ -1721,7 +1721,7 @@ class _FailingReadConnection:
         return (SCHEMA_VERSION,)
 
     def fetchall(self):
-        return [self.migration_row]
+        return self.migration_rows
 
     def commit(self):
         self.calls.append("COMMIT")
@@ -1757,15 +1757,24 @@ def test_read_transaction_begin_failure_preserves_original_error(registry, monke
 def test_read_transaction_rollback_failure_preserves_original_error(
     registry, monkeypatch, failure_stage, message
 ):
-    step = registry._migration_plan()[6]
+    step6 = registry._migration_plan()[6]
+    step7 = registry._migration_plan()[7]
     connection = _FailingReadConnection(
         failure_stage,
-        {
-            "migration_id": step.migration_id,
-            "from_version": step.from_version,
-            "to_version": step.to_version,
-            "checksum": step.checksum,
-        },
+        [
+            {
+                "migration_id": step6.migration_id,
+                "from_version": step6.from_version,
+                "to_version": step6.to_version,
+                "checksum": step6.checksum,
+            },
+            {
+                "migration_id": step7.migration_id,
+                "from_version": step7.from_version,
+                "to_version": step7.to_version,
+                "checksum": step7.checksum,
+            },
+        ],
     )
     monkeypatch.setattr(registry, "initialize", lambda: None)
     monkeypatch.setattr(registry, "_connect", lambda: connection)
@@ -1776,3 +1785,170 @@ def test_read_transaction_rollback_failure_preserves_original_error(
 
     assert "read transaction rollback failed: rollback failed" in caught.value.__notes__
     assert connection.calls[-2:] == ["ROLLBACK", "CLOSE"]
+
+
+def test_backlog_to_blocked_transition(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(
+        title="Backlog Task",
+        goal="Wait for dependency",
+        success_criteria="Unblocked",
+        state="backlog",
+    )
+    assert task["state"] == "backlog"
+
+    # Transition directly from backlog to blocked
+    blocked_task = registry.transition_task(
+        task["id"],
+        "blocked",
+        actor="supervisor",
+        reason="Waiting for upstream",
+        blocked_on="upstream-dep-01",
+    )
+    assert blocked_task["state"] == "blocked"
+    assert blocked_task["blocked_on"] == "upstream-dep-01"
+
+    # Verify reconcile reports the task in blocked
+    state = registry.reconcile()
+    assert any(t["id"] == task["id"] for t in state["blocked"])
+    assert state["next_task"] is None
+
+    # Transition from blocked to ready
+    ready_task = registry.transition_task(
+        task["id"],
+        "ready",
+        actor="supervisor",
+        reason="Upstream merged",
+    )
+    assert ready_task["state"] == "ready"
+    assert ready_task["blocked_on"] is None
+
+
+def test_run_bind_attaches_native_thread_and_metadata(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(
+        title="Native Task",
+        goal="Run native worker",
+        success_criteria="Pass",
+    )
+
+    # 1. Reserve run before spawning native worker
+    run = registry.start_run(task["id"], agent_role="worker")
+    assert run["thread_id"] is None
+    assert run["model"] is None
+    assert run["reasoning_effort"] is None
+    assert run["reasoning_effort_source"] is None
+
+    persisted_task = registry.get_task(task["id"])
+    assert persisted_task["state"] == "running"
+    assert persisted_task["owner_thread_id"] is None
+
+    # 2. Bind native executor identity after spawn
+    bound_run = registry.bind_run(
+        run["id"],
+        thread_id="native_subagent_42",
+        model="claude-3-7-sonnet",
+        reasoning_effort="high",
+        reasoning_effort_source="observed",
+    )
+    assert bound_run["thread_id"] == "native_subagent_42"
+    assert bound_run["model"] == "claude-3-7-sonnet"
+    assert bound_run["reasoning_effort"] == "high"
+    assert bound_run["reasoning_effort_source"] == "observed"
+
+    persisted_task = registry.get_task(task["id"])
+    assert persisted_task["owner_thread_id"] == "native_subagent_42"
+
+    # 3. Idempotent re-bind with same thread_id
+    rebound = registry.bind_run(run["id"], thread_id="native_subagent_42")
+    assert rebound["thread_id"] == "native_subagent_42"
+
+    # 4. Refuse replacing thread_id with different value
+    with pytest.raises(RegistryError, match="refuse to replace run thread_id"):
+        registry.bind_run(run["id"], thread_id="different_thread_99")
+
+    # 5. Refuse empty thread_id
+    with pytest.raises(RegistryError, match="run thread_id is required"):
+        registry.bind_run(run["id"], thread_id="   ")
+
+    # 6. Refuse binding non-existent run
+    with pytest.raises(RegistryError, match="run not found: missing_run"):
+        registry.bind_run("missing_run", thread_id="tid")
+
+    # 7. Refuse binding finished run
+    registry.finish_run(run["id"], outcome="succeeded", summary="Finished")
+    with pytest.raises(RegistryError, match="requires a running run"):
+        registry.bind_run(run["id"], thread_id="native_subagent_42")
+
+
+def test_reasoning_effort_source_validation_and_defaults(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="T", goal="G", success_criteria="S")
+
+    # Invalid source is rejected
+    with pytest.raises(RegistryError, match="invalid reasoning effort source: invalid-source"):
+        registry.start_run(
+            task["id"],
+            agent_role="worker",
+            reasoning_effort_source="invalid-source",
+        )
+
+    # Reasoning effort without source defaults to declared
+    run = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        model="sonnet-5",
+        reasoning_effort="high",
+    )
+    assert run["reasoning_effort"] == "high"
+    assert run["reasoning_effort_source"] == "declared"
+
+
+def test_run_finish_cancelled_outcome_returns_task_to_ready(tmp_path):
+    registry = Registry(tmp_path / "control.db")
+    task = registry.create_task(title="Cancellation Task", goal="Test", success_criteria="Pass")
+
+    run = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        thread_id="worker_thread_1",
+        model="opus-4",
+    )
+    assert registry.get_task(task["id"])["state"] == "running"
+
+    # Finish run as cancelled (e.g. supervisor changed model mid-flight)
+    finished_run = registry.finish_run(
+        run["id"],
+        outcome="cancelled",
+        summary="Model changed mid-flight before work started",
+    )
+    assert finished_run["status"] == "finished"
+    assert finished_run["outcome"] == "cancelled"
+
+    # Task immediately returns to ready in one step
+    persisted_task = registry.get_task(task["id"])
+    assert persisted_task["state"] == "ready"
+    assert persisted_task["owner_thread_id"] is None
+    assert persisted_task["blocked_on"] is None
+
+    # Reconcile immediately offers task as next dispatchable
+    state = registry.reconcile()
+    assert state["next_task"]["id"] == task["id"]
+    assert state["running"] == []
+
+    # Verify task events
+    events = persisted_task["events"]
+    cancelled_event = next(e for e in events if e["from_state"] == "running")
+    assert cancelled_event["to_state"] == "ready"
+    assert "Model changed mid-flight" in cancelled_event["reason"]
+
+    # Re-dispatch with new model succeeds cleanly
+    run2 = registry.start_run(
+        task["id"],
+        agent_role="worker",
+        thread_id="worker_thread_2",
+        model="sonnet-5",
+        reasoning_effort="high",
+    )
+    assert run2["status"] == "running"
+    assert registry.get_task(task["id"])["state"] == "running"
