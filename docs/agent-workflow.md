@@ -33,24 +33,29 @@ prompt, creates a pane, grants permission, or decides that terminal text means s
 
 ## Registry and worktree boundary
 
-Each checkout or linked worktree owns its own `.bossmode/control.db`. Worktree-local registries
-keep task history and schema migrations tied to the source that understands them. A registry path
-that resolves to a sibling worktree's standard `.bossmode/control.db` is rejected before Bossmode
-opens SQLite, inspects the schema, or applies a migration.
+The primary checkout owns the repository's one operational `.bossmode/control.db`. It is the
+durable authority for task, run, turn, evaluation, feedback, and resource history. Linked
+worktrees hold source artifacts only; they cannot create, migrate, or write the operational
+registry, including through `--db`, `BOSSMODE_DB`, a copied database, or a nonstandard path.
 
-Before running any registry command, verify the ownership boundary:
+Create or upgrade the authority explicitly from the primary checkout:
 
 ```bash
 pwd
 git rev-parse --show-toplevel
-realpath .bossmode/control.db
+git rev-parse --path-format=absolute --git-common-dir
+uv run bossmode registry create
 ```
 
-Do not use `--db` or `BOSSMODE_DB` to point at another worktree's registry. If a database is newer
-than the current checkout supports, run the command from the owning checkout and treat any
-remaining mismatch as a blocker. A genuinely shared control plane needs a dedicated,
-supervisor-owned registry location and an explicit adoption protocol; the MVP does not provide an
-implicit shared-registry mode.
+The registry records an immutable ID, operational role, repository URL, Git common directory,
+primary checkout, and creation metadata. Every other command validates that identity read-only
+before directory creation, SQLite write-open, initialization, or migration. Missing authority,
+linked-worktree callers, wrong repositories, copied databases, symlinks, and origin or checkout
+relocation fail closed.
+
+An explicit non-repository `--db` path is an ephemeral test or certification registry. It claims no
+repository authority and cannot be copied, selected, imported, or upgraded into operational
+history. There is no merge-back or adoption command.
 
 ## Responsibilities
 
@@ -68,10 +73,11 @@ Live native runtime or Herdr state is authoritative for executor identity. Regis
 durable indexes that must be verified against live state before every prompt, interruption,
 continuation, or close.
 
-Two different operations are easy to confuse. `bossmode reconcile` converges the registry itself:
-it migrates the schema, materialises promotion proposals, and reports task buckets. Verifying a
-stored worker identity against live Herdr or native runtime state is a separate supervisor
-responsibility that Bossmode never performs for you.
+Two different operations are easy to confuse. `bossmode registry create` creates or upgrades the
+operational schema. `bossmode reconcile` is open-only: it validates the existing authority,
+materialises promotion proposals, and reports task buckets. Verifying a stored worker identity
+against live Herdr or native runtime state is a separate supervisor responsibility that Bossmode
+never performs for you.
 
 ## Select an executor explicitly
 
@@ -91,17 +97,20 @@ evidence. ADR 0005 records the decision gates for reconsidering automatic select
 
 ## Common task lifecycle
 
-1. The supervisor runs `uv run bossmode` to converge the registry and read current state. The
-   command writes: it creates or migrates the registry and materialises promotion proposals.
-2. It records user requests with `bossmode task create`, including success criteria and permission limits.
-3. It selects only the task returned in `next_task` and starts one run. `next_task` stays `null`
+1. Once per repository, the supervisor creates the authority from the primary checkout with
+   `uv run bossmode registry create`. It repeats this explicit command for a supported schema
+   upgrade.
+2. The supervisor runs `uv run bossmode` to validate the registry and read current state. This
+   command writes only after authority validation because it may materialise promotion proposals.
+3. It records user requests with `bossmode task create`, including success criteria and permission limits.
+4. It selects only the task returned in `next_task` and starts one run. `next_task` stays `null`
    while another task is running or awaiting evaluation.
-4. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
+5. It delegates through either the native subagent path (e.g. AGY, Codex) or the Herdr worker
    path (`pi`, `codex`, `claude`, `agy`, `grok`) below.
-5. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
-6. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
+6. It records the run result. `succeeded` moves the task to `evaluating`, not to final success.
+7. A separate reviewer checks deterministic evidence or the produced artifacts. The supervisor
    records that verdict with `evaluate`.
-7. Explicit corrections and preferences are recorded with `feedback`. Any resulting promotion is
+8. Explicit corrections and preferences are recorded with `feedback`. Any resulting promotion is
    only a proposal until the user approves it.
 
 ## Native subagent path (Codex, AGY, etc.)
@@ -244,7 +253,7 @@ worker name. Do not replace a worker merely because its pane moved or the server
 
 ## Recover after interruption
 
-Run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain
+From the primary checkout, run `uv run bossmode` (or `bossmode reconcile`). Its `running` and `evaluating` entries contain
 nested runs, Herdr bindings, turns, output paths, and validated results. Use
 `bossmode run show RUN_ID` or `bossmode turn show TURN_ID` when you need one exact record, then
 verify that stored identity against live native runtime (AGY, Codex) or Herdr state before
@@ -291,6 +300,10 @@ To ensure database integrity, analyze token and model efficiency, and trigger re
    # Cleanly remove the OS scheduler job
    uv run bossmode schedule uninstall
    ```
+
+   All three commands validate the operational registry first. The recorded primary checkout owns
+   the scheduler entry; `--repo-dir` may be omitted or must equal that exact checkout. Each result
+   includes the owning `registry_id` and `repository_url`.
 
 Automated tests validate generated commands and mocked success, fallback, and failure behavior.
 They never mutate a developer or CI host's launchd or crontab state. Run an actual

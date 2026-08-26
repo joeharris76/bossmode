@@ -20,6 +20,7 @@ from bossmode.registry import (
     TURN_PURPOSES,
     Registry,
     RegistryError,
+    validate_nonsymlink_path,
 )
 from bossmode.scheduler import (
     SchedulerError,
@@ -44,10 +45,20 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "SQLite registry path (default: $BOSSMODE_DB, else .bossmode/control.db). "
-            "`install-skill` touches no registry and rejects this option."
+            "The operational path is fixed by registry identity; explicit non-repository paths "
+            "are ephemeral. `install-skill` touches no registry and rejects this option."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=False)
+
+    registry = subparsers.add_parser(
+        "registry", help="Create the repository's operational registry authority"
+    )
+    registry_commands = registry.add_subparsers(dest="registry_command", required=True)
+    registry_commands.add_parser(
+        "create",
+        help="Create or upgrade the one primary-checkout operational registry",
+    )
 
     install_skill = subparsers.add_parser(
         "install-skill", help="Install the version-matched Bossmode skill into a project"
@@ -60,7 +71,7 @@ def _parser() -> argparse.ArgumentParser:
         "reconcile",
         help=(
             "Converge the registry and report control-plane state (default command). "
-            "Creates or migrates the registry and materialises promotion proposals."
+            "Requires an existing operational authority and materialises promotion proposals."
         ),
     )
 
@@ -295,15 +306,24 @@ def _parser() -> argparse.ArgumentParser:
         default="maintenance",
         help="Target command to run (default: maintenance)",
     )
-    sched_install.add_argument("--repo-dir", default=".", help="Repository path (default: .)")
+    sched_install.add_argument(
+        "--repo-dir",
+        help="Primary checkout path (default: the validated registry owner)",
+    )
     sched_install.add_argument("--log-path", help="Path for output log file")
 
     sched_status = schedule_commands.add_parser("status", help="Check OS scheduler job status")
-    sched_status.add_argument("--repo-dir", default=".", help="Repository path (default: .)")
+    sched_status.add_argument(
+        "--repo-dir",
+        help="Primary checkout path (default: the validated registry owner)",
+    )
     sched_status.add_argument("--log-path", help="Path for output log file")
 
     sched_uninstall = schedule_commands.add_parser("uninstall", help="Uninstall OS scheduler job")
-    sched_uninstall.add_argument("--repo-dir", default=".", help="Repository path (default: .)")
+    sched_uninstall.add_argument(
+        "--repo-dir",
+        help="Primary checkout path (default: the validated registry owner)",
+    )
 
     return parser
 
@@ -326,6 +346,23 @@ def _resolve_db(value: str | None) -> str:
     return value if value is not None else os.environ.get("BOSSMODE_DB", str(DEFAULT_DB))
 
 
+def _scheduler_owner(
+    registry: Registry, requested_repo_dir: str | None
+) -> tuple[Path, dict[str, Any]]:
+    identity = registry.get_registry_identity()
+    if identity["registry_role"] != "operational":
+        raise RegistryError("scheduler commands require an operational registry authority")
+    primary_checkout = Path(identity["primary_checkout"])
+    if requested_repo_dir is not None:
+        requested = validate_nonsymlink_path(requested_repo_dir)
+        if requested != primary_checkout:
+            raise RegistryError(
+                "scheduler repository must match the operational registry owner: "
+                f"expected={primary_checkout}, actual={requested}"
+            )
+    return primary_checkout, identity
+
+
 def _run(args: argparse.Namespace) -> Any:
     if args.command == "install-skill":
         # `--db` used to be accepted here and silently discarded.
@@ -333,7 +370,15 @@ def _run(args: argparse.Namespace) -> Any:
             raise RegistryError("install-skill does not use a registry; remove --db")
         return install_project_skill(args.project_dir)
 
-    registry = Registry(_resolve_db(args.db))
+    database = _resolve_db(args.db)
+    if args.command == "registry":
+        registry = Registry.create_operational(database)
+        return registry.get_registry_identity()
+
+    registry = Registry.open_for_command(
+        database,
+        explicit_path=args.db is not None or "BOSSMODE_DB" in os.environ,
+    )
 
     # Default action: naked `bossmode` or the explicit `bossmode reconcile`.
     if args.command in (None, "reconcile"):
@@ -451,17 +496,24 @@ def _run(args: argparse.Namespace) -> Any:
         return registry.run_maintenance()
 
     if args.command == "schedule":
+        repo_dir, identity = _scheduler_owner(registry, args.repo_dir)
         if args.schedule_command == "install":
-            return install_schedule(
-                args.repo_dir,
+            result = install_schedule(
+                repo_dir,
                 target=args.target,
                 interval_seconds=args.interval,
                 cron_expr=args.cron,
                 log_path=args.log_path,
             )
-        if args.schedule_command == "status":
-            return get_schedule_status(args.repo_dir, log_path=args.log_path)
-        return uninstall_schedule(args.repo_dir)
+        elif args.schedule_command == "status":
+            result = get_schedule_status(repo_dir, log_path=args.log_path)
+        else:
+            result = uninstall_schedule(repo_dir)
+        return {
+            **result,
+            "registry_id": identity["registry_id"],
+            "repository_url": identity["repository_url"],
+        }
 
     # Defensive: every subparser above returns, and each subcommand group is
     # required, so this is unreachable. It replaces a silent fallthrough that
