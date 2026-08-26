@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sqlite3
 import subprocess
@@ -10,7 +11,12 @@ import pytest
 
 import bossmode.cli as cli_module
 from bossmode.cli import main
-from bossmode.registry import Registry, RegistryError
+from bossmode.registry import (
+    REGISTRY_IDENTITY_GUARD_SQL,
+    DatabaseFileIdentity,
+    Registry,
+    RegistryError,
+)
 
 REPOSITORY_URL = "https://example.com/acme/bossmode.git"
 
@@ -118,6 +124,52 @@ def test_only_registry_create_can_upgrade_schema_v7_operational_history(
     repeated = Registry.open_for_command(database, explicit_path=False).get_registry_identity()
     assert repeated["registry_id"] == first_registry_id
     assert len(list((database.parent / "backups").glob("*.sqlite3"))) == 1
+
+
+def test_v7_to_v8_revalidates_live_origin_after_backup_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = create_repository(tmp_path / "primary")
+    database = repository / ".bossmode" / "control.db"
+    create_schema_v7(database)
+    monkeypatch.chdir(repository)
+    original_backup = Registry._create_migration_backup
+
+    def backup_then_change_origin(self: Registry, schema_version: int):
+        backup = original_backup(self, schema_version)
+        run_git(
+            repository,
+            "remote",
+            "set-url",
+            "origin",
+            "https://example.com/acme/rebound.git",
+        )
+        return backup
+
+    monkeypatch.setattr(Registry, "_create_migration_backup", backup_then_change_origin)
+
+    with pytest.raises(RegistryError, match="live repository authority changed"):
+        Registry.create_operational(database, repository_path=repository)
+
+    backups = list((database.parent / "backups").glob("control.db.schema-7.*.sqlite3"))
+    assert len(backups) == 1
+    digest = hashlib.sha256(backups[0].read_bytes()).hexdigest()
+    assert f"sha256-{digest}" in backups[0].name
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+        assert connection.execute(
+            "SELECT migration_id FROM applied_migrations ORDER BY to_version"
+        ).fetchall() == [("20260825_01_migration_durability",)]
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'registry_identity'"
+            ).fetchone()
+            is None
+        )
+    with closing(sqlite3.connect(backups[0])) as connection:
+        assert connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
 @pytest.mark.parametrize(
@@ -271,14 +323,10 @@ def test_registry_constructor_rejects_unknown_role(tmp_path: Path) -> None:
         Registry(tmp_path / "control.db", registry_role="unknown")
 
 
-@pytest.mark.parametrize(
-    ("metadata", "message"),
-    [("not-json", "creation metadata is invalid"), ("[]", "must be an object")],
-)
+@pytest.mark.parametrize("metadata", ["not-json", "[]", "{}", '{"schema_version":7}'])
 def test_registry_rejects_invalid_creation_metadata(
     tmp_path: Path,
     metadata: str,
-    message: str,
 ) -> None:
     database = tmp_path / "control.db"
     Registry(database).initialize()
@@ -288,8 +336,9 @@ def test_registry_rejects_invalid_creation_metadata(
             "UPDATE registry_identity SET creation_metadata_json = ?",
             (metadata,),
         )
+        connection.execute(REGISTRY_IDENTITY_GUARD_SQL[0])
 
-    with pytest.raises(RegistryError, match=message):
+    with pytest.raises(RegistryError, match="creation metadata does not match"):
         Registry(database).get_registry_identity()
 
 
@@ -299,9 +348,100 @@ def test_registry_rejects_missing_identity_row(tmp_path: Path) -> None:
     with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("DROP TRIGGER registry_identity_immutable_delete")
         connection.execute("DELETE FROM registry_identity")
+        connection.execute(REGISTRY_IDENTITY_GUARD_SQL[1])
 
     with pytest.raises(RegistryError, match="must contain exactly one row"):
         Registry(database).initialize()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("registry_id", "forged", "registry ID is invalid"),
+        ("created_at", "not-a-time", "registry creation time is invalid"),
+    ],
+)
+def test_registry_rejects_forged_material_identity(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    database = tmp_path / "control.db"
+    Registry(database).initialize()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TRIGGER registry_identity_immutable_update")
+        connection.execute(f"UPDATE registry_identity SET {field} = ?", (value,))
+        connection.execute(REGISTRY_IDENTITY_GUARD_SQL[0])
+
+    with pytest.raises(RegistryError, match=message):
+        Registry(database).get_registry_identity()
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    ["registry_identity_immutable_update", "registry_identity_immutable_delete"],
+)
+def test_registry_rejects_missing_identity_enforcement(tmp_path: Path, trigger: str) -> None:
+    database = tmp_path / "control.db"
+    Registry(database).initialize()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(f"DROP TRIGGER {trigger}")
+
+    with pytest.raises(RegistryError, match="immutability enforcement is altered"):
+        Registry(database).get_registry_identity()
+
+
+def test_registry_rejects_altered_identity_enforcement(tmp_path: Path) -> None:
+    database = tmp_path / "control.db"
+    Registry(database).initialize()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TRIGGER registry_identity_immutable_update")
+        connection.execute(
+            "CREATE TRIGGER registry_identity_immutable_update "
+            "BEFORE UPDATE ON registry_identity BEGIN SELECT 1; END"
+        )
+
+    with pytest.raises(RegistryError, match="immutability enforcement is altered"):
+        Registry(database).get_registry_identity()
+
+
+def test_material_identity_validator_rejects_singleton_and_noncanonical_utc(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "control.db"
+    Registry(database).initialize()
+    identity, _ = Registry._read_registry_identity(database)
+    assert identity is not None
+
+    with pytest.raises(RegistryError, match="singleton is invalid"):
+        Registry._validate_registry_identity_material({**identity, "singleton": 2})
+    with pytest.raises(RegistryError, match="creation time is invalid"):
+        Registry._validate_registry_identity_material(
+            {**identity, "created_at": "2026-01-01T00:00:00Z"}
+        )
+
+
+def test_database_descriptor_guard_rejects_missing_nonregular_and_replaced_files(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "control.db"
+    database.write_bytes(b"original")
+    metadata = database.stat()
+    expected = DatabaseFileIdentity(metadata.st_dev, metadata.st_ino)
+    database.unlink()
+
+    with pytest.raises(RegistryError, match="cannot open registry database safely"):
+        Registry._open_database_descriptor(database, expected)
+
+    database.mkdir()
+    with pytest.raises(RegistryError, match="must be a regular file"):
+        Registry._open_database_descriptor(database, expected)
+
+    database.rmdir()
+    database.write_bytes(b"replacement")
+    with pytest.raises(RegistryError, match="changed after authority preflight"):
+        Registry._open_database_descriptor(database, expected)
 
 
 def test_operational_copy_and_wrong_repository_fail_before_mutation(
@@ -359,6 +499,70 @@ def test_symlinked_registry_path_is_rejected_before_target_access(
 
     assert main(["--db", str(linked_directory / "control.db"), "task", "list"]) == 2
     assert snapshot(copied) == copied_before
+
+
+def test_post_preflight_compatible_copy_swap_refuses_before_either_database_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository = create_repository(tmp_path / "primary")
+    database = create_operational_registry(repository, monkeypatch)
+    capsys.readouterr()
+    registry = Registry.open_for_command(database, explicit_path=False)
+    registry.get_registry_identity()
+    redirected = tmp_path / "identity-compatible.db"
+    shutil.copy2(database, redirected)
+    preserved = database.with_name("preserved-control.db")
+    preserved_before = snapshot(database)
+    redirected_before = snapshot(redirected)
+    original_preflight = registry._preflight_schema_access
+    swapped = False
+
+    def preflight_then_swap() -> None:
+        nonlocal swapped
+        original_preflight()
+        if not swapped:
+            database.rename(preserved)
+            database.symlink_to(redirected)
+            swapped = True
+
+    monkeypatch.setattr(registry, "_preflight_schema_access", preflight_then_swap)
+
+    with pytest.raises(RegistryError, match="must not contain symlinks"):
+        registry.create_task(
+            title="redirected",
+            goal="must not be written",
+            success_criteria="both databases remain unchanged",
+        )
+
+    assert snapshot(preserved) == preserved_before
+    assert snapshot(redirected) == redirected_before
+    for candidate in (preserved, redirected):
+        with closing(sqlite3.connect(f"{candidate.as_uri()}?mode=ro", uri=True)) as connection:
+            assert (
+                connection.execute("SELECT id FROM tasks WHERE title = 'redirected'").fetchall()
+                == []
+            )
+
+
+def test_operational_open_rejects_reviewer_forgery_and_removed_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository = create_repository(tmp_path / "primary")
+    database = create_operational_registry(repository, monkeypatch)
+    capsys.readouterr()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TRIGGER registry_identity_immutable_update")
+        connection.execute(
+            "UPDATE registry_identity SET registry_id = 'forged', "
+            "created_at = 'not-a-time', creation_metadata_json = '{}'"
+        )
+
+    assert main(["task", "list"]) == 2
+    assert "immutability enforcement is altered" in capsys.readouterr().err
 
 
 def test_registry_create_rejects_noncanonical_operational_path(
@@ -440,3 +644,32 @@ def test_scheduler_uses_and_reports_validated_primary_owner(
 
     assert main(["schedule", "status", "--repo-dir", str(tmp_path)]) == 2
     assert observed[-1] == ("uninstall", repository)
+
+
+@pytest.mark.parametrize("command", ["install", "status", "uninstall"])
+def test_scheduler_rejects_symlinked_repo_dir_before_adapter_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    repository = create_repository(tmp_path / "primary")
+    create_operational_registry(repository, monkeypatch)
+    capsys.readouterr()
+    linked_repository = tmp_path / "linked-primary"
+    linked_repository.symlink_to(repository, target_is_directory=True)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        cli_module, "install_schedule", lambda *_args, **_kwargs: calls.append("install")
+    )
+    monkeypatch.setattr(
+        cli_module, "get_schedule_status", lambda *_args, **_kwargs: calls.append("status")
+    )
+    monkeypatch.setattr(
+        cli_module, "uninstall_schedule", lambda *_args, **_kwargs: calls.append("uninstall")
+    )
+
+    assert main(["schedule", command, "--repo-dir", str(linked_repository)]) == 2
+    assert calls == []
+    assert "must not contain symlinks" in capsys.readouterr().err

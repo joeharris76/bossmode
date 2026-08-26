@@ -14,6 +14,8 @@ import pytest
 
 from bossmode.registry import (
     MAX_TURN_RESULT_BYTES,
+    REGISTRY_IDENTITY_GUARD_SQL,
+    REGISTRY_IDENTITY_TABLE_SQL,
     SCHEMA_VERSION,
     Registry,
     RegistryError,
@@ -1712,17 +1714,35 @@ class _FailingReadConnection:
     def fetchall(self):
         if "applied_migrations" in self.last_statement:
             return self.migration_rows
+        if "tbl_name = 'registry_identity'" in self.last_statement:
+            return [
+                {
+                    "type": "table",
+                    "name": "registry_identity",
+                    "sql": REGISTRY_IDENTITY_TABLE_SQL,
+                },
+                {
+                    "type": "trigger",
+                    "name": "registry_identity_immutable_update",
+                    "sql": REGISTRY_IDENTITY_GUARD_SQL[0],
+                },
+                {
+                    "type": "trigger",
+                    "name": "registry_identity_immutable_delete",
+                    "sql": REGISTRY_IDENTITY_GUARD_SQL[1],
+                },
+            ]
         if "registry_identity" in self.last_statement:
             return [
                 {
                     "singleton": 1,
-                    "registry_id": "registry_test",
+                    "registry_id": "registry_0123456789ab",
                     "registry_role": "ephemeral",
                     "repository_url": "",
                     "git_common_dir": "",
                     "primary_checkout": "",
                     "created_at": "2026-01-01T00:00:00+00:00",
-                    "creation_metadata_json": "{}",
+                    "creation_metadata_json": '{"schema_version":8}',
                 }
             ]
         return []

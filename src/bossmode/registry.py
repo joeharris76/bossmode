@@ -14,7 +14,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -339,6 +339,12 @@ class RepositoryIdentity:
     current_checkout: Path
 
 
+@dataclass(frozen=True)
+class DatabaseFileIdentity:
+    device: int
+    inode: int
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -456,6 +462,17 @@ def _reject_symlink_path(path: Path) -> None:
             raise RegistryError(f"registry path must not contain symlinks: {candidate}")
 
 
+def validate_nonsymlink_path(path: str | Path) -> Path:
+    """Return an absolute lexical path after rejecting symlink components."""
+    absolute = _absolute_path(Path(path))
+    _reject_symlink_path(absolute)
+    return absolute
+
+
+def _normalized_schema_sql(value: str) -> str:
+    return " ".join(value.strip().rstrip(";").split())
+
+
 class Registry:
     def __init__(
         self,
@@ -463,6 +480,7 @@ class Registry:
         *,
         registry_role: str = "ephemeral",
         repository_identity: RepositoryIdentity | None = None,
+        database_file_identity: DatabaseFileIdentity | None = None,
         allow_create: bool = True,
     ) -> None:
         if registry_role not in REGISTRY_ROLES:
@@ -470,6 +488,7 @@ class Registry:
         self.path = _absolute_path(Path(path))
         self.registry_role = registry_role
         self.repository_identity = repository_identity
+        self._database_file_identity = database_file_identity
         self.allow_create = allow_create
         self._schema_ready = False
 
@@ -501,7 +520,7 @@ class Registry:
         database = _absolute_path(Path(path))
         _reject_symlink_path(database)
         repository = _try_discover_repository_identity(Path(repository_path))
-        raw_identity = cls._read_registry_identity(database)
+        raw_identity, database_file_identity = cls._read_registry_identity(database)
         if raw_identity is not None and raw_identity["registry_role"] == "operational":
             recorded_primary = Path(raw_identity["primary_checkout"])
             recorded_repository = _discover_repository_identity(recorded_primary)
@@ -509,6 +528,7 @@ class Registry:
                 database,
                 registry_role="operational",
                 repository_identity=recorded_repository,
+                database_file_identity=database_file_identity,
                 allow_create=False,
             )
             registry._validate_operational_identity(raw_identity, caller_repository=repository)
@@ -522,6 +542,7 @@ class Registry:
                     database,
                     registry_role="operational",
                     repository_identity=repository,
+                    database_file_identity=database_file_identity,
                     allow_create=False,
                 )
                 registry._validate_operational_location()
@@ -531,28 +552,168 @@ class Registry:
             raise RegistryError(f"unsupported registry role: {raw_identity['registry_role']}")
         if not explicit_path and repository is not None:
             raise RegistryError("operational registry path is not authoritative")
-        return cls(database, registry_role="ephemeral", allow_create=True)
+        return cls(
+            database,
+            registry_role="ephemeral",
+            database_file_identity=database_file_identity,
+            allow_create=True,
+        )
 
     @staticmethod
-    def _read_registry_identity(path: Path) -> dict[str, Any] | None:
-        if not path.exists() or path.stat().st_size == 0:
-            return None
-        uri = f"{path.as_uri()}?mode=ro&immutable=1"
+    def _assert_database_descriptor_matches_path(path: Path, descriptor: int) -> None:
+        _reject_symlink_path(path)
+        opened = os.fstat(descriptor)
         try:
-            with closing(sqlite3.connect(uri, uri=True)) as connection:
-                connection.row_factory = sqlite3.Row
-                table = connection.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'registry_identity'"
-                ).fetchone()
-                if table is None:
-                    return None
-                rows = connection.execute("SELECT * FROM registry_identity").fetchall()
-        except sqlite3.Error as error:
-            raise RegistryError(f"registry identity is unreadable: {path}") from error
+            observed = os.stat(path, follow_symlinks=False)
+        except OSError as error:
+            raise RegistryError(f"registry database changed while in use: {path}") from error
+        if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(observed.st_mode):
+            raise RegistryError(f"registry database must be a regular file: {path}")
+        if (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+            raise RegistryError(f"registry database changed while in use: {path}")
+
+    @classmethod
+    def _open_database_descriptor(
+        cls,
+        path: Path,
+        expected_file_identity: DatabaseFileIdentity | None = None,
+    ) -> int:
+        _reject_symlink_path(path)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as error:
+            raise RegistryError(f"cannot open registry database safely: {path}") from error
+        try:
+            cls._assert_database_descriptor_matches_path(path, descriptor)
+            metadata = os.fstat(descriptor)
+            observed = DatabaseFileIdentity(metadata.st_dev, metadata.st_ino)
+            if expected_file_identity is not None and observed != expected_file_identity:
+                raise RegistryError(f"registry database changed after authority preflight: {path}")
+        except Exception:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    def _remember_database_file_identity(
+        self,
+        observed: DatabaseFileIdentity | None,
+    ) -> None:
+        if observed is None:
+            return
+        if self._database_file_identity is None:
+            self._database_file_identity = observed
+        elif observed != self._database_file_identity:
+            raise RegistryError(f"registry database changed after authority preflight: {self.path}")
+
+    @contextmanager
+    def _database_file_guard(self) -> Iterable[int | None]:
+        if self.registry_role != "operational":
+            yield None
+            return
+        descriptor = self._open_database_descriptor(
+            self.path,
+            self._database_file_identity,
+        )
+        try:
+            metadata = os.fstat(descriptor)
+            self._remember_database_file_identity(
+                DatabaseFileIdentity(metadata.st_dev, metadata.st_ino)
+            )
+            yield descriptor
+            self._assert_database_descriptor_matches_path(self.path, descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _assert_database_guard(self, descriptor: int | None) -> None:
+        if descriptor is not None:
+            self._assert_database_descriptor_matches_path(self.path, descriptor)
+
+    @classmethod
+    def _read_registry_identity(
+        cls,
+        path: Path,
+        *,
+        expected_file_identity: DatabaseFileIdentity | None = None,
+    ) -> tuple[dict[str, Any] | None, DatabaseFileIdentity | None]:
+        if not path.exists():
+            return None, None
+        descriptor = cls._open_database_descriptor(path, expected_file_identity)
+        try:
+            metadata = os.fstat(descriptor)
+            file_identity = DatabaseFileIdentity(metadata.st_dev, metadata.st_ino)
+            if metadata.st_size == 0:
+                return None, file_identity
+            uri = f"{path.as_uri()}?mode=ro&immutable=1"
+            try:
+                with closing(sqlite3.connect(uri, uri=True)) as connection:
+                    cls._assert_database_descriptor_matches_path(path, descriptor)
+                    connection.row_factory = sqlite3.Row
+                    table = connection.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'registry_identity'"
+                    ).fetchone()
+                    if table is None:
+                        cls._assert_database_descriptor_matches_path(path, descriptor)
+                        return None, file_identity
+                    cls._validate_registry_identity_schema(connection)
+                    rows = connection.execute("SELECT * FROM registry_identity").fetchall()
+                    cls._assert_database_descriptor_matches_path(path, descriptor)
+            except sqlite3.Error as error:
+                raise RegistryError(f"registry identity is unreadable: {path}") from error
+        finally:
+            os.close(descriptor)
         if len(rows) != 1:
             raise RegistryError("registry identity must contain exactly one row")
-        return dict(rows[0])
+        identity = dict(rows[0])
+        cls._validate_registry_identity_material(identity)
+        return identity, file_identity
+
+    @staticmethod
+    def _validate_registry_identity_schema(connection: sqlite3.Connection) -> None:
+        expected = {
+            ("table", "registry_identity"): _normalized_schema_sql(REGISTRY_IDENTITY_TABLE_SQL),
+            **{
+                ("trigger", name): _normalized_schema_sql(statement)
+                for name, statement in (
+                    ("registry_identity_immutable_update", REGISTRY_IDENTITY_GUARD_SQL[0]),
+                    ("registry_identity_immutable_delete", REGISTRY_IDENTITY_GUARD_SQL[1]),
+                )
+            },
+        }
+        rows = connection.execute(
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE tbl_name = 'registry_identity' AND type IN ('table', 'trigger')"
+        ).fetchall()
+        observed = {(row["type"], row["name"]): _normalized_schema_sql(row["sql"]) for row in rows}
+        if observed != expected:
+            raise RegistryError("registry identity schema or immutability enforcement is altered")
+
+    @staticmethod
+    def _validate_registry_identity_material(identity: dict[str, Any]) -> dict[str, Any]:
+        if identity["singleton"] != 1:
+            raise RegistryError("registry identity singleton is invalid")
+        registry_id = identity["registry_id"]
+        if (
+            not isinstance(registry_id, str)
+            or re.fullmatch(r"registry_[0-9a-f]{12}", registry_id) is None
+        ):
+            raise RegistryError("registry ID is invalid")
+        created_at = identity["created_at"]
+        try:
+            created = datetime.fromisoformat(created_at)
+        except (TypeError, ValueError) as error:
+            raise RegistryError("registry creation time is invalid") from error
+        if (
+            created.tzinfo is None
+            or created.utcoffset() != timedelta(0)
+            or created.isoformat() != created_at
+        ):
+            raise RegistryError("registry creation time is invalid")
+        expected_metadata = _json({"schema_version": SCHEMA_VERSION})
+        if identity["creation_metadata_json"] != expected_metadata:
+            raise RegistryError("registry creation metadata does not match the schema contract")
+        return {"schema_version": SCHEMA_VERSION}
 
     def _validate_operational_location(self) -> None:
         repository = self.repository_identity
@@ -639,10 +800,27 @@ class Registry:
                     f"primary={caller_repository.primary_checkout}"
                 )
 
+    def _assert_live_repository_authority(self) -> None:
+        if self.registry_role != "operational":
+            return
+        expected = self.repository_identity
+        if expected is None:
+            raise RegistryError("operational registry is missing repository authority")
+        observed = _discover_repository_identity(expected.primary_checkout)
+        for field in ("repository_url", "git_common_dir", "primary_checkout"):
+            if getattr(observed, field) != getattr(expected, field):
+                raise RegistryError(
+                    f"live repository authority changed for {field}: "
+                    f"expected={getattr(expected, field)}, actual={getattr(observed, field)}"
+                )
+        if observed.current_checkout != observed.primary_checkout:
+            raise RegistryError("live repository authority is not the primary checkout")
+
     def _validate_registry_identity(
         self,
         connection: sqlite3.Connection,
     ) -> dict[str, Any]:
+        self._validate_registry_identity_schema(connection)
         try:
             rows = connection.execute("SELECT * FROM registry_identity").fetchall()
         except sqlite3.Error as error:
@@ -657,12 +835,7 @@ class Registry:
                 f"registry role mismatch: expected={self.registry_role}, "
                 f"actual={identity['registry_role']}"
             )
-        try:
-            creation_metadata = json.loads(identity["creation_metadata_json"])
-        except (json.JSONDecodeError, TypeError) as error:
-            raise RegistryError("registry creation metadata is invalid") from error
-        if not isinstance(creation_metadata, dict):
-            raise RegistryError("registry creation metadata must be an object")
+        creation_metadata = self._validate_registry_identity_material(identity)
         if self.registry_role == "operational":
             self._validate_operational_identity(
                 identity,
@@ -699,7 +872,11 @@ class Registry:
                     "ephemeral registry access cannot target a Git checkout's operational path; "
                     "use `bossmode registry create` from the primary checkout"
                 )
-        raw_identity = self._read_registry_identity(self.path)
+        raw_identity, observed_file_identity = self._read_registry_identity(
+            self.path,
+            expected_file_identity=self._database_file_identity,
+        )
+        self._remember_database_file_identity(observed_file_identity)
         if raw_identity is not None:
             if self.registry_role == "operational":
                 self._validate_operational_identity(
@@ -716,6 +893,34 @@ class Registry:
                 "operational registry authority is absent; run `bossmode registry create` "
                 "from the primary checkout"
             )
+
+    def _prepare_operational_database_file(self) -> None:
+        if self.registry_role != "operational" or self._database_file_identity is not None:
+            return
+        _reject_symlink_path(self.path)
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(self.path, flags, 0o600)
+        except FileExistsError:
+            descriptor = self._open_database_descriptor(self.path)
+        except OSError as error:
+            raise RegistryError(f"cannot create registry database safely: {self.path}") from error
+        try:
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+            self._assert_database_descriptor_matches_path(self.path, descriptor)
+            metadata = os.fstat(descriptor)
+            self._remember_database_file_identity(
+                DatabaseFileIdentity(metadata.st_dev, metadata.st_ino)
+            )
+        finally:
+            os.close(descriptor)
 
     def get_registry_identity(self) -> dict[str, Any]:
         with self._read_transaction() as connection:
@@ -797,9 +1002,7 @@ class Registry:
             return None
         if self.path.stat().st_size == 0:
             return None
-        uri = f"{self.path.resolve().as_uri()}?mode=ro&immutable=1"
-        with closing(sqlite3.connect(uri, uri=True)) as connection:
-            connection.row_factory = sqlite3.Row
+        with self._readonly_connection_context() as connection:
             schema_exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
             ).fetchone()
@@ -908,7 +1111,7 @@ class Registry:
     def _create_migration_backup(self, schema_version: int) -> MigrationBackup:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         backup_stem = f"{self.path.name}.schema-{schema_version}.{timestamp}-{uuid.uuid4().hex[:8]}"
-        source_uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        source_uri = f"{self.path.as_uri()}?mode=ro"
         backup_directory, registry_descriptor, backup_descriptor = (
             self._open_migration_backup_directory()
         )
@@ -918,10 +1121,13 @@ class Registry:
             ) as staging_directory:
                 staging_path = Path(staging_directory) / "backup.sqlite3"
                 with (
+                    self._database_file_guard() as source_descriptor,
                     closing(sqlite3.connect(source_uri, uri=True)) as source,
                     closing(sqlite3.connect(staging_path)) as destination,
                 ):
+                    self._assert_database_guard(source_descriptor)
                     source.backup(destination)
+                    self._assert_database_guard(source_descriptor)
                     destination.commit()
                 os.chmod(staging_path, 0o600)
                 self._verify_migration_backup(staging_path, schema_version)
@@ -1127,13 +1333,16 @@ class Registry:
 
     def _ensure_schema(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._prepare_operational_database_file()
         inspected_version = self._inspect_existing_schema_version()
         if inspected_version is not None:
             self._validate_migration_path(inspected_version)
-        with closing(self._connect_for_schema()) as connection:
+        with self._connection_context(write_ahead_log=False) as (connection, descriptor):
             while True:
                 backup: MigrationBackup | None = None
                 migration_step: MigrationStep | None = None
+                self._assert_database_guard(descriptor)
+                self._assert_live_repository_authority()
                 connection.execute("BEGIN IMMEDIATE")
                 try:
                     schema_exists = connection.execute(
@@ -1155,7 +1364,10 @@ class Registry:
                         for step in self._migration_plan().values():
                             if step.migration_id is not None:
                                 self._record_applied_migration(connection, step, None)
+                        self._assert_live_repository_authority()
+                        self._assert_database_guard(descriptor)
                         connection.commit()
+                        self._assert_database_guard(descriptor)
                         return
                     versions = connection.execute("SELECT version FROM schema_meta").fetchall()
                     if not versions:
@@ -1170,13 +1382,19 @@ class Registry:
                     self._validate_migration_path(current)
                     if current == SCHEMA_VERSION:
                         self._validate_migration_ledger(connection, current)
+                        self._validate_registry_identity(connection)
+                        self._assert_live_repository_authority()
+                        self._assert_database_guard(descriptor)
                         connection.commit()
+                        self._assert_database_guard(descriptor)
                         return
 
                     integrity = connection.execute("PRAGMA integrity_check").fetchone()
                     if integrity is None or integrity[0] != "ok":
                         raise RegistryError("registry failed integrity check; refusing migration")
                     backup = self._create_migration_backup(current)
+                    self._assert_live_repository_authority()
+                    self._assert_database_guard(descriptor)
                     step = self._migration_plan().get(current)
                     if step is None:
                         raise RegistryError(f"no registry migration from schema {current}")
@@ -1190,7 +1408,12 @@ class Registry:
                     )
                     if step.to_version >= MIGRATION_LEDGER_VERSION:
                         self._validate_migration_ledger(connection, step.to_version)
+                    if step.to_version == SCHEMA_VERSION:
+                        self._validate_registry_identity(connection)
+                    self._assert_live_repository_authority()
+                    self._assert_database_guard(descriptor)
                     connection.commit()
+                    self._assert_database_guard(descriptor)
                     if step.to_version == SCHEMA_VERSION:
                         return
                 except Exception as error:
@@ -1440,69 +1663,124 @@ class Registry:
         self.initialize()
         if self.registry_role == "operational":
             self._preflight_schema_access()
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            self._assert_schema_current(connection)
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with self._connection_context(write_ahead_log=True) as (connection, descriptor):
+            try:
+                self._assert_database_guard(descriptor)
+                self._assert_live_repository_authority()
+                connection.execute("BEGIN IMMEDIATE")
+                self._assert_schema_current(connection)
+                yield connection
+                self._assert_live_repository_authority()
+                self._assert_database_guard(descriptor)
+                connection.commit()
+                self._assert_database_guard(descriptor)
+            except Exception:
+                connection.rollback()
+                raise
 
     @contextmanager
     def _read_transaction(self) -> Iterable[sqlite3.Connection]:
         self.initialize()
         if self.registry_role == "operational":
             self._preflight_schema_access()
-        connection = self._connect()
-        transaction_started = False
-        try:
-            connection.execute("BEGIN DEFERRED")
-            transaction_started = True
-            self._assert_schema_current(connection)
-            yield connection
-            connection.commit()
+        with self._connection_context(write_ahead_log=True) as (connection, descriptor):
             transaction_started = False
-        except Exception as error:
-            if transaction_started:
-                try:
-                    connection.rollback()
-                except Exception as rollback_error:
-                    error.add_note(f"read transaction rollback failed: {rollback_error}")
-            raise
-        finally:
-            connection.close()
+            try:
+                self._assert_database_guard(descriptor)
+                self._assert_live_repository_authority()
+                connection.execute("BEGIN DEFERRED")
+                transaction_started = True
+                self._assert_schema_current(connection)
+                yield connection
+                self._assert_database_guard(descriptor)
+                connection.commit()
+                self._assert_database_guard(descriptor)
+                transaction_started = False
+            except Exception as error:
+                if transaction_started:
+                    try:
+                        connection.rollback()
+                    except Exception as rollback_error:
+                        error.add_note(f"read transaction rollback failed: {rollback_error}")
+                raise
+
+    @contextmanager
+    def _connection_context(
+        self,
+        *,
+        write_ahead_log: bool,
+    ) -> Iterable[tuple[sqlite3.Connection, int | None]]:
+        with self._database_file_guard() as descriptor:
+            if descriptor is None:
+                connection = self._connect() if write_ahead_log else self._connect_for_schema()
+            else:
+                connection = self._connect_for_schema(guard_descriptor=descriptor)
+            try:
+                if write_ahead_log and descriptor is not None:
+                    self._enable_write_ahead_log(connection, descriptor)
+                yield connection, descriptor
+            finally:
+                connection.close()
+
+    @contextmanager
+    def _readonly_connection_context(self) -> Iterable[sqlite3.Connection]:
+        with self._database_file_guard() as descriptor:
+            uri = f"{self.path.as_uri()}?mode=ro&immutable=1"
+            connection = sqlite3.connect(uri, uri=True)
+            try:
+                self._assert_database_guard(descriptor)
+                connection.row_factory = sqlite3.Row
+                yield connection
+                self._assert_database_guard(descriptor)
+            finally:
+                connection.close()
 
     def _connect(self) -> sqlite3.Connection:
+        if self.registry_role == "operational":
+            raise RegistryError("operational SQLite opens require a database file guard")
         connection = self._connect_for_schema()
         try:
-            deadline = time.perf_counter() + (SQLITE_BUSY_TIMEOUT_MS / 1_000)
-            while True:
-                try:
-                    connection.execute("PRAGMA journal_mode = WAL")
-                    break
-                except sqlite3.OperationalError as error:
-                    if "locked" not in str(error).lower() or time.perf_counter() >= deadline:
-                        raise
-                    time.sleep(0.005)
+            self._enable_write_ahead_log(connection, None)
         except Exception:
             connection.close()
             raise
         return connection
 
-    def _connect_for_schema(self) -> sqlite3.Connection:
+    def _enable_write_ahead_log(
+        self,
+        connection: sqlite3.Connection,
+        descriptor: int | None,
+    ) -> None:
+        deadline = time.perf_counter() + (SQLITE_BUSY_TIMEOUT_MS / 1_000)
+        while True:
+            try:
+                self._assert_database_guard(descriptor)
+                connection.execute("PRAGMA journal_mode = WAL")
+                self._assert_database_guard(descriptor)
+                return
+            except sqlite3.OperationalError as error:
+                if "locked" not in str(error).lower() or time.perf_counter() >= deadline:
+                    raise
+                time.sleep(0.005)
+
+    def _connect_for_schema(
+        self,
+        *,
+        guard_descriptor: int | None = None,
+    ) -> sqlite3.Connection:
+        if self.registry_role == "operational" and guard_descriptor is None:
+            raise RegistryError("operational SQLite opens require a database file guard")
         connection = sqlite3.connect(
             self.path,
             timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
             isolation_level=None,
         )
         try:
+            self._assert_database_guard(guard_descriptor)
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            self._assert_database_guard(guard_descriptor)
         except Exception:
             connection.close()
             raise

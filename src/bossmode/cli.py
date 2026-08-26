@@ -20,6 +20,7 @@ from bossmode.registry import (
     TURN_PURPOSES,
     Registry,
     RegistryError,
+    validate_nonsymlink_path,
 )
 from bossmode.scheduler import (
     SchedulerError,
@@ -352,11 +353,13 @@ def _scheduler_owner(
     if identity["registry_role"] != "operational":
         raise RegistryError("scheduler commands require an operational registry authority")
     primary_checkout = Path(identity["primary_checkout"])
-    if requested_repo_dir is not None and Path(requested_repo_dir).resolve() != primary_checkout:
-        raise RegistryError(
-            "scheduler repository must match the operational registry owner: "
-            f"expected={primary_checkout}, actual={Path(requested_repo_dir).resolve()}"
-        )
+    if requested_repo_dir is not None:
+        requested = validate_nonsymlink_path(requested_repo_dir)
+        if requested != primary_checkout:
+            raise RegistryError(
+                "scheduler repository must match the operational registry owner: "
+                f"expected={primary_checkout}, actual={requested}"
+            )
     return primary_checkout, identity
 
 

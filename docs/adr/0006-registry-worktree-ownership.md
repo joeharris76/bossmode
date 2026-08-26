@@ -51,8 +51,9 @@ registry. It succeeds only from an unambiguous primary checkout and only at the 
 Every other operational command is open-only: an absent database, missing identity, mismatched
 identity, linked-worktree caller, copied database, wrong repository, noncanonical path, or symlink
 fails during read-only preflight before directory creation, SQLite write-open, initialization, or
-migration. The same validation runs again before direct Python transaction helpers open SQLite for
-write.
+migration. Each operational SQLite open must match the preflighted database device and inode, and
+that binding plus live Git authority is checked again before and after commit. The same validation
+runs before direct Python transaction helpers open SQLite for write.
 
 Explicit non-repository database paths remain available for tests and certification. They receive
 `registry_role=ephemeral`, claim no repository URL or Git paths, and may never be selected, copied,
@@ -60,7 +61,8 @@ or upgraded into operational authority. There is no importer, merge-back, or imp
 path.
 
 Scheduler install, status, and uninstall require a validated operational identity. The recorded
-primary checkout owns the native scheduler entry. An explicit `--repo-dir` must match that owner.
+primary checkout owns the native scheduler entry. An explicit `--repo-dir` must contain no symlink
+component and must match that owner lexically.
 
 ## Consequences
 
@@ -69,6 +71,9 @@ primary checkout owns the native scheduler entry. An explicit `--repo-dir` must 
 - Removing a worker worktree cannot remove the operational history.
 - Repository relocation, origin changes, or primary-checkout replacement fail closed. A future
   explicit adoption design must preserve history and prove identity; silent rebinding is forbidden.
+- Repository URL comparison deliberately uses the exact nonempty `remote.origin.url` reported by
+  Git. Equivalent URL spellings fail closed as an availability limitation; normalizing or rebinding
+  them would weaken the current identity contract and requires a future explicit adoption design.
 - Schema 7 registries require the explicit `registry create` upgrade. The schema 7 to 8 transition
   retains its own verified backup and checksum-bound ledger row.
 - Temporary certification remains possible without creating a second operational authority.
