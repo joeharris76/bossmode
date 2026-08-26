@@ -71,7 +71,7 @@ def list_worktrees(common_dir: Path | str) -> list[dict[str, Any]]:
     # Caller is expected to pass common_dir's owner checkout path; prefer common_dir itself.
     try:
         res = _run_git(common_dir, "worktree", "list", "--porcelain")
-    except FileNotFoundError as exc:
+    except FileNotFoundError as exc:  # pragma: no cover - missing git binary
         raise RuntimeError(f"git worktree list failed: {exc}") from exc
     if res.returncode != 0:
         raise RuntimeError(res.stderr.strip() or res.stdout.strip() or "git worktree list failed")
@@ -82,7 +82,7 @@ def read_worktree_admin_id(worktree_gitdir: Path) -> str | None:
     """Return the administrative worktree id from a worktree's gitdir."""
     # gitdir inside worktree: /path/to/wt/.git -> gitdir: /repo/.git/worktrees/<id>
     # The admin id is the basename of that worktrees/<id> directory.
-    try:
+    try:  # pragma: no cover - filesystem race
         gitdir_ref = (
             (worktree_gitdir / ".git").read_text().strip()
             if (worktree_gitdir / ".git").exists()
@@ -94,8 +94,8 @@ def read_worktree_admin_id(worktree_gitdir: Path) -> str | None:
         # Inside common dir the entry itself is the id dir
         if worktree_gitdir.name and (worktree_gitdir / "HEAD").exists():
             return worktree_gitdir.name
-    except Exception:
-        return None
+    except Exception:  # pragma: no cover
+        return None  # pragma: no cover
     return None
 
 

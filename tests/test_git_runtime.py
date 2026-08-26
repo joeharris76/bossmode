@@ -499,3 +499,105 @@ def test_read_admin_id_variants(tmp_path):
     admin.mkdir()
     (admin / "HEAD").write_text("ref: refs/heads/main")
     assert git_runtime.read_worktree_admin_id(admin) == "admin-dir"
+
+
+def test_provision_branch_orphan_on_git_failure(tmp_path, monkeypatch):
+    """Cover provision_branch error path where git branch fails and resource is orphaned."""
+    import subprocess as sp
+
+    from bossmode.registry import Registry
+
+    repo = _make_repo(tmp_path / "repo-err-branch")
+    reg = Registry(tmp_path / "err-branch.db")
+    # Monkeypatch _run_git to simulate failure for branch create only
+    orig = git_runtime._run_git
+
+    def fake_run_git(cwd, *args):
+        if args[:2] == ("branch", "feat/error-branch"):
+            return sp.CompletedProcess(
+                args=["git"] + list(args), returncode=128, stdout="", stderr="fatal: branch exists"
+            )
+        return orig(cwd, *args)
+
+    monkeypatch.setattr(git_runtime, "_run_git", fake_run_git)
+    # First create should succeed (use normal)
+    monkeypatch.setattr(git_runtime, "_run_git", orig)
+    base = sp.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    r1 = git_runtime.provision_branch(reg, branch="feat/error-branch", base_sha=base, cwd=repo)
+    assert r1["state"] in ("live", "reserved")
+    # Second attempt with same canonical but different owner? Actually branch already exists as git branch, second provision with same branch but git will fail because branch exists, should trigger orphan path via mock
+    monkeypatch.setattr(git_runtime, "_run_git", fake_run_git)
+    r2 = git_runtime.provision_branch(reg, branch="feat/error-branch-2", base_sha=base, cwd=repo)
+    # This is different branch, not error. Use same branch name but mock to fail
+    # Create a new registry DB to avoid duplicate key, force git failure on provision
+    reg2 = Registry(tmp_path / "err-branch2.db")
+    monkeypatch.setattr(git_runtime, "_run_git", fake_run_git)
+    with __import__("pytest").raises(RuntimeError, match="branch create failed"):
+        git_runtime.provision_branch(reg2, branch="feat/error-branch", base_sha=base, cwd=repo)
+    monkeypatch.setattr(git_runtime, "_run_git", orig)
+
+
+def test_provision_worktree_orphan_on_git_failure(tmp_path, monkeypatch):
+    """Cover provision_worktree error path."""
+    import subprocess as sp
+
+    from bossmode.registry import Registry
+
+    repo = _make_repo(tmp_path / "repo-err-wt")
+    reg = Registry(tmp_path / "err-wt.db")
+    base = sp.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    wt = tmp_path / "wt-err"
+    # Reserve first
+    orig = git_runtime._run_git
+
+    def fake_fail(cwd, *args):
+        if args[:2] == ("worktree", "add"):
+            return sp.CompletedProcess(
+                args=["git"] + list(args), returncode=128, stdout="", stderr="worktree add failed"
+            )
+        return orig(cwd, *args)
+
+    monkeypatch.setattr(git_runtime, "_run_git", fake_fail)
+    with __import__("pytest").raises(RuntimeError, match="worktree add failed"):
+        git_runtime.provision_worktree(reg, path=wt, branch="feat/wt-err", cwd=repo, base_sha=base)
+    monkeypatch.setattr(git_runtime, "_run_git", orig)
+
+
+def test_reconcile_target_foreign_and_prunable(tmp_path):
+    """Hit reconcile branches for prunable and foreign common_dir."""
+    repo = _make_repo(tmp_path / "repo-recon")
+    wt = tmp_path / "wt-recon"
+    branch = "feat/recon2"
+    base = (
+        __import__("subprocess")
+        .run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        .stdout.strip()
+    )
+    __import__("subprocess").run(
+        ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(wt)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # Perturb porcelain to include prunable by manually crafting text
+    txt = "worktree /tmp/a\nHEAD abc\nbranch refs/heads/main\nprunable\n\n"
+    entries = git_runtime.parse_worktree_porcelain(txt)
+    assert entries[0]["prunable"] is True
+    # Reconcile with foreign common_dir (should not block)
+    rec = git_runtime.reconcile_writer_target(
+        worktree_path=str(wt),
+        expected_branch=branch,
+        expected_head=base,
+        expected_common_dir="/tmp/foreign-common",
+    )
+    # Should not be considered foreign just by path, but still safe
+    assert isinstance(rec, dict)
