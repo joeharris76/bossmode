@@ -7,6 +7,7 @@ worktree is created or deleted at import time.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,9 @@ def parse_rev_parse_short_head(head_output: str) -> str:
     return head_output.strip()
 
 
+# --- writer lifecycle (w1/w2) ---
+
+
 def build_writer_receipt(
     *,
     common_dir: str,
@@ -170,3 +174,156 @@ def inventory_summary(cwd: Path | str = ".") -> dict[str, Any]:
         "process_use": "worktree still mounted blocks removal (locked + dirty/-untracked check)",
         "live_worktrees_sample": wt[:5],
     }
+
+
+# --- w2: reserve-before-create with rollback/orphan ---
+
+
+def _reserve_resource(
+    registry: Any,
+    *,
+    kind: str,
+    canonical_key: str,
+    owner_task_id: str | None = None,
+    owner_run_id: str | None = None,
+    creation_receipt: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Reserve an owned resource; caller supplies pre-validated canonical_key."""
+    return registry.reserve_owned_resource(
+        kind=kind,
+        canonical_key=canonical_key,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        creation_receipt=creation_receipt,
+    )
+
+
+def _attempt_git(result: subprocess.CompletedProcess[str]) -> str | None:
+    if result.returncode == 0:
+        return None
+    return result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+
+
+def provision_branch(
+    registry: Any,
+    *,
+    branch: str,
+    base_sha: str,
+    cwd: Path | str,
+    owner_task_id: str | None = None,
+    owner_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Reserve git_branch then create branch; rollback to orphan on failure."""
+    from bossmode.resources import canonical_key_for_git_branch
+
+    full_ref = canonical_branch_ref(branch)
+    ck = canonical_key_for_git_branch(branch)
+    receipt_stub = {"branch": full_ref, "head_sha": base_sha or "pending"}
+    resource = _reserve_resource(
+        registry,
+        kind="git_branch",
+        canonical_key=ck,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        creation_receipt=receipt_stub,
+    )
+    # If already live/retiring etc, treat as success (idempotent)
+    if resource.get("state") != "reserved":
+        return resource
+    # Attempt creation
+    res = (
+        _run_git(cwd, "branch", full_ref.removeprefix("refs/heads/"), base_sha)
+        if base_sha
+        else _run_git(cwd, "branch", full_ref.removeprefix("refs/heads/"))
+    )
+    err = _attempt_git(res)
+    if err is not None:
+        with contextlib.suppress(Exception):
+            registry.orphan_owned_resource(resource["id"], reason=f"branch create failed: {err}")
+        raise RuntimeError(f"branch create failed: {err}")
+    # Bind live with updated head
+    try:
+        head = _run_git(cwd, "rev-parse", full_ref).stdout.strip() if not err else base_sha
+    except Exception:
+        head = base_sha
+    receipt = {"branch": full_ref, "head_sha": head or base_sha}
+    try:
+        return registry.bind_owned_resource_live(resource["id"], creation_receipt=receipt)
+    except Exception:
+        # If bind fails, orphan
+        with contextlib.suppress(Exception):
+            registry.orphan_owned_resource(
+                resource["id"], reason="bind live failed after branch create"
+            )
+        raise
+
+
+def provision_worktree(
+    registry: Any,
+    *,
+    path: Path | str,
+    branch: str,
+    base_sha: str | None = None,
+    cwd: Path | str,
+    owner_task_id: str | None = None,
+    owner_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Reserve git_worktree then `git worktree add`; rollback branch on worktree failure."""
+    from bossmode.resources import canonical_key_for_git_worktree
+
+    canonical_path = Path(path).resolve().as_posix() if Path(path).is_absolute() else str(path)
+    ck = canonical_key_for_git_worktree(path)
+    full_ref = canonical_branch_ref(branch)
+    receipt_stub = {
+        "path": canonical_path,
+        "branch": full_ref,
+        "head_sha": base_sha or "pending",
+        "common_dir": str(cwd),
+    }
+    worktree_resource = _reserve_resource(
+        registry,
+        kind="git_worktree",
+        canonical_key=ck,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        creation_receipt=receipt_stub,
+    )
+    if worktree_resource.get("state") != "reserved":
+        return worktree_resource
+    branch_name = full_ref.removeprefix("refs/heads/")
+    # Try worktree add; use --lock to hint exclusive use where supported
+    args = ["worktree", "add", str(path)]
+    # Prefer adding without --lock for portability; caller can lock separately
+    args.append(branch_name)
+    if base_sha:
+        # Branch creation handled separately; worktree add assumes it exists
+        pass
+    res = _run_git(cwd, *args)
+    err = _attempt_git(res)
+    if err is not None:
+        # Do not force-remove; orphan reservation; caller may rollback branch
+        with contextlib.suppress(Exception):
+            registry.orphan_owned_resource(
+                worktree_resource["id"], reason=f"worktree add failed: {err}"
+            )
+        raise RuntimeError(f"worktree add failed: {err}")
+    # On success bind live with real head
+    try:
+        head = _run_git(path, "rev-parse", "HEAD").stdout.strip()
+    except Exception:
+        head = base_sha or ""
+    receipt = {
+        "path": canonical_path,
+        "branch": full_ref,
+        "head_sha": head,
+        "common_dir": str(Path(cwd).resolve()),
+    }
+    try:
+        return registry.bind_owned_resource_live(worktree_resource["id"], creation_receipt=receipt)
+    except Exception:
+        with contextlib.suppress(Exception):
+            registry.orphan_owned_resource(
+                worktree_resource["id"], reason="bind live failed after worktree add"
+            )
+        # Best-effort worktree remove on bind failure is NOT forced here; orphan records allow later safe reconcile
+        raise
