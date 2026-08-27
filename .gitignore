@@ -1,10 +1,5 @@
 .bossmode/
+.todo-db/
+_project/
 .continual/
-.pytest_cache/
-.ruff_cache/
-.venv/
-.coverage
-coverage.xml
-htmlcov/
-__pycache__/
-*.py[cod]
+.DS_Store
