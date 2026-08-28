@@ -48,8 +48,15 @@ the narrowest proving checks before project-wide verification.
 
 Before any commit, inspect the effective Git `user.name` and `user.email` and
 their configuration origins; use only the intended human identity. Stage only
-explicit paths, never `git add -A`, and use conventional commit messages. Push
-or open a PR only when the user has authorized that remote action.
+explicit paths, never `git add -A`, and use conventional commit messages.
+Push the branch and create or update its draft PR under the same authorization
+that allowed the change, unless the user required local-only work or another
+publication mode. Before the first remote write, confirm the remote host, owner,
+and repository match a repository the user named; stop on an unknown remote, a
+fork or upstream mismatch, a default or protected branch target, or a history
+rewrite. Merging, writing to an unnamed repository, deployment, activation, and
+destructive cleanup remain user authorities; stop and report at those
+boundaries.
 
 Require Workers to return bounded summaries containing changed paths, the
 exact revision, verification results, residual risk, and decisions needed.
