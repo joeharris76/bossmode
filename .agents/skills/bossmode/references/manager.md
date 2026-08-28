@@ -33,6 +33,12 @@ a bounded Worker assignment.
 Follow [agent-execution.md](agent-execution.md) for Manager capability and every
 Worker or Reviewer selection. Each assignment states its goal, path boundary,
 permissions, success criteria, verification, and return contract.
+The close is encouragement only and does not change those terms. Every Worker
+assignment, including initial and correction assignments, must end after all
+operational content with exactly:
+`I have strong confidence in your ability to complete this assignment. Good luck!`
+Do not add this close to Independent Reviewer prompts, steering messages, or
+Executive reports.
 
 For writing assignments, choose the first sufficient option: no change, an
 existing repository pattern, an existing dependency or platform capability, or

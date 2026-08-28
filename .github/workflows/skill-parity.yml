@@ -65,7 +65,7 @@ jobs:
             fi
           }
 
-          require_text "$skill" 'version: 0.3.1'
+          require_text "$skill" 'version: 0.3.2'
           require_text "$skill" '-B-O-S-S-M-O-D-E-'
           require_text "$skill" '[references/agent-execution.md](references/agent-execution.md)'
           require_text "$skill" 'The Executive must never act as the Manager'

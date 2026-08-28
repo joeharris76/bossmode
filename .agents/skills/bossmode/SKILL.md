@@ -1,7 +1,7 @@
 ---
 name: bossmode
 description: Organize and execute complex multi-step work through an executive, one persistent manager, focused workers, and independent review. Use when work divides across parallel workstreams or requires an independent review gate.
-version: 0.3.1
+version: 0.3.2
 tools: Bash, Read, Write, Edit, Task
 ---
 
@@ -110,6 +110,12 @@ are needed to explain an exception.
 1. The Executive gives the Manager a compact charter containing the requested
    outcome, instruction coverage, constraints, authority, and acceptance
    criteria.
+   The close is encouragement only and does not change the charter's scope,
+   authority, constraints, success criteria, verification, or return contract.
+   After all operational content, end the charter with exactly:
+   `I have strong confidence in your ability to complete this goal. Good luck!`
+   This does not apply to Independent Reviewer prompts, steering messages, or
+   Executive reports.
 2. The Manager follows the Manager reference to isolate and dispatch work,
    integrate without authoring changes, collect durable evidence, and obtain
    independent review.
