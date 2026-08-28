@@ -1,7 +1,7 @@
 # Bossmode
 
 Bossmode is a skill for organizing complex agent work through an executive,
-accountable managers, focused workers, and independent review.
+one persistent manager, focused workers, and independent review.
 
 It is prompt-driven. There is no Bossmode runtime, package, command-line tool,
 database, or scheduler to install from this repository.

@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# Pin byte collation so `sort` output matches the hard-coded byte-ordered
+# allowlists in the archive and package checks below.
+export LC_ALL=C
+
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 cd "$repository_root"
 
