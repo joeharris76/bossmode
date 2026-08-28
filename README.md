@@ -13,7 +13,8 @@ The catalog distributes a downstream copy of the canonical skill to supported ag
 
 For a manual installation, copy this repository's canonical
 `.agents/skills/bossmode` directory into the skill directory used by your agent
-environment.
+environment. The copied directory is self-contained and requires no other
+catalog skills.
 
 Canonical source: [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
 

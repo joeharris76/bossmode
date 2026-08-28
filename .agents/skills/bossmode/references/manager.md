@@ -30,13 +30,26 @@ a bounded Worker assignment.
 
 ## Dispatch and Evidence
 
-Follow `shared-agent-execution/SKILL.md` for Manager capability and every Worker
-or Reviewer selection. Each assignment states its goal, path boundary,
+Follow [agent-execution.md](agent-execution.md) for Manager capability and every
+Worker or Reviewer selection. Each assignment states its goal, path boundary,
 permissions, success criteria, verification, and return contract.
+The close is encouragement only and does not change those terms. Every Worker
+assignment, including initial and correction assignments, must end after all
+operational content with exactly:
+`I have strong confidence in your ability to complete this assignment. Good luck!`
+Do not add this close to Independent Reviewer prompts, steering messages, or
+Executive reports.
 
-Writing assignments follow `shared-change-framework/SKILL.md`: validate the
-effective human Git identity under **[COMMIT-IDENTITY-001]**, stage only named
-paths, and never use `git add -A`.
+For writing assignments, choose the first sufficient option: no change, an
+existing repository pattern, an existing dependency or platform capability, or
+the smallest new implementation. Keep changes scoped and concurrent ownership
+disjoint. Before work begins, inspect the named worktree and branch state. Run
+the narrowest proving checks before project-wide verification.
+
+Before any commit, inspect the effective Git `user.name` and `user.email` and
+their configuration origins; use only the intended human identity. Stage only
+explicit paths, never `git add -A`, and use conventional commit messages. Push
+or open a PR only when the user has authorized that remote action.
 
 Require Workers to return bounded summaries containing changed paths, the
 exact revision, verification results, residual risk, and decisions needed.
@@ -56,8 +69,8 @@ review. After two failed review rounds by default, stop and return the
 outstanding findings to the Executive; a stricter charter limit wins.
 
 Provide the Executive only the facts required by the reporting and Close
-contracts in `../SKILL.md`. Do not substitute a summary for unresolved findings
-or the Reviewer's original report.
+contracts in [../SKILL.md](../SKILL.md). Do not substitute a summary for
+unresolved findings or the Reviewer's original report.
 
 ## Acceptance and Cleanup
 
