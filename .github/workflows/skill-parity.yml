@@ -21,6 +21,8 @@ jobs:
 
           expected_paths=$(printf '%s\n' \
             .agents/skills/bossmode/SKILL.md \
+            .agents/skills/bossmode/references/manager.md \
+            .agents/skills/bossmode/references/recovery.md \
             .github/workflows/skill-parity.yml \
             .gitignore \
             AGENTS.md \
@@ -28,7 +30,7 @@ jobs:
             README.md)
           actual_paths=$(git ls-files)
           if test "$actual_paths" != "$expected_paths"; then
-            echo "Tracked tree must contain exactly the six approved paths." >&2
+            echo "Tracked tree must contain exactly the eight approved paths." >&2
             printf 'Expected:\n%s\nActual:\n%s\n' "$expected_paths" "$actual_paths" >&2
             exit 1
           fi
@@ -45,6 +47,42 @@ jobs:
               exit 1
             fi
           done
+
+          skill=.agents/skills/bossmode/SKILL.md
+          manager=.agents/skills/bossmode/references/manager.md
+          recovery=.agents/skills/bossmode/references/recovery.md
+
+          require_text() {
+            file=$1
+            text=$2
+            if ! grep -Fq -- "$text" "$file"; then
+              echo "Required skill contract missing from $file: $text" >&2
+              exit 1
+            fi
+          }
+
+          require_text "$skill" 'version: 0.3.0'
+          require_text "$skill" '-B-O-S-S-M-O-D-E-'
+          require_text "$skill" 'shared-agent-execution/SKILL.md'
+          require_text "$skill" 'The Executive must never act as the Manager'
+          require_text "$skill" 'No verified live Manager means no implementation'
+          require_text "$skill" '[references/manager.md](references/manager.md)'
+          require_text "$skill" '[references/recovery.md](references/recovery.md)'
+          require_text "$manager" 'shared-agent-execution/SKILL.md'
+          require_text "$recovery" 'Live runtime state is authoritative.'
+          require_text "$recovery" 'Stored handles are hints only'
+
+          if grep -Eq '^(## Model Tiers|## Reasoning Effort Reference|### Known-Good Harness Configurations)|command -v|/tmp/bossmode' \
+            "$skill" "$manager" "$recovery"; then
+            echo "Bossmode must not duplicate harness guidance or rely on transient logs." >&2
+            exit 1
+          fi
+
+          if grep -Eq 'control\.db|\.bossmode/|bossmode (init|reconcile)|SCHEMA_VERSION' \
+            "$skill" "$manager" "$recovery"; then
+            echo "Retired Bossmode control-plane assumptions are not allowed." >&2
+            exit 1
+          fi
 
           empty_tree=$(git hash-object -t tree /dev/null)
           git diff --check "$empty_tree" HEAD
