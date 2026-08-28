@@ -8,18 +8,14 @@ database, or scheduler to install from this repository.
 
 ## Install
 
-Install Bossmode from the skill-sync global catalog when skill-sync is available.
-The catalog distributes a downstream copy of the canonical skill to supported agents.
-
-For a manual installation, copy this repository's canonical
-`.agents/skills/bossmode` directory into the skill directory used by your agent
-environment. The copied directory is self-contained and requires no other
-catalog skills.
+Install Bossmode directly from this repository. For a local installation, copy
+the canonical `.agents/skills/bossmode` directory into the skill directory used
+by your agent environment. The copied directory is self-contained and requires
+no other skills.
 
 Canonical source: [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
 
-The [skill-sync-skills catalog](https://github.com/joeharris76/skill-sync-skills/tree/main/skills/bossmode)
-is a downstream distribution copy.
+Validate a clone or extracted archive with `./verify-standalone.sh`.
 
 ## Use
 
@@ -38,22 +34,18 @@ approvals. Worker and run mechanics stay in the background unless you ask for th
 
 ## Repository purpose
 
-This repository is the canonical source of the Bossmode skill. Its workflow
+This repository is the canonical source of the Bossmode skill. Its validator
 rejects tracked Python, legacy package paths, and files outside the intended
 minimal repository tree.
 
-Make skill changes here first. Then synchronize the downstream skill-sync
-catalog copy.
-
 ## Python prototype retirement
 
-The experimental Python control plane was retired on 2026-08-27. It was never
-published to PyPI. The historical `v0.1.0` tag remains available for source
-history, but the prototype is unsupported.
+The experimental Python control plane was retired on 2026-08-27 and was never
+published to PyPI. The historical `v0.1.0` tag remains only for source history;
+the prototype is unsupported and non-operative.
 
-There is no runtime, CLI, or database migration. Existing local
-`.bossmode/control.db` files are legacy state. This repository transition does
-not delete them.
+This repository provides no runtime, CLI, database migration, or action on
+existing local `.bossmode/control.db` files. They remain legacy state.
 
 ## License
 
