@@ -1,0 +1,50 @@
+name: Skill-only checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify skill-only repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_paths=$(printf '%s\n' \
+            .agents/skills/bossmode/SKILL.md \
+            .github/workflows/skill-parity.yml \
+            .gitignore \
+            AGENTS.md \
+            LICENSE \
+            README.md)
+          actual_paths=$(git ls-files)
+          if test "$actual_paths" != "$expected_paths"; then
+            echo "Tracked tree must contain exactly the six approved paths." >&2
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_paths" "$actual_paths" >&2
+            exit 1
+          fi
+
+          if test -n "$(git ls-files '*.py')"; then
+            echo "Tracked Python files are not allowed." >&2
+            git ls-files '*.py' >&2
+            exit 1
+          fi
+
+          for legacy_path in pyproject.toml uv.lock src scripts tests; do
+            if test -e "$legacy_path"; then
+              echo "Legacy path remains: $legacy_path" >&2
+              exit 1
+            fi
+          done
+
+          empty_tree=$(git hash-object -t tree /dev/null)
+          git diff --check "$empty_tree" HEAD
