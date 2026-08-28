@@ -63,8 +63,8 @@ review. After two failed review rounds by default, stop and return the
 outstanding findings to the Executive; a stricter charter limit wins.
 
 Provide the Executive only the facts required by the reporting and Close
-contracts in `../SKILL.md`. Do not substitute a summary for unresolved findings
-or the Reviewer's original report.
+contracts in [../SKILL.md](../SKILL.md). Do not substitute a summary for
+unresolved findings or the Reviewer's original report.
 
 ## Acceptance and Cleanup
 

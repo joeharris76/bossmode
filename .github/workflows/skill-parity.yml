@@ -115,12 +115,6 @@ jobs:
             exit 1
           fi
 
-          if grep -Eq 'control\.db|\.bossmode/|bossmode (init|reconcile)|SCHEMA_VERSION' \
-            "$skill" "$manager" "$recovery"; then
-            echo "Retired Bossmode control-plane assumptions are not allowed." >&2
-            exit 1
-          fi
-
           standalone_root=$(mktemp -d)
           cleanup_standalone() {
             find "$standalone_root" -depth -delete
@@ -145,7 +139,19 @@ jobs:
             exit 1
           fi
 
+          if grep -REq 'control\.db|\.bossmode/|bossmode (init|reconcile)|SCHEMA_VERSION' \
+            "$standalone_skill"; then
+            echo "Retired Bossmode control-plane assumptions are not allowed." >&2
+            exit 1
+          fi
+
           while IFS= read -r file; do
+            if sed -E 's/\[[^]]+\]\([^)]+\)//g' "$file" \
+              | grep -Eq '(^|[[:space:]`(])(\.\.?/|[[:alnum:]_.-]+/)*[[:alnum:]_.-]+\.md(#[[:alnum:]_.-]+)?([[:space:]`).,;:]|$)'; then
+              echo "Markdown document paths must use checked Markdown links: $file" >&2
+              exit 1
+            fi
+
             while IFS= read -r target; do
               case "$target" in
                 http://*|https://*|mailto:*|'#'*) continue ;;
