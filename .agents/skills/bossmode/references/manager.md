@@ -52,11 +52,13 @@ explicit paths, never `git add -A`, and use conventional commit messages.
 Push the branch and create or update its draft PR under the same authorization
 that allowed the change, unless the user required local-only work or another
 publication mode. Before the first remote write, confirm the remote host, owner,
-and repository match a repository the user named; stop on an unknown remote, a
-fork or upstream mismatch, a default or protected branch target, or a history
-rewrite. Merging, writing to an unnamed repository, deployment, activation, and
-destructive cleanup remain user authorities; stop and report at those
-boundaries.
+and repository match an in-scope repository or an authorized fork of it; stop on
+an unknown remote, a push to a default or protected branch, or a history
+rewrite. A PR that targets the default branch is normal and is not a stop.
+Merging, writing to a repository not in scope, deployment, activation, and
+destructive cleanup each need a direct user instruction; proceed when the user
+gave one for that exact action, and otherwise stop and report at that
+boundary.
 
 Require Workers to return bounded summaries containing changed paths, the
 exact revision, verification results, residual risk, and decisions needed.
