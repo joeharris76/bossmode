@@ -145,9 +145,33 @@ jobs:
             exit 1
           fi
 
+          document_path_pattern='(^|[[:space:]`(])((/|~/|[[:alpha:]]:[/\\])|(\.\.?[/\\])|[[:alnum:]_.-]+[/\\])*[[:alnum:]_.-]+\.md(#[[:alnum:]_.-]+)?([[:space:]`).,;:]|$)'
+          has_unlinked_document_path() {
+            sed -E 's/\[[^]]+\]\([^)]+\)//g' | grep -Eq "$document_path_pattern"
+          }
+
+          for rejected_path in \
+            '/tmp/outside.md' '`/tmp/outside.md`' \
+            '~/outside.md' '`~/outside.md`' \
+            'C:\temp\outside.md' '`C:\temp\outside.md`' \
+            'C:/temp/outside.md' '`C:/temp/outside.md`'; do
+            if ! printf '%s\n' "$rejected_path" | has_unlinked_document_path; then
+              echo "Document-path validator missed: $rejected_path" >&2
+              exit 1
+            fi
+          done
+          for accepted_text in \
+            '[Manager](references/manager.md)' \
+            'run `grep -F needle input.txt`' \
+            'use model_reasoning_effort'; do
+            if printf '%s\n' "$accepted_text" | has_unlinked_document_path; then
+              echo "Document-path validator rejected valid text: $accepted_text" >&2
+              exit 1
+            fi
+          done
+
           while IFS= read -r file; do
-            if sed -E 's/\[[^]]+\]\([^)]+\)//g' "$file" \
-              | grep -Eq '(^|[[:space:]`(])(\.\.?/|[[:alnum:]_.-]+/)*[[:alnum:]_.-]+\.md(#[[:alnum:]_.-]+)?([[:space:]`).,;:]|$)'; then
+            if has_unlinked_document_path < "$file"; then
               echo "Markdown document paths must use checked Markdown links: $file" >&2
               exit 1
             fi
