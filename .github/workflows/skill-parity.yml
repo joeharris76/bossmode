@@ -21,6 +21,8 @@ jobs:
 
           expected_paths=$(printf '%s\n' \
             .agents/skills/bossmode/SKILL.md \
+            .agents/skills/bossmode/references/agent-execution.md \
+            .agents/skills/bossmode/references/external-harnesses.md \
             .agents/skills/bossmode/references/manager.md \
             .agents/skills/bossmode/references/recovery.md \
             .github/workflows/skill-parity.yml \
@@ -30,7 +32,7 @@ jobs:
             README.md)
           actual_paths=$(git ls-files)
           if test "$actual_paths" != "$expected_paths"; then
-            echo "Tracked tree must contain exactly the eight approved paths." >&2
+            echo "Tracked tree must contain exactly the ten approved paths." >&2
             printf 'Expected:\n%s\nActual:\n%s\n' "$expected_paths" "$actual_paths" >&2
             exit 1
           fi
@@ -49,6 +51,8 @@ jobs:
           done
 
           skill=.agents/skills/bossmode/SKILL.md
+          execution=.agents/skills/bossmode/references/agent-execution.md
+          harnesses=.agents/skills/bossmode/references/external-harnesses.md
           manager=.agents/skills/bossmode/references/manager.md
           recovery=.agents/skills/bossmode/references/recovery.md
 
@@ -61,26 +65,119 @@ jobs:
             fi
           }
 
-          require_text "$skill" 'version: 0.3.0'
+          require_text "$skill" 'version: 0.3.1'
           require_text "$skill" '-B-O-S-S-M-O-D-E-'
-          require_text "$skill" 'shared-agent-execution/SKILL.md'
+          require_text "$skill" '[references/agent-execution.md](references/agent-execution.md)'
           require_text "$skill" 'The Executive must never act as the Manager'
           require_text "$skill" 'No verified live Manager means no implementation'
           require_text "$skill" '[references/manager.md](references/manager.md)'
           require_text "$skill" '[references/recovery.md](references/recovery.md)'
-          require_text "$manager" 'shared-agent-execution/SKILL.md'
+          require_text "$skill" '**[REVIEW-AUTH-001]** Only the user may authorize writes.'
+          require_text "$manager" '[agent-execution.md](agent-execution.md)'
+          require_text "$manager" 'never `git add -A`'
+          require_text "$execution" '## Model Tiers'
+          require_text "$execution" '## Reasoning Effort Reference'
+          require_text "$execution" '[external-harnesses.md](external-harnesses.md)'
+          require_text "$execution" 'stable live session identity'
+          require_text "$harnesses" 'Only after an actual command failure may reactive diagnosis use'
+          require_text "$harnesses" 'Do not run those checks proactively.'
+          require_text "$harnesses" 'codex exec -C "$WORKSPACE" --model "$MODEL" --sandbox read-only "$PROMPT"'
+          require_text "$harnesses" 'Reviewer (Soft Read-Only)'
           require_text "$recovery" 'Live runtime state is authoritative.'
           require_text "$recovery" 'Stored handles are hints only'
 
-          if grep -Eq '^(## Model Tiers|## Reasoning Effort Reference|### Known-Good Harness Configurations)|command -v|/tmp/bossmode' \
+          if grep -Eq '^(## Model Tiers|## Reasoning Effort Reference)|command -v|Worker \(Write\):|/tmp/bossmode' \
             "$skill" "$manager" "$recovery"; then
-            echo "Bossmode must not duplicate harness guidance or rely on transient logs." >&2
+            echo "Model and harness details must remain in their conditional references." >&2
+            exit 1
+          fi
+
+          if grep -Eq 'command -v|Worker \(Write\):' "$execution"; then
+            echo "Harness commands must remain in external-harnesses.md." >&2
+            exit 1
+          fi
+
+          if grep -Eq '^(## Model Tiers|## Reasoning Effort Reference)' "$harnesses"; then
+            echo "Model selection belongs in agent-execution.md." >&2
+            exit 1
+          fi
+
+          external_routes=$(grep -RlF -- 'external-harnesses.md' .agents/skills/bossmode | sort)
+          if test "$external_routes" != "$execution"; then
+            echo "Only agent-execution.md may route to external harness details." >&2
+            printf 'Actual routes:\n%s\n' "$external_routes" >&2
+            exit 1
+          fi
+
+          if grep -REq 'shared-[[:alnum:]-]+/SKILL\.md' .agents/skills/bossmode; then
+            echo "Bossmode must not depend on catalog-external shared skills." >&2
+            grep -REn 'shared-[[:alnum:]-]+/SKILL\.md' .agents/skills/bossmode >&2
             exit 1
           fi
 
           if grep -Eq 'control\.db|\.bossmode/|bossmode (init|reconcile)|SCHEMA_VERSION' \
             "$skill" "$manager" "$recovery"; then
             echo "Retired Bossmode control-plane assumptions are not allowed." >&2
+            exit 1
+          fi
+
+          standalone_root=$(mktemp -d)
+          cleanup_standalone() {
+            find "$standalone_root" -depth -delete
+          }
+          trap cleanup_standalone EXIT
+          cp -R .agents/skills/bossmode "$standalone_root/bossmode"
+          standalone_skill=$(cd "$standalone_root/bossmode" && pwd -P)
+
+          expected_skill_files=$(printf '%s\n' \
+            SKILL.md \
+            references/agent-execution.md \
+            references/external-harnesses.md \
+            references/manager.md \
+            references/recovery.md)
+          actual_skill_files=$(find "$standalone_skill" -type f \
+            | sed "s|^$standalone_skill/||" \
+            | sort)
+          if test "$actual_skill_files" != "$expected_skill_files"; then
+            echo "Standalone skill must contain exactly five files." >&2
+            printf 'Expected:\n%s\nActual:\n%s\n' \
+              "$expected_skill_files" "$actual_skill_files" >&2
+            exit 1
+          fi
+
+          while IFS= read -r file; do
+            while IFS= read -r target; do
+              case "$target" in
+                http://*|https://*|mailto:*|'#'*) continue ;;
+              esac
+              target=${target%%#*}
+              target_dir=$(dirname "$target")
+              target_name=$(basename "$target")
+              if ! resolved_dir=$(cd "$(dirname "$file")/$target_dir" && pwd -P); then
+                echo "Broken local link in $file: $target" >&2
+                exit 1
+              fi
+              resolved=$resolved_dir/$target_name
+              case "$resolved" in
+                "$standalone_skill"/*) ;;
+                *)
+                  echo "Local link escapes standalone skill in $file: $target" >&2
+                  exit 1
+                  ;;
+              esac
+              if ! test -f "$resolved"; then
+                echo "Broken local link in $file: $target" >&2
+                exit 1
+              fi
+            done < <(
+              grep -oE '\[[^]]+\]\([^)]+\)' "$file" \
+                | sed -E 's/^.*\(([^)]+)\)$/\1/' \
+                || true
+            )
+          done < <(find "$standalone_skill" -type f -name '*.md' | sort)
+
+          if grep -REq 'shared-[[:alnum:]-]+/SKILL\.md' "$standalone_skill"; then
+            echo "Standalone copy retains a catalog-external dependency." >&2
             exit 1
           fi
 

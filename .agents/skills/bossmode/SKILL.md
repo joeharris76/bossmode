@@ -1,7 +1,7 @@
 ---
 name: bossmode
 description: Organize and execute complex multi-step work through an executive, one persistent manager, focused workers, and independent review. Use when work divides across parallel workstreams or requires an independent review gate.
-version: 0.3.0
+version: 0.3.1
 tools: Bash, Read, Write, Edit, Task
 ---
 
@@ -25,8 +25,9 @@ dispatch, integration, or review. Replace a Manager only through
 [references/recovery.md](references/recovery.md).
 
 Before pairing the Manager or dispatching any Worker or Reviewer, read
-`shared-agent-execution/SKILL.md`. It owns model, reasoning-effort, harness, and
-Manager-capability selection. Do not reproduce those details here.
+[references/agent-execution.md](references/agent-execution.md). It owns model,
+reasoning-effort, harness, and Manager-capability selection. Do not reproduce
+those details here.
 
 After pairing, the Manager reads
 [references/manager.md](references/manager.md). The Executive reads the
@@ -38,8 +39,13 @@ replaced. Do not load both references routinely.
 - The Executive defines the outcome, priorities, constraints, acceptance
   criteria, and authority boundary, then directs only the Manager. It may
   inspect live state and evidence read-only at material gates.
-- **[REVIEW-AUTH-001]** A review, audit, or plan produces findings only. A later
-  user turn must authorize remediation before any implementation begins.
+- **[REVIEW-AUTH-001]** Only the user may authorize writes. A review, audit, or
+  plan produces findings only, even when the same user turn also asks for fixes.
+  A later user turn may authorize narrow remediation of reported findings. That
+  authority does not include unrelated cleanup, auto-merge, destructive work,
+  hosted-service writes, or remote repository writes unless the user explicitly
+  authorizes them. Internal verification of already-authorized implementation
+  is not a review and may run within that implementation scope.
 - An implementation request authorizes only in-scope repository writes. Only
   the user may authorize remote pushes, PR creation, destructive cleanup, or
   protected trust and permission approvals.
