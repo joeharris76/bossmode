@@ -1,6 +1,6 @@
 ---
 name: bossmode
-description: Organize and execute complex multi-step work through an executive, one persistent manager, focused workers, and independent review. Use when work divides across parallel workstreams or requires an independent review gate.
+description: Organize and execute complex multi-step work through an executive, persistent named managers, focused workers, and independent review. Use when work divides across parallel workstreams or requires an independent review gate.
 version: 0.3.2
 tools: Bash, Read, Write, Edit, Task
 ---
@@ -14,14 +14,13 @@ Bossmode.
 ## Required Topology
 
 ```text
-User <-> Executive <-> exactly one persistent, resumable Manager
-                         <-> Workers / Independent Reviewer
+User <-> Executive <-> persistent, resumable named Managers
+                         <-> Workers / Independent Reviewers
 ```
 
-The Executive must never act as the Manager or dispatch or direct Workers or
-Reviewers. Pair a verified live Manager before delegation and keep that Manager
-accountable through Close. No verified live Manager means no implementation,
-dispatch, integration, or review. Replace a Manager only through
+Each Manager has a very short topic name, for example `Skill Shrink`. The Executive must never act as a Manager or dispatch or direct Workers or Reviewers.
+Pair a verified live Manager for each topic before delegation and keep that
+Manager accountable through Close. No verified live Manager for a topic means no implementation, dispatch, integration, or review for that topic. Replace a Manager only through
 [references/recovery.md](references/recovery.md).
 
 Before pairing or dispatching, read
@@ -33,7 +32,7 @@ recovery only when replacing a lost or unresponsive Manager.
 ## Authority
 
 - **Executive.** Defines outcome, priorities, constraints, acceptance criteria,
-  and authority boundary; directs only the Manager; may inspect live state and
+  and authority boundary; directs only Managers; may inspect live state and
   evidence read-only at material gates.
 - **Origins.** Record each operative constraint with origin (`user`,
   `repository-policy`, `mechanical`, `executive-judgment`) and exact source.
@@ -129,6 +128,11 @@ line:
 
 Omit the marker on internal Manager, Worker, or Reviewer messages.
 
+After the marker, every progress report starts with one lead status line per
+open Manager: ` * {Topic}: {Status}`. Use the topic name and Title Case display:
+`In Progress`, `Waiting User`, `Blocked`, `Verified Awaiting Acceptance`,
+`Complete`, `Partial`, `Cancelled`, or `Superseded`.
+
 Progress while open: `in_progress`, `waiting_user`, `blocked`,
 `verified_awaiting_acceptance`. Terminal when closed: `complete`, `partial`,
 `cancelled`, `superseded`.
@@ -142,13 +146,13 @@ PR, merged, downstream repository, live)—never report applied/done/shipped
 above that state, and `Fully applied` is false unless every user-authorized
 surface hit its target; and the next action.
 
-Report Manager pairing at start, replacement, and Close. Suppress Worker IDs,
-models, worktrees, and command chronology unless requested or needed for an
-exception.
+Report Manager pairing at start, replacement, and Close using the topic name.
+Suppress Worker IDs, models, worktrees, and command chronology unless requested
+or needed for an exception.
 
 ## Execution and Close
 
-1. The Executive gives the Manager a compact charter: requested outcome,
+1. The Executive gives each Manager a compact charter: requested outcome,
    instruction coverage, constraints, authority, and acceptance criteria. For
    a repository-write goal, name each in-scope repository and system, its
    user-authorized terminal state, and every known beyond-ceiling action still
@@ -158,10 +162,10 @@ exception.
    `I have strong confidence in your ability to complete this goal. Good luck!`
    Omit on Independent Reviewer prompts, steering messages, and Executive
    reports.
-2. The Manager follows [references/manager.md](references/manager.md) to
+2. Each Manager follows [references/manager.md](references/manager.md) to
    isolate and dispatch, integrate without authoring, collect durable
    evidence, and obtain independent review.
-3. The Manager supplies a Close packet with instruction-by-instruction
+3. Each Manager supplies a Close packet with instruction-by-instruction
    coverage, exact integrated revision, durable verification evidence,
    original Independent Reviewer report, and all remaining, preserved,
    blocked, or user-approved deferred work.

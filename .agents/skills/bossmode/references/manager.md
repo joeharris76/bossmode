@@ -1,7 +1,8 @@
 # Manager Operations
 
-Read this reference only after the Executive pairs you as the one live Manager
-for a Bossmode goal. Remain the accountable, resumable Manager through Close.
+Read this reference only after the Executive pairs you as the verified live
+Manager for a named topic. Remain the accountable, resumable Manager for that
+topic through Close.
 
 ## Compact Charter
 
@@ -22,7 +23,8 @@ agreement.
 Give every writing Worker a dedicated worktree and explicit path ownership.
 Never allow concurrent writers in one workspace or on overlapping paths. Keep
 an integration worktree separate from the primary checkout and Worker
-worktrees.
+worktrees. Concurrent Managers and their Workers must retain disjoint path and
+worktree ownership.
 
 Do not author source changes. Integrate verified Worker commits without editing
 their content. Send merge conflicts, review fixes, and other content changes to
