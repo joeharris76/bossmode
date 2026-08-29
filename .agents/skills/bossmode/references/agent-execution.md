@@ -1,8 +1,8 @@
 # Agent Execution
 
 Read this reference when pairing the Manager or selecting a Worker or
-Independent Reviewer. Bossmode retains ownership of decomposition,
-authorization, workspace isolation, and acceptance criteria.
+Independent Reviewer. Bossmode owns decomposition, workspace isolation, and
+acceptance criteria, and enforces the authority the user granted.
 
 ## Model Tiers
 
@@ -72,6 +72,9 @@ Only when selecting an external or headless harness, read
 [external-harnesses.md](external-harnesses.md), choose the documented command
 for the role, and use it directly.
 
-Headless Worker dispatch may automate confirmations only when write scope is
-already bounded by a sandbox, workspace flag, or dedicated worktree. Never add
+Headless Worker dispatch may automate routine tool confirmations only when
+write scope is already bounded by a sandbox, workspace flag, or dedicated
+worktree, and only for already-authorized actions. A confirmation flag never
+grants authority and never substitutes for a credential, trust, permission,
+destructive, merge, release, deployment, or activation approval. Never add
 flags that remove workspace, sandbox, or tool boundaries.
