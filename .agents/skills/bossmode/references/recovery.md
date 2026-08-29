@@ -17,7 +17,11 @@ stale name, pane, or stored session handle alone.
 ## Resume or Replace
 
 Resume the same Manager when its live identity, continuation channel, and
-ownership can be verified. Otherwise, before pairing a replacement:
+ownership can be verified. Identify the Manager agent session, if possible,
+using available search tools and read its session log to understand what was
+happening before the interruption.
+
+Before pairing a replacement:
 
 1. Reconcile the failed Manager's live descendants and contain its active
    writers; leave other Managers' sessions, worktrees, and branches
