@@ -1,21 +1,39 @@
+```text
+██████╗   ██████╗  ███████╗ ███████╗ ███╗   ███╗  ██████╗  ██████╗  ███████╗
+██╔══██╗ ██╔═══██╗ ██╔════╝ ██╔════╝ ████╗ ████║ ██╔═══██╗ ██╔══██╗ ██╔════╝
+██████╔╝ ██║   ██║ ███████╗ ███████╗ ██╔████╔██║ ██║   ██║ ██║  ██║ █████╗
+██╔══██╗ ██║   ██║ ╚════██║ ╚════██║ ██║╚██╔╝██║ ██║   ██║ ██║  ██║ ██╔══╝
+██████╔╝ ╚██████╔╝ ███████╗ ███████╗ ██║ ╚═╝ ██║ ╚██████╔╝ ██████╔╝ ███████╗
+══════╝   ╚═════╝  ╚══════╝ ╚══════╝ ╚═╝     ╚═╝  ╚═════╝  ╚═════╝  ╚══════╝
+```
+
 # Bossmode
 
-Bossmode is a skill for organizing complex agent work through an executive,
-persistent topic-named managers, focused workers, and independent review.
+Stop babysitting coding agents. Bossmode makes you the CEO of `Get-It-Done`.
+
+Bossmode is a skill for coordinating complex agent work through a single executive
+session. One persistent, topic-named manager is assigned to each high level task,
+tightly focused workers implement the component features and an independent
+reviewer assess the work.
+
+You describe the outcome to the executive and the `bossmode` team handles the rest.
 
 It is prompt-driven. There is no Bossmode runtime, package, command-line tool,
 database, or scheduler to install from this repository.
 
 ## Install
 
-Install Bossmode directly from this repository. For a local installation, copy
-the canonical `.agents/skills/bossmode` directory into the skill directory used
-by your agent environment. The copied directory is self-contained and requires
-no other skills.
+Copy the Bossmode skill from this repository to your agent's skills. Most agents
+use the canonical `.agents/skills/` directory but Claude Code uses `.claude/skills/`
 
-Canonical source: [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
+The main `bossmode` skill is: [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
 
-Validate a clone or extracted archive with `./verify-standalone.sh`.
+    .agents/skills/bossmode/       #
+    ├── SKILL.md                   #  Main skill file
+    └── references/                #
+        ├── agent-execution.md     #  Model/Effort + CLI usage
+        ├── manager.md             #  Manager workflow
+        └── recovery.md            #  Resume a session
 
 ## Use
 
@@ -23,10 +41,8 @@ Give an agent the outcome, boundaries, and evidence you need. For example:
 
 ```text
 Use the Bossmode skill to implement rate limiting for the auth endpoints.
-Success means the implementation uses a token bucket, sustains 100 requests
-per minute, allows bursts of 20 requests, and passes focused tests. Limit edits
-to the auth middleware and its tests. Require an independent reviewer before
-calling the task complete. Ask before expanding permissions.
+Success means the implementation sustains 100 requests per minute and allows
+bursts of 20 requests, and passes focused tests. Limit changes to auth middleware
 ```
 
 The executive session should report outcomes, decisions, blockers, and protected
@@ -34,9 +50,7 @@ approvals. Worker and run mechanics stay in the background unless you ask for th
 
 ## Repository purpose
 
-This repository is the canonical source of the Bossmode skill. Its validator
-rejects tracked Python, legacy package paths, and files outside the intended
-minimal repository tree.
+This repository is the canonical source of the Bossmode skill.
 
 ## Python prototype retirement
 
