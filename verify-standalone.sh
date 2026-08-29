@@ -12,7 +12,6 @@ cd "$repository_root"
 expected_paths=$(printf '%s\n' \
   .agents/skills/bossmode/SKILL.md \
   .agents/skills/bossmode/references/agent-execution.md \
-  .agents/skills/bossmode/references/external-harnesses.md \
   .agents/skills/bossmode/references/manager.md \
   .agents/skills/bossmode/references/recovery.md \
   .github/workflows/skill-parity.yml \
@@ -28,7 +27,7 @@ else
   actual_paths=$(find . -type f -not -path './.git/*' | sed 's|^./||' | sort)
 fi
 if test "$actual_paths" != "$expected_paths"; then
-  echo "Repository tree must contain exactly the eleven approved paths." >&2
+  echo "Repository tree must contain exactly the ten approved paths." >&2
   printf 'Expected:\n%s\nActual:\n%s\n' "$expected_paths" "$actual_paths" >&2
   exit 1
 fi
@@ -65,7 +64,6 @@ fi
 
 skill=.agents/skills/bossmode/SKILL.md
 execution=.agents/skills/bossmode/references/agent-execution.md
-harnesses=.agents/skills/bossmode/references/external-harnesses.md
 manager=.agents/skills/bossmode/references/manager.md
 recovery=.agents/skills/bossmode/references/recovery.md
 
@@ -90,35 +88,18 @@ require_text "$manager" '[agent-execution.md](agent-execution.md)'
 require_text "$manager" 'never `git add -A`'
 require_text "$execution" '## Model Tiers'
 require_text "$execution" '## Reasoning Effort Reference'
-require_text "$execution" '[external-harnesses.md](external-harnesses.md)'
+require_text "$execution" '## External Harness Configurations'
 require_text "$execution" 'stable live session identity'
-require_text "$harnesses" 'Only after an actual command failure may reactive diagnosis use'
-require_text "$harnesses" 'Do not run those checks proactively.'
-require_text "$harnesses" 'codex exec -C "$WORKSPACE" --model "$MODEL" --sandbox read-only "$PROMPT"'
-require_text "$harnesses" 'Reviewer (Soft Read-Only)'
+require_text "$execution" 'Only after an actual command failure may reactive diagnosis use'
+require_text "$execution" 'Do not run those checks proactively.'
+require_text "$execution" 'codex exec -C "$WORKSPACE" --model "$MODEL" --sandbox read-only "$PROMPT"'
+require_text "$execution" 'Reviewer (Soft Read-Only)'
 require_text "$recovery" 'Live runtime state is authoritative.'
 require_text "$recovery" 'Stored handles are hints only'
 
 if grep -Eq '^(## Model Tiers|## Reasoning Effort Reference)|command -v|Worker \(Write\):|/tmp/bossmode' \
   "$skill" "$manager" "$recovery"; then
   echo "Model and harness details must remain in their conditional references." >&2
-  exit 1
-fi
-
-if grep -Eq 'command -v|Worker \(Write\):' "$execution"; then
-  echo "Harness commands must remain in external-harnesses.md." >&2
-  exit 1
-fi
-
-if grep -Eq '^(## Model Tiers|## Reasoning Effort Reference)' "$harnesses"; then
-  echo "Model selection belongs in agent-execution.md." >&2
-  exit 1
-fi
-
-external_routes=$(grep -RlF -- 'external-harnesses.md' .agents/skills/bossmode | sort)
-if test "$external_routes" != "$execution"; then
-  echo "Only agent-execution.md may route to external harness details." >&2
-  printf 'Actual routes:\n%s\n' "$external_routes" >&2
   exit 1
 fi
 
@@ -136,19 +117,73 @@ trap cleanup_standalone EXIT
 cp -R .agents/skills/bossmode "$standalone_root/bossmode"
 standalone_skill=$(cd "$standalone_root/bossmode" && pwd -P)
 
-expected_skill_files=$(printf '%s\n' \
-  SKILL.md \
-  references/agent-execution.md \
-  references/external-harnesses.md \
-  references/manager.md \
-  references/recovery.md)
-actual_skill_files=$(find "$standalone_skill" -type f \
+if ! test -f "$standalone_skill/SKILL.md"; then
+  echo "Standalone skill must contain SKILL.md at its root." >&2
+  exit 1
+fi
+
+stray_files=$(find "$standalone_skill" -type f -not -name '*.md' \
   | sed "s|^$standalone_skill/||" \
   | sort)
-if test "$actual_skill_files" != "$expected_skill_files"; then
-  echo "Standalone skill must contain exactly five files." >&2
-  printf 'Expected:\n%s\nActual:\n%s\n' \
-    "$expected_skill_files" "$actual_skill_files" >&2
+if test -n "$stray_files"; then
+  echo "Standalone skill must contain only Markdown documents." >&2
+  printf '%s\n' "$stray_files" >&2
+  exit 1
+fi
+
+# Every document must be reachable from SKILL.md by transitive traversal of
+# relative Markdown links, so the package still functions when copied out
+# alone and carries no orphaned documents.
+reachable_documents=SKILL.md
+pending_documents=SKILL.md
+while test -n "$pending_documents"; do
+  current_document=${pending_documents%%$'\n'*}
+  if test "$current_document" = "$pending_documents"; then
+    pending_documents=
+  else
+    pending_documents=${pending_documents#*$'\n'}
+  fi
+  current_dir=$(dirname "$standalone_skill/$current_document")
+  while IFS= read -r target; do
+    case "$target" in
+      ''|http://*|https://*|mailto:*|'#'*) continue ;;
+    esac
+    target=${target%%#*}
+    test -n "$target" || continue
+    case "$target" in
+      *.md) ;;
+      *) continue ;;
+    esac
+    resolved_dir=$(cd "$current_dir/$(dirname "$target")" 2>/dev/null && pwd -P) \
+      || continue
+    resolved=$resolved_dir/$(basename "$target")
+    case "$resolved" in
+      "$standalone_skill"/*) ;;
+      *) continue ;;
+    esac
+    test -f "$resolved" || continue
+    relative_document=${resolved#"$standalone_skill"/}
+    if printf '%s\n' "$reachable_documents" | grep -Fqx -- "$relative_document"
+    then
+      continue
+    fi
+    reachable_documents=$reachable_documents$'\n'$relative_document
+    pending_documents=${pending_documents:+$pending_documents$'\n'}$relative_document
+  done < <(
+    grep -oE '\[[^]]+\]\([^)]+\)' "$standalone_skill/$current_document" \
+      | sed -E 's/^.*\(([^)]+)\)$/\1/' \
+      || true
+  )
+done
+
+all_documents=$(find "$standalone_skill" -type f -name '*.md' \
+  | sed "s|^$standalone_skill/||" \
+  | sort)
+unreachable_documents=$(printf '%s\n' "$all_documents" \
+  | grep -Fxv -f <(printf '%s\n' "$reachable_documents" | sort -u) || true)
+if test -n "$unreachable_documents"; then
+  echo "Standalone skill documents unreachable from SKILL.md:" >&2
+  printf '%s\n' "$unreachable_documents" >&2
   exit 1
 fi
 
