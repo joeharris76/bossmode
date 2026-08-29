@@ -17,9 +17,10 @@ stale name, pane, or stored session handle alone.
 ## Resume or Replace
 
 Resume the same Manager when its live identity, continuation channel, and
-ownership can be verified. Identify the Manager agent session, if possible,
-using available search tools and read its session log to understand what was
-happening before the interruption.
+ownership can be verified. Directly inspect the native raw JSONL session log
+— not merely a summary or vague session-log read — and identify the Manager
+agent session, last completed action, and pending next action. If any of the
+three cannot be established, do not resume or pair a replacement.
 
 Before pairing a replacement:
 
