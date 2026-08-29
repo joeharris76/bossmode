@@ -71,11 +71,29 @@ Steer an active assignment only when its channel supports reliable steering.
 Otherwise interrupt it, or let it finish and reject stale output, then
 re-delegate under the correction delta. Never assume pause or follow-up support.
 
-Integrate only assignments that satisfy their contracts. Dispatch an
-Independent Reviewer against the exact integrated revision and preserve the
-original findings. Delegate corrections to Workers and repeat independent
-review. After two failed review rounds by default, stop and return the
-outstanding findings to the Executive; a stricter charter limit wins.
+Integrate only assignments that satisfy their contracts. Give the Independent
+Reviewer the original user outcome, applicable repository constraints, exact
+integrated revision, diff, and verification evidence. Do not prescribe the
+expected verdict or present implementation-derived acceptance criteria as
+authority.
+
+Every review must include a `Solution fit` section that answers:
+
+- Does each new mechanism enforce a stated requirement or prevent a concrete
+  failure?
+- Does it freeze exact prose, headings, versions, file inventories, or current
+  layout when behavioral or structural validation would suffice?
+- Does it duplicate another check or force unrelated future changes to update
+  it?
+- What false positives, false negatives, and maintenance costs does it create?
+- Is there a materially simpler solution that provides the required assurance?
+
+A nontrivial mechanism without a concrete justification is a Required finding.
+A review that omits `Solution fit` cannot return PASS.
+
+Preserve the original findings. Delegate corrections to Workers and repeat
+independent review. After two failed review rounds by default, stop and return
+the outstanding findings to the Executive; a stricter charter limit wins.
 
 Provide the Executive only the facts required by the reporting and Close
 contracts in [../SKILL.md](../SKILL.md). Do not substitute a summary for

@@ -124,11 +124,20 @@ Workers receive one bounded assignment with path ownership, permission scope,
 success criteria, and an output contract. Concurrent writers must have
 disjoint paths and worktrees.
 
-The Independent Reviewer must not have authored the work. Enforce read-only
-evaluation through a hard sandbox or tool allowlist when available; otherwise
-use findings-only instructions that explicitly forbid edits, commits, pushes,
-and other mutations. The Reviewer evaluates the exact integrated revision and
-returns the original report to the Manager.
+The Independent Reviewer must not have authored the work. The user’s requested
+outcome and repository policy are authoritative; Manager and Worker plans,
+acceptance criteria, implementation choices, tests, and self-reports are claims
+to evaluate.
+
+Review both correctness and solution fit. Independently determine whether the
+change is the smallest maintainable solution that proves the required behavior.
+Passing tests, CI, or stated acceptance criteria does not excuse overfitting,
+duplicated enforcement, incidental-state coupling, or claims broader than the
+evidence.
+
+Enforce read-only evaluation through a hard sandbox or tool allowlist when
+available; otherwise use findings-only instructions that explicitly forbid
+edits, commits, pushes, and other mutations.
 
 Operate from live session state, Git, and durable artifacts. Do not invent a
 registry, scheduler, generation protocol, background polling loop, or clock-
@@ -190,8 +199,10 @@ are needed to explain an exception.
    coverage, the exact integrated revision, durable verification evidence, the
    original Independent Reviewer report, and all remaining, preserved,
    blocked, or user-approved deferred work.
-4. The Executive reconciles the packet read-only against the user's current
-   instructions. Its summary must expose every unresolved reviewer finding.
+4. The Executive reconciles the packet read-only against the user’s current
+   instructions. It must expose every unresolved finding and reject a PASS that
+   only confirms the implementation against its own acceptance criteria, tests,
+   or CI. Close requires an explicit solution-fit assessment.
 
 Requested work cannot be declared out of scope without the user's agreement.
 Required integration, synchronization, review, or approval on the path to the
