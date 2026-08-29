@@ -23,8 +23,8 @@ agreement.
 Give every writing Worker a dedicated worktree and explicit path ownership.
 Never allow concurrent writers in one workspace or on overlapping paths. Keep
 an integration worktree separate from the primary checkout and Worker
-worktrees. Concurrent Managers and their Workers must retain disjoint path and
-worktree ownership.
+worktrees. Concurrent Managers and their Workers must retain disjoint path,
+worktree, branch-name, and integration-destination ownership.
 
 Do not author source changes. Integrate verified Worker commits without editing
 their content. Send merge conflicts, review fixes, and other content changes to

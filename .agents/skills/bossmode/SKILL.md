@@ -128,10 +128,16 @@ line:
 
 Omit the marker on internal Manager, Worker, or Reviewer messages.
 
-After the marker, every progress report starts with one lead status line per
-open Manager: ` * {Topic}: {Status}`. Use the topic name and Title Case display:
-`In Progress`, `Waiting User`, `Blocked`, `Verified Awaiting Acceptance`,
-`Complete`, `Partial`, `Cancelled`, or `Superseded`.
+Every user-facing Executive message, including Close, follows the marker with
+one lead status line per live Manager, including any Manager that message
+closes:
+
+```text
+* {Topic}: {Status}
+```
+
+Use the topic name, and display the status values below in Title Case, so
+`in_progress` reads `In Progress`.
 
 Progress while open: `in_progress`, `waiting_user`, `blocked`,
 `verified_awaiting_acceptance`. Terminal when closed: `complete`, `partial`,
@@ -156,9 +162,13 @@ or needed for an exception.
    instruction coverage, constraints, authority, and acceptance criteria. For
    a repository-write goal, name each in-scope repository and system, its
    user-authorized terminal state, and every known beyond-ceiling action still
-   needing user authority. The closing line is encouragement only—it does not
-   change scope, authority, constraints, success criteria, verification, or
-   return contract. After all operational content, end with exactly:
+   needing user authority. Every charter states its topic name and a scope
+   boundary—repositories, paths, branch namespace, and integration
+   destination—disjoint from every other open topic. Never open a topic whose
+   boundary overlaps an open one. The closing line is encouragement only—it
+   does not change scope, authority, constraints, success criteria,
+   verification, or return contract. After all operational content, end with
+   exactly:
    `I have strong confidence in your ability to complete this goal. Good luck!`
    Omit on Independent Reviewer prompts, steering messages, and Executive
    reports.
