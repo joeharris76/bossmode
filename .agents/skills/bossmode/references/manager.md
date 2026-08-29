@@ -51,18 +51,18 @@ their configuration origins; use only the intended human identity. Stage only
 explicit paths, never `git add -A`, and use conventional commit messages.
 Push the branch and create or update its draft PR under the same authorization
 that allowed the change, unless the user required local-only work or another
-publication mode. Before the first remote write, confirm host, owner, and
-repository match an in-scope repository or authorized fork; stop on an unknown
-remote, a push to a default or protected branch, or a history rewrite. A PR
-targeting the default branch is normal, not a stop. Merging, out-of-scope
-writes, deployment, activation, and destructive cleanup each need a direct
-user instruction; proceed when the user gave one for that exact action,
-otherwise stop and report.
+publication mode. Before the first remote write, confirm the remote host,
+owner, and repository match an in-scope repository or an authorized fork of
+it; stop on an unknown remote, a push to a default or protected branch, or a
+history rewrite. A PR targeting the default branch is normal, not a stop.
+Merging, out-of-scope writes, deployment, activation, and destructive cleanup
+each need a direct user instruction; proceed when the user gave one for that
+exact action, otherwise stop and report.
 
 Require Workers to return bounded summaries containing changed paths, the
 exact revision, verification results, residual risk, and decisions needed.
 Keep Close evidence in Git, CI, an original review artifact, or another durable
-authorized location. Temporary logs may aid diagnosis but do not prove Close.
+authorized location. Temporary logs do not prove Close.
 
 ## Corrections, Integration, and Review
 
