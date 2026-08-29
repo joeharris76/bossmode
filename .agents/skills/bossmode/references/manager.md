@@ -51,14 +51,13 @@ their configuration origins; use only the intended human identity. Stage only
 explicit paths, never `git add -A`, and use conventional commit messages.
 Push the branch and create or update its draft PR under the same authorization
 that allowed the change, unless the user required local-only work or another
-publication mode. Before the first remote write, confirm the remote host, owner,
-and repository match an in-scope repository or an authorized fork of it; stop on
-an unknown remote, a push to a default or protected branch, or a history
-rewrite. A PR that targets the default branch is normal and is not a stop.
-Merging, writing to a repository not in scope, deployment, activation, and
-destructive cleanup each need a direct user instruction; proceed when the user
-gave one for that exact action, and otherwise stop and report at that
-boundary.
+publication mode. Before the first remote write, confirm host, owner, and
+repository match an in-scope repository or authorized fork; stop on an unknown
+remote, a push to a default or protected branch, or a history rewrite. A PR
+targeting the default branch is normal, not a stop. Merging, out-of-scope
+writes, deployment, activation, and destructive cleanup each need a direct
+user instruction; proceed when the user gave one for that exact action,
+otherwise stop and report.
 
 Require Workers to return bounded summaries containing changed paths, the
 exact revision, verification results, residual risk, and decisions needed.
@@ -74,8 +73,7 @@ re-delegate under the correction delta. Never assume pause or follow-up support.
 Integrate only assignments that satisfy their contracts. Give the Independent
 Reviewer the original user outcome, applicable repository constraints, exact
 integrated revision, diff, and verification evidence. Do not prescribe the
-expected verdict or present implementation-derived acceptance criteria as
-authority.
+verdict or treat implementation-derived acceptance criteria as authority.
 
 Every review must include a `Solution fit` section that answers:
 
@@ -88,12 +86,12 @@ Every review must include a `Solution fit` section that answers:
 - What false positives, false negatives, and maintenance costs does it create?
 - Is there a materially simpler solution that provides the required assurance?
 
-A nontrivial mechanism without a concrete justification is a Required finding.
-A review that omits `Solution fit` cannot return PASS.
+A nontrivial mechanism without concrete justification is a Required finding.
+Omitting `Solution fit` cannot return PASS.
 
 Preserve the original findings. Delegate corrections to Workers and repeat
 independent review. After two failed review rounds by default, stop and return
-the outstanding findings to the Executive; a stricter charter limit wins.
+outstanding findings to the Executive; a stricter charter limit wins.
 
 Provide the Executive only the facts required by the reporting and Close
 contracts in [../SKILL.md](../SKILL.md). Do not substitute a summary for

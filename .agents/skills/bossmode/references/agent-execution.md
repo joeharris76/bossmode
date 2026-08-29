@@ -1,9 +1,8 @@
 # Agent Execution
 
 Read this reference when pairing the Manager or selecting a Worker or
-Independent Reviewer. Bossmode retains ownership of decomposition, workspace
-isolation, and acceptance criteria, and is responsible for enforcing the
-authority the user granted.
+Independent Reviewer. Bossmode owns decomposition, workspace isolation, and
+acceptance criteria, and enforces the authority the user granted.
 
 ## Model Tiers
 
@@ -75,7 +74,7 @@ for the role, and use it directly.
 
 Headless Worker dispatch may automate routine tool confirmations only when
 write scope is already bounded by a sandbox, workspace flag, or dedicated
-worktree, and only for actions the user already authorized. A confirmation flag
-never grants authority and never substitutes for a credential, trust,
-permission, destructive, merge, release, deployment, or activation approval.
-Never add flags that remove workspace, sandbox, or tool boundaries.
+worktree, and only for already-authorized actions. A confirmation flag never
+grants authority and never substitutes for a credential, trust, permission,
+destructive, merge, release, deployment, or activation approval. Never add
+flags that remove workspace, sandbox, or tool boundaries.
