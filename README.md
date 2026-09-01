@@ -23,17 +23,26 @@ database, or scheduler to install from this repository.
 
 ## Install
 
-Copy the Bossmode skill from this repository to your agent's skills. Most agents
-use the canonical `.agents/skills/` directory but Claude Code uses `.claude/skills/`
+Copy the `bossmode` skill and sibling `shared-agent-execution` skill from this
+repository to your agent's skills. Most agents use the canonical
+`.agents/skills/` directory but Claude Code uses `.claude/skills/`
 
-The main `bossmode` skill is: [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
+The primary skills are:
+- [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
+- [`.agents/skills/shared-agent-execution/SKILL.md`](.agents/skills/shared-agent-execution/SKILL.md)
 
-    .agents/skills/bossmode/       #
-    ├── SKILL.md                   #  Main skill file
-    └── references/                #
-        ├── agent-execution.md     #  Model/Effort + CLI usage
-        ├── manager.md             #  Manager workflow
-        └── recovery.md            #  Resume a session
+    .agents/skills/
+    ├── bossmode/
+    │   ├── SKILL.md                   #  Main skill file
+    │   ├── skill.yaml                 #  Skill metadata
+    │   └── references/
+    │       ├── manager.md             #  Manager workflow
+    │       └── recovery.md            #  Resume a session
+    └── shared-agent-execution/
+        ├── SKILL.md                   #  Model/effort selection & dispatch
+        ├── skill.yaml                 #  Skill metadata
+        └── references/
+            └── external-harnesses.md  #  External harness commands & config
 
 ## Use
 
@@ -50,7 +59,7 @@ approvals. Worker and run mechanics stay in the background unless you ask for th
 
 ## Repository purpose
 
-This repository is the canonical source of the Bossmode skill.
+This repository is the canonical source of the Bossmode skill and sibling `shared-agent-execution` skill.
 
 ## Python prototype retirement
 
