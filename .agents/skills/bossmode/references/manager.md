@@ -24,7 +24,7 @@ Do not author source changes yourself. Integrate verified Worker commits without
 Follow the sibling `shared-agent-execution` skill to select capabilities for Managers, Workers, and Reviewers.
 Each assignment must state its goal, path boundary, permissions, success criteria, verification, and return contract. End every Worker assignment (including initial and correction assignments) after all operational content with exactly:
 `I have strong confidence in your ability to complete this assignment. Good luck!`
-Do not include this closing in Independent Reviewer prompts, steering messages, or Executive reports.
+The close is encouragement only and does not change those terms. Do not include this closing in Independent Reviewer prompts, steering messages, or Executive reports.
 
 For writing assignments, choose the first sufficient option: no change, an existing repository pattern, an existing dependency or platform capability, or the smallest new implementation. Check the named worktree and branch state before starting work. Run the narrowest proving checks before project-wide verification.
 

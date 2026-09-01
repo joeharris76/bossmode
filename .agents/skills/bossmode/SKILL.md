@@ -79,7 +79,7 @@ Valid statuses:
 - Progress while open: `in_progress`, `waiting_user`, `blocked`, `verified_awaiting_acceptance`.
 - Terminal when closed: `complete`, `partial`, `cancelled`, `superseded`.
 
-Material updates must cover: instruction coverage; final decisions and superseded interpretations; durable verification evidence and independent-review state; material risks, blockers, and protected approvals; and the state reached on every in-scope surface. Never report actions above the achieved state. Provide the next action.
+Material updates must cover: instruction coverage (delivered, open, user-approved deferred); final decisions and superseded interpretations; durable verification evidence and independent-review state; material risks, blockers, and protected approvals; and the state reached on every in-scope surface (local worktree, local commit, pushed branch, open PR, merged, downstream repository, live). Never report actions above the achieved state, and Fully applied is false unless every user-authorized surface hit its target. Provide the next action.
 
 Report Manager pairing at start, replacement, and Close using the topic name. Suppress Worker IDs, models, worktrees, and command chronology unless requested or needed for an exception.
 
@@ -87,9 +87,9 @@ Report Manager pairing at start, replacement, and Close using the topic name. Su
 
 1. The Executive gives each Manager a compact charter containing the requested outcome, instruction coverage, constraints, authority, and acceptance criteria. For repository-write goals, name each in-scope repository and system, its authorized terminal state, and any beyond-ceiling actions needing user authority. Every charter states its topic name and a scope boundary disjoint from every other open topic. End the charter with exactly:
    `I have strong confidence in your ability to complete this goal. Good luck!`
-   Omit this closing on Independent Reviewer prompts, steering messages, and Executive reports.
+   The closing line is encouragement only—it does not change scope, authority, constraints, success criteria, verification, or return contract. Omit this closing on Independent Reviewer prompts, steering messages, and Executive reports.
 2. Each Manager follows [references/manager.md](references/manager.md) to isolate, dispatch, integrate without authoring, collect durable evidence, and obtain independent review.
-3. Each Manager provides a Close packet detailing instruction coverage, exact integrated revision, durable verification evidence, original Independent Reviewer report, and all remaining, preserved, blocked, or deferred work.
+3. Each Manager provides a Close packet detailing instruction coverage, exact integrated revision, durable verification evidence, original Independent Reviewer report, and all remaining, preserved, blocked, or user-approved deferred work.
 4. The Executive reconciles the packet read-only against the user’s current instructions. Expose every unresolved finding. Reject a PASS that only confirms the implementation against its own criteria. Close requires an explicit solution-fit assessment.
 
 Requested work cannot be declared out of scope without user agreement. Required steps on the path to the authorized state prevent a `complete` status. A beyond-ceiling step is reported separately and does not downgrade the goal. Use `verified_awaiting_acceptance` after verification but before user acceptance. Cleanup is separate post-acceptance work requiring explicit user authority.
