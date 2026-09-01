@@ -24,9 +24,9 @@ Manager accountable through Close. No verified live Manager for a topic means no
 [references/recovery.md](references/recovery.md).
 
 Before pairing or dispatching, read
-[references/agent-execution.md](references/agent-execution.md) for model,
-reasoning-effort, harness, and Manager-capability selection. After pairing,
-the Manager reads [references/manager.md](references/manager.md). Load
+the sibling `shared-agent-execution` skill (`shared-agent-execution/SKILL.md`)
+for model, reasoning-effort, harness, and Manager-capability selection. After
+pairing, the Manager reads [references/manager.md](references/manager.md). Load
 recovery only when replacing a lost or unresponsive Manager.
 
 ## Authority
