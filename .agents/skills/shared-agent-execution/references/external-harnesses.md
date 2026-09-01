@@ -1,18 +1,10 @@
 # External Harnesses
 
-Use these known-good direct configurations whenever an external harness is
-selected. Choose the documented command for the delegated role and use it
-directly. Only after an actual command failure may reactive diagnosis use
-`command -v` and the installed `--help` output to distinguish a missing binary
-from flag drift. Do not run those checks proactively.
+Use these exact commands when running external harnesses. Choose the command for the delegated role and run it directly. Only check for binary installation with `command -v` or `--help` *after* a command fails. Do not run these checks proactively.
 
-- Worker commands require already-authorized write scope bounded by a sandbox,
-  workspace, or dedicated worktree. Confirmation automation in a documented
-  Worker command is allowed only within that bounded scope.
-- Reviewer commands use the declared **Hard Read-Only** or **Soft Read-Only**
-  classification. Reinforce Soft Read-Only with findings-only instructions that
-  forbid edits, commits, pushes, and other mutations.
-- Do not add flags that remove workspace, sandbox, or tool boundaries.
+- **Worker commands** require write scope already bounded by a sandbox, workspace, or dedicated worktree. You may only use confirmation automation within these safe boundaries.
+- **Reviewer commands** use either **Hard Read-Only** or **Soft Read-Only** modes. For Soft Read-Only, you must include instructions that explicitly forbid edits, commits, pushes, and mutations.
+- Do not add flags that bypass workspace, sandbox, or tool boundaries.
 
 ## Frontier Lab Harnesses
 
@@ -37,7 +29,7 @@ from flag drift. Do not run those checks proactively.
   - Worker (Write): `muse exec --workspace "$WORKSPACE" --disable-approval --model "$MODEL" --reasoning-effort "$EFFORT" "$PROMPT"`
   - Reviewer (Hard Read-Only): `muse exec --workspace "$WORKSPACE" --disable-approval --disable-write --disable-shell --model "$MODEL" --reasoning-effort "$EFFORT" "$PROMPT"`
   - Known-good models: `muse-spark-1.2-contributor`, `muse-spark-1.2`
-  - Note: Unset invalid credentials with `env -u META_API_KEY` before execution.
+  - Note: Run `env -u META_API_KEY` before execution to unset invalid credentials.
 
 ## Extensible and Community Harnesses
 

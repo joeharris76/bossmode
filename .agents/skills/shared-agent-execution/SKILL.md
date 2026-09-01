@@ -1,40 +1,32 @@
 ---
 name: agent-execution
-description: Select model tiers, map reasoning effort, and dispatch delegated work through native or external agent harnesses. Use when a workflow must choose an agent model or effort level, or launch a manager, worker, or independent reviewer; do not use for direct, undelegated tool calls.
+description: Select model tiers, map reasoning effort, and dispatch delegated work through native or external agent harnesses. Use when a workflow must choose an agent model or effort level, or launch a manager, worker, or independent reviewer. Do not use for direct, undelegated tool calls.
 ---
 
 # Agent Execution
 
-Use this component when another skill delegates work and needs a consistent
-model tier, reasoning effort, or agent harness configuration. The calling skill
-continues to own task decomposition, authorization, workspace isolation, and
-acceptance criteria.
+Use this skill to select models, set reasoning effort, or configure agent harnesses when delegating work. The calling skill still owns task decomposition, authorization, workspace isolation, and acceptance criteria.
 
 ## Model Tiers
 
-Tiers describe operating roles, not absolute quality rankings. Match models to
-task complexity and risk.
+Tiers describe roles, not just quality. Match the model to the task's complexity and risk.
 
-*Selection Rule*: Pick the tier here. For native dispatch, choose the listed
-tier model directly. When an external harness is selected, take its exact
-harness-specific identifier from
-[references/external-harnesses.md](references/external-harnesses.md). Default
-reasoning effort to `medium`. Use maximum effort only for Tier 1 adversarial
-review; use `low` for mechanical bulk work.
+**Selection Rule**: Choose the tier below. For native dispatch, use the model name directly. For external harnesses, use the specific identifier from [references/external-harnesses.md](references/external-harnesses.md).
+Default reasoning effort to `medium`. Use `max` effort only for Tier 1 adversarial review. Use `low` for repetitive bulk work.
 
 - **Tier 1: Strategic**
-  - Models: `gpt-5.6-sol`, `claude-fable-5`, `grok-4.6`, `gemini-3.7-flash-high`
+  - Models: `gpt-5.6-sol`, `claude-fable-5`
   - Usage: Strategic planning, architecture, high-risk tradeoffs, and final adversarial review.
 - **Tier 2: Generalist**
-  - Models: `gpt-5.6-terra`, `claude-opus-5`, `grok-4.5`, `gemini-3.7-flash-medium`, `muse-spark-1.2`
+  - Models: `gpt-5.6-terra`, `claude-opus-5`, `grok-4.6`, `gemini-3.7-flash-high`, `muse-spark-1.2-contributor`
   - Usage: Management, decomposition, integration, investigation, and routine review.
 - **Tier 3: Contributor**
-  - Models: `gpt-5.6-luna`, `claude-sonnet-5`, `gemini-3.7-flash-low`, `gemini-3.7-flash-tiered`, `muse-spark-1.2-contributor`
+  - Models: `gpt-5.6-luna`, `claude-sonnet-5`, `grok-4.5`, `gemini-3.7-flash-medium`
   - Usage: Focused implementation, bounded research, bulk work, and parallel coverage.
 
-## Reasoning Effort Reference
+## Reasoning Effort
 
-| Harness | CLI Flag / Option | Supported Values (Lowest to Highest) |
+| Harness | Flag | Supported Values (Lowest to Highest) |
 | :--- | :--- | :--- |
 | **pi** | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | **claude** | `--effort <level>` | `low`, `medium`, `high`, `xhigh`, `max` |
@@ -44,43 +36,18 @@ review; use `low` for mechanical bulk work.
 | **codex** | `-c model_reasoning_effort="<level>"` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | **prime-agent** | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
-For `jcode`, `opencode`, `hermes`, `goose`, and `aider`, effort is selected via
-model variants (e.g. `gemini-3.7-flash-tiered`, `:thinking` suffix) or provider
-settings.
+For `jcode`, `opencode`, `hermes`, `goose`, and `aider`, select effort through model variants (e.g., `gemini-3.7-flash-tiered`, `:thinking` suffix) or provider settings.
 
 ## Dispatch Rules
 
-Treat native subagents and external harnesses as peer dispatch choices. Select
-between them using the factors relevant to the assignment: task and model fit,
-provider usage or capacity, cost, isolation or read-only strength, and useful
-parallelism. Assign an explicit role, bounded goal, path constraints,
-permission scope, success criteria, and output contract.
+Treat native subagents and external harnesses as equal options. Choose based on task fit, provider capacity, cost, isolation, and parallelism. Always provide an explicit role, goal, constraints, permissions, and success criteria.
 
-Choose the dispatch mode from the delegated role:
+Choose the dispatch mode based on the role:
 
-- **Manager:** select a channel only when current runtime capabilities or
-  behavioral evidence verify a stable live session identity, resume or
-  follow-up, live status and interrupt, and a working path to dispatch or
-  coordinate Workers and Reviewers. Do not infer Manager capability from a
-  one-shot Worker or Reviewer command. Invocations such as `--print`, `exec`,
-  `--single`, or equivalents are not Manager-capable unless a separate verified
-  continuation channel supplies every required capability; they remain valid
-  Worker or Reviewer choices.
-- **Worker:** use a write-capable mode only within the authorized workspace or
-  sandbox. Require the repository's narrowest proving check and explicit-path
-  staging; never permit `git add -A`.
-- **Reviewer:** use a separate dispatch that did not author the work. Prefer a
-  hard read-only sandbox or tool allowlist. A plan mode is soft read-only and
-  requires explicit findings-only instructions that forbid edits, commits,
-  pushes, and other mutations.
+- **Manager:** Only use channels that support stable live sessions, resume capability, live status, interrupts, and worker coordination. Do not assume Manager capabilities from simple commands. Flags like `--print`, `exec`, or `--single` are only for Workers or Reviewers unless paired with a verified continuation channel.
+- **Worker:** Only allow write access within an authorized workspace or sandbox. Require narrow repository checks and explicit staging paths. Never permit `git add -A`.
+- **Reviewer:** Use a separate agent that did not author the work. Prefer hard read-only sandboxes or strict tool allowlists. If using a soft read-only plan mode, explicitly forbid edits, commits, pushes, and other mutations.
 
-When selecting an external or headless harness, read
-[references/external-harnesses.md](references/external-harnesses.md), choose the
-documented command for the role, and use it directly.
+When using an external harness, find the correct command in [references/external-harnesses.md](references/external-harnesses.md) and use it exactly as written.
 
-Headless Worker dispatch may automate confirmations only when write scope is
-already bounded by a sandbox, workspace flag, or dedicated worktree. Never add
-flags that remove workspace, sandbox, or tool boundaries.
-
-The external harness reference contains the worker and reviewer commands, model
-identifiers, and hard-versus-soft read-only classifications.
+For headless Worker dispatch, you may automate confirmations only if the write scope is strictly bounded (by a sandbox, workspace flag, or dedicated worktree). Never add flags that bypass workspace or sandbox boundaries.

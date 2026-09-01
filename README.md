@@ -31,18 +31,20 @@ The primary skills are:
 - [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
 - [`.agents/skills/shared-agent-execution/SKILL.md`](.agents/skills/shared-agent-execution/SKILL.md)
 
-    .agents/skills/
-    ├── bossmode/
-    │   ├── SKILL.md                   #  Main skill file
-    │   ├── skill.yaml                 #  Skill metadata
-    │   └── references/
-    │       ├── manager.md             #  Manager workflow
-    │       └── recovery.md            #  Resume a session
-    └── shared-agent-execution/
-        ├── SKILL.md                   #  Model/effort selection & dispatch
-        ├── skill.yaml                 #  Skill metadata
-        └── references/
-            └── external-harnesses.md  #  External harness commands & config
+```
+.agents/skills/
+├── bossmode/
+│   ├── SKILL.md                   #  Main skill file
+│   ├── skill.yaml                 #  Skill metadata
+│   └── references/
+│       ├── manager.md             #  Manager workflow
+│       └── recovery.md            #  Resume a session
+└── shared-agent-execution/
+    ├── SKILL.md                   #  Model/effort selection & dispatch
+    ├── skill.yaml                 #  Skill metadata
+    └── references/
+        └── external-harnesses.md  #  External harness commands & config
+```
 
 ## Use
 
