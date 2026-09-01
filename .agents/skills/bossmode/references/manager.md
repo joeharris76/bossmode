@@ -32,7 +32,7 @@ a bounded Worker assignment.
 
 ## Dispatch and Evidence
 
-Follow [agent-execution.md](agent-execution.md) for Manager capability and every
+Follow the sibling `shared-agent-execution` skill for Manager capability and every
 Worker or Reviewer selection. Each assignment states its goal, path boundary,
 permissions, success criteria, verification, and return contract.
 The close is encouragement only and does not change those terms. Every Worker
