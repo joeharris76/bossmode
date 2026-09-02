@@ -12,7 +12,7 @@ Use this skill to select models, set reasoning effort, or configure agent harnes
 Tiers describe roles, not just quality. Match the model to the task's complexity and risk.
 
 **Selection Rule**: Choose the tier below. For native dispatch, use the model name directly. For external harnesses, use the specific identifier from [references/external-harnesses.md](references/external-harnesses.md).
-Default reasoning effort to `medium`. Use `max` effort only for Tier 1 adversarial review. Use `low` for repetitive bulk work.
+Defaults to `medium`. Use `max` effort only for Tier 1 adversarial review. Use `low` for repetitive bulk work.
 
 - **Tier 1: Strategic**
   - Models: `gpt-5.6-sol`, `claude-fable-5`
