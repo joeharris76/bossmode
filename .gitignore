@@ -3,3 +3,6 @@
 _project/
 .continual/
 .DS_Store
+.venv/
+.pytest_cache/
+.ruff_cache/
