@@ -14,7 +14,7 @@ Stop babysitting coding agents. Bossmode makes you the CEO of `Get-It-Done`.
 Bossmode is a skill for coordinating complex agent work through a single executive
 session. One persistent, topic-named manager is assigned to each high level task,
 tightly focused workers implement the component features and an independent
-reviewer assess the work.
+reviewer assesses the work.
 
 You describe the outcome to the executive and the `bossmode` team handles the rest.
 
@@ -28,10 +28,11 @@ repository to your agent's skills. Most agents use the canonical
 `.agents/skills/` directory but Claude Code uses `.claude/skills/`
 
 The primary skills are:
+
 - [`.agents/skills/bossmode/SKILL.md`](.agents/skills/bossmode/SKILL.md)
 - [`.agents/skills/shared-agent-execution/SKILL.md`](.agents/skills/shared-agent-execution/SKILL.md)
 
-```
+```text
 .agents/skills/
 ├── bossmode/
 │   ├── SKILL.md                   #  Main skill file
