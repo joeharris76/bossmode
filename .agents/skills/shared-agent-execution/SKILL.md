@@ -18,11 +18,13 @@ Default reasoning effort to `medium`. Use `max` effort only for Tier 1 adversari
   - Models: `gpt-5.6-sol`, `claude-fable-5`
   - Usage: Strategic planning, architecture, high-risk tradeoffs, and final adversarial review.
 - **Tier 2: Generalist**
-  - Models: `gpt-5.6-terra`, `claude-opus-5`, `grok-4.6`, `gemini-3.7-flash-high`, `muse-spark-1.2-contributor`
+  - Models: `gpt-5.6-terra`, `claude-opus-5`, `grok-4.6`, `gemini-3.7-flash-high`, `muse-spark-1.2`, `muse-spark-1.2-contributor`
   - Usage: Management, decomposition, integration, investigation, and routine review.
 - **Tier 3: Contributor**
-  - Models: `gpt-5.6-luna`, `claude-sonnet-5`, `grok-4.5`, `gemini-3.7-flash-medium`
+  - Models: `gpt-5.6-luna`, `claude-sonnet-5`, `grok-4.5`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low` (low-cost bulk)
   - Usage: Focused implementation, bounded research, bulk work, and parallel coverage.
+
+> Note: pi/jcode prefixed forms (openai-codex/, muse-spark/) map to same tier as unprefixed base.
 
 ## Reasoning Effort
 

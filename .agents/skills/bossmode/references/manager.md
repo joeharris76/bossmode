@@ -22,9 +22,7 @@ Do not author source changes yourself. Integrate verified Worker commits without
 ## Dispatch and Evidence
 
 Follow the sibling `shared-agent-execution` skill to select capabilities for Managers, Workers, and Reviewers.
-Each assignment must state its goal, path boundary, permissions, success criteria, verification, and return contract. End every Worker assignment (including initial and correction assignments) after all operational content with exactly:
-`I have strong confidence in your ability to complete this assignment. Good luck!`
-The close is encouragement only and does not change those terms. Do not include this closing in Independent Reviewer prompts, steering messages, or Executive reports.
+Each assignment must state its goal, path boundary, permissions, success criteria, verification, and return contract. End every Worker assignment (including initial and correction assignments) after all operational content with a brief encouragement (wording not normative; validators must not check prose). The encouragement does not change those terms. Do not include this closing in Independent Reviewer prompts, steering messages, or Executive reports.
 
 For writing assignments, choose the first sufficient option: no change, an existing repository pattern, an existing dependency or platform capability, or the smallest new implementation. Check the named worktree and branch state before starting work. Run the narrowest proving checks before project-wide verification.
 
@@ -47,6 +45,8 @@ Every review must include a `Solution fit` section answering:
 - Does it duplicate another check or force unrelated future changes to update it?
 - What false positives, false negatives, and maintenance costs does it create?
 - Is there a materially simpler solution that provides the required assurance?
+
+Exception: The charter/assignment encouragement closing is the sole allowed non-normative prose; validators must not check its wording and reviewers must not flag it under this question.
 
 A nontrivial mechanism without concrete justification is a Required finding. Reviews lacking the `Solution fit` section cannot return a PASS.
 
