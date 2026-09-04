@@ -61,6 +61,21 @@ The executive session reports outcomes, decisions, surface movements, blockers,
 and protected approvals without silence or waiting for prompts. Worker and run
 mechanics stay in the background unless you ask for them.
 
+To restart after an abrupt termination or exhausted provider usage, start a new
+agent with the prompt-level command:
+
+```text
+bossmode takeover
+```
+
+The command optionally accepts a packet path; without one it reads
+`.bossmode/handoff.md`. It is part of the skill workflow, not a Bossmode
+executable. The durable packet restores the Executive charter and Manager
+roster; the new Executive verifies live ownership and repository state, resumes
+only sessions that can truly continue, replaces unavailable Managers from
+bounded packet state, and continues pending work without a de novo
+investigation.
+
 ## Repository purpose
 
 This repository is the canonical source of the Bossmode skill and sibling `shared-agent-execution` skill.

@@ -21,6 +21,12 @@ Pair a verified live Manager for each topic before delegating and keep that Mana
 
 Before pairing or dispatching, read `shared-agent-execution/SKILL.md` for model, reasoning-effort, harness, and Manager-capability selection. After pairing, the Manager reads [references/manager.md](references/manager.md). Read the recovery reference only when replacing a lost or unresponsive Manager.
 
+## Takeover
+
+When an Executive ends abruptly or exhausts provider usage, start a new agent with the prompt-level command `bossmode takeover [<handoff-path>]`. With no path, use the active workspace's `.bossmode/handoff.md`. This is a skill invocation, not an executable in this repository. The handoff packet lets the new Executive restore its charter and Manager roster without asking the user to restate the work or repeating a broad investigation. The packet format and recovery procedure are in [references/recovery.md](references/recovery.md).
+
+Takeover must first reconcile the packet, current user instructions, live sessions, Git, worktrees, and durable review evidence. It must continue only the recorded pending actions, preserve ambiguous work, and report any missing fact. It may resume a Manager only when the Manager's live identity, continuation channel, ownership, and native raw JSONL are verifiable. If the original Manager is unavailable, it may pair a replacement from the packet after the failed Manager's descendants and workspaces are reconciled; the packet does not grant authority beyond the current user's instructions.
+
 ## Authority
 
 - **Executive:** Defines the outcome, priorities, constraints, acceptance criteria, and authority boundary. Directs only Managers. May inspect live state and evidence read-only at material gates.
