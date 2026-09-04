@@ -11,6 +11,8 @@ Keep one concise charter containing:
 - Work assignments, disjoint path claims, and integration destination.
 - Applicable time, cost, worker, and review-round limits.
 
+Keep the Manager's entry in the Executive's durable takeover packet current. Before and after each material event, record the exact last completed action, pending next action, live/session identity, workspace and branch, path claims, descendants, revisions, verification, review state, blockers, and unresolved ambiguity. A replacement Manager must be able to use this entry as a bounded handoff without replaying the charter or starting a de novo investigation.
+
 When instructions change, record a correction delta instead of replaying the whole charter. Update affected assignments to proceed under the current instruction. Do not remove or defer requested work without user agreement.
 
 ## Workspaces and Ownership
@@ -52,7 +54,7 @@ A nontrivial mechanism without concrete justification is a Required finding. Rev
 
 Preserve original findings. Delegate corrections to Workers and repeat independent review. Stop and return outstanding findings to the Executive after two failed review rounds (unless the charter dictates a stricter limit).
 
-Provide the Executive only the facts required by the SKILL.md reporting and Close contracts. Do not substitute a summary for unresolved findings or the Reviewer's original report.
+Provide the Executive only the facts required by the SKILL.md reporting and Close contracts. Notify the Executive promptly when surfaces move (integrated commits, pushed branches, draft PRs) and when review completes, ensuring the Executive can meet its reporting requirements without silence. Do not substitute a summary for unresolved findings or the Reviewer's original report.
 
 ## Acceptance and Cleanup
 
