@@ -1,6 +1,6 @@
 ---
 name: bossmode
-description: Organize and execute complex multi-step work through an executive, persistent named managers, focused workers, and independent review. Use when work divides across parallel workstreams or requires an independent review gate.
+description: Organize and execute complex multi-step work through an executive, persistent named managers, focused workers, and independent review. Use when work divides across parallel workstreams, requires an independent review gate, or needs takeover of an interrupted run.
 version: 0.1.0
 tools: Bash, Read, Write, Edit, Task
 ---
