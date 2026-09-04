@@ -52,7 +52,7 @@ A nontrivial mechanism without concrete justification is a Required finding. Rev
 
 Preserve original findings. Delegate corrections to Workers and repeat independent review. Stop and return outstanding findings to the Executive after two failed review rounds (unless the charter dictates a stricter limit).
 
-Provide the Executive only the facts required by the SKILL.md reporting and Close contracts. Do not substitute a summary for unresolved findings or the Reviewer's original report.
+Provide the Executive only the facts required by the SKILL.md reporting and Close contracts. Notify the Executive promptly when surfaces move (integrated commits, pushed branches, draft PRs) and when review completes, ensuring the Executive can meet its reporting requirements without silence. Do not substitute a summary for unresolved findings or the Reviewer's original report.
 
 ## Acceptance and Cleanup
 

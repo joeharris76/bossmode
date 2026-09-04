@@ -57,8 +57,9 @@ Success means the implementation sustains 100 requests per minute and allows
 bursts of 20 requests, and passes focused tests. Limit changes to auth middleware
 ```
 
-The executive session should report outcomes, decisions, blockers, and protected
-approvals. Worker and run mechanics stay in the background unless you ask for them.
+The executive session reports outcomes, decisions, surface movements, blockers,
+and protected approvals without silence or waiting for prompts. Worker and run
+mechanics stay in the background unless you ask for them.
 
 ## Repository purpose
 

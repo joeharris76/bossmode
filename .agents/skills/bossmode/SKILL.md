@@ -55,7 +55,7 @@ Solution fit means providing the smallest maintainable proof of required behavio
 
 Prefer a hard sandbox or tool allowlist. Otherwise, use findings-only instructions forbidding edits, commits, pushes, and other mutations.
 
-Operate from live session state, Git, and durable artifacts. Do not invent a registry, scheduler, generation protocol, background polling loop, or clock-based health system. Transient logs are for diagnostics, not durable Close evidence.
+Operate from live session state, Git, and durable artifacts. Do not invent a registry, scheduler, generation protocol, background polling loop, or clock-based health system. Forbidding a clock-based health system does not excuse silence. Transient logs are for diagnostics, not durable Close evidence.
 
 ## Executive Reporting
 
@@ -79,9 +79,12 @@ Valid statuses:
 - Progress while open: `in_progress`, `waiting_user`, `blocked`, `verified_awaiting_acceptance`.
 - Terminal when closed: `complete`, `partial`, `cancelled`, `superseded`.
 
-Material updates must cover: instruction coverage (delivered, open, user-approved deferred); final decisions and superseded interpretations; durable verification evidence and independent-review state; material risks, blockers, and protected approvals; and the state reached on every in-scope surface (local worktree, local commit, pushed branch, open PR, merged, downstream repository, live). Never report actions above the achieved state, and Fully applied is false unless every user-authorized surface hit its target. Provide the next action.
+Disallow silence. The Executive must never remain silent while work proceeds or withhold updates until the user asks. Reporting is event-driven; do not invent periodic snapshot timers or background watches when runtime event notifications (such as subagent completions) already wake the session. Send a user-facing update whenever:
+- A Manager is paired at start, replaced, or closed (report using the topic name).
+- An in-scope Git or publication surface moves (Worker commit integrated locally, branch pushed, draft PR opened or updated, merge completed, live deployment).
+- A material gate or state change occurs (independent review completes or returns findings, a blocker arises, or user input or protected approval is required).
 
-Report Manager pairing at start, replacement, and Close using the topic name. Suppress Worker IDs, models, worktrees, and command chronology unless requested or needed for an exception.
+Material updates must cover: instruction coverage (delivered, open, user-approved deferred); final decisions and superseded interpretations; durable verification evidence and independent-review state; material risks, blockers, and protected approvals; and the state reached on every in-scope surface (local worktree, local commit, pushed branch, open PR, merged, downstream repository, live). Never report actions above the achieved state, and Fully applied is false unless every user-authorized surface hit its target. Provide the next action. Suppress Worker IDs, models, worktrees, and command chronology unless requested or needed for an exception.
 
 ## Execution and Close
 
