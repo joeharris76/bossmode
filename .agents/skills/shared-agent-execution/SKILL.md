@@ -11,15 +11,14 @@ Use this skill to select models, set reasoning effort, or configure agent harnes
 
 Tiers describe roles, not just quality. Match the model to the task's complexity and risk.
 
-**Selection Rule**: Choose the tier below. For native dispatch, use the model name directly. For external harnesses, use the specific identifier from [references/external-harnesses.md](references/external-harnesses.md).
-Defaults to `medium`. Use `max` effort only for Tier 1 adversarial review. Use `low` for repetitive bulk work.
+**Selection Rule**: Choose the tier below. For native dispatch, use the model name directly. For external harnesses, use the specific identifier from [references/external-harnesses.md](references/external-harnesses.md). Select the tier before the effort level: additional effort can improve bounded lower-tier work but does not substitute for a higher capability tier.
 
 - **Tier 1: Strategic**
   - Models: `gpt-5.6-sol`, `claude-fable-5`
-  - Usage: Strategic planning, architecture, high-risk tradeoffs, and final adversarial review.
+  - Usage: Strategic planning, architecture, high-risk tradeoffs, and final high-risk cross-cutting review.
 - **Tier 2: Generalist**
   - Models: `gpt-5.6-terra`, `claude-opus-5`, `grok-4.6`, `gemini-3.7-flash-high`, `muse-spark-1.2`, `muse-spark-1.2-contributor`
-  - Usage: Management, decomposition, integration, investigation, and routine review.
+  - Usage: Management, decomposition, integration, investigation, bounded adversarial review, and routine review.
 - **Tier 3: Contributor**
   - Models: `gpt-5.6-luna`, `claude-sonnet-5`, `grok-4.5`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low` (low-cost bulk)
   - Usage: Focused implementation, bounded research, bulk work, and parallel coverage.
@@ -27,6 +26,20 @@ Defaults to `medium`. Use `max` effort only for Tier 1 adversarial review. Use `
 > Note: pi/jcode prefixed forms (openai-codex/, muse-spark/) map to same tier as unprefixed base.
 
 ## Reasoning Effort
+
+The **tier-specific effort ceiling** is the highest effort permitted for a given tier and assignment: the level set or implied by the tier recommendations below, capped for Tier 1 `xhigh`/`max`/`ultra` by the special-effort gate stated there. No other clause restates that list or its conditions.
+
+Managers are persistent and span task types: select a Manager's own tier and effort at Tier 2 `high` by default. For a Manager whose scope is genuinely strategic or high-risk, deliberately select Tier 1 `high` instead, with the reason recorded; the tier-specific effort ceiling still applies.
+
+Single-shot Workers and Reviewers: recommend effort by tier and work type.
+
+- **Tier 1:** `medium` for strategic planning. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request for that specific effort level as the sole authorization; a charter, agent prompt, retry, policy, or history alone does not qualify. The calling skill's authority and origin rules govern how that request is relayed to and verified by a delegated agent before it acts.
+- **Tier 2:** `high` for bounded cognitive work, including bounded adversarial review. `medium` for routine mechanical work. `xhigh` for difficult bounded investigation, integration, decomposition, or adversarial review, where the harness supports it.
+- **Tier 3:** `high` for bounded implementation or research. `medium` for repetitive work. `xhigh` for difficult bounded work where the harness supports it. `low` only for deterministic, no-judgment work.
+
+For single-shot work not covered by a tier's recommendation above, default to `medium`; this fallback never overrides any explicit tier recommendation above.
+
+Retries and replacements never auto-escalate tier or effort. If a task genuinely needs higher capability, select the higher tier deliberately; the tier-specific effort ceiling still applies.
 
 | Harness | Flag | Supported Values (Lowest to Highest) |
 | :--- | :--- | :--- |
@@ -38,7 +51,7 @@ Defaults to `medium`. Use `max` effort only for Tier 1 adversarial review. Use `
 | **codex** | `-c model_reasoning_effort="<level>"` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | **prime-agent** | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
-For `jcode`, `opencode`, `hermes`, `goose`, and `aider`, select effort through model variants (e.g., `gemini-3.7-flash-tiered`, `:thinking` suffix) or provider settings.
+Across all tiers, use the highest harness-supported effort no greater than the selected or recommended level, except when the selected level is a Tier 1 effort covered by the special-effort gate: if the chosen harness cannot represent that exact level, do not substitute a different gated effort. Use at most Tier 1 `high` and report the limitation, or require a new user request naming an effort level the harness supports. For harnesses without an effort flag (`jcode`, `opencode`, `hermes`, `goose`, `aider`), constrain model-variant or provider selection instead (e.g., `gemini-3.7-flash-tiered`, `:thinking` suffix).
 
 ## Dispatch Rules
 

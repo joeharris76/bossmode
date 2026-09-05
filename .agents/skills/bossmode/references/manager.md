@@ -23,7 +23,7 @@ Do not author source changes yourself. Integrate verified Worker commits without
 
 ## Dispatch and Evidence
 
-Follow the sibling `shared-agent-execution` skill to select capabilities for Managers, Workers, and Reviewers.
+Follow the sibling `shared-agent-execution` skill to select capabilities for Managers, Workers, and Reviewers. For the Tier 1 special-effort levels, the Manager's verification duty is the Executive's Special-Effort Relay in `bossmode/SKILL.md`; do not restate that gate here.
 Each assignment must state its goal, path boundary, permissions, success criteria, verification, and return contract. End every Worker assignment (including initial and correction assignments) after all operational content with a brief encouragement (wording not normative; validators must not check prose). The encouragement does not change those terms. Do not include this closing in Independent Reviewer prompts, steering messages, or Executive reports.
 
 For writing assignments, choose the first sufficient option: no change, an existing repository pattern, an existing dependency or platform capability, or the smallest new implementation. Check the named worktree and branch state before starting work. Run the narrowest proving checks before project-wide verification.
@@ -38,7 +38,9 @@ Require Workers to return bounded summaries containing changed paths, the exact 
 
 Steer an active assignment only via a channel that supports reliable steering. Otherwise, interrupt it or let it finish, reject stale output, and re-delegate using the correction delta. Never assume pause or follow-up support.
 
-Integrate only assignments that satisfy their contracts. Give the Independent Reviewer the original user outcome, repository constraints, exact integrated revision, diff, and verification evidence. Do not prescribe the verdict or treat implementation-derived criteria as authority.
+Integrate only assignments that satisfy their contracts. Give the Independent Reviewer the original user outcome, repository constraints, exact integrated revision, diff, authoritative paths, and verification evidence. The Reviewer may freely inspect any authoritative source within its read-only permissions; review is not limited to this packet. Producing new evidence beyond those permissions is a Worker assignment directed by the Manager, not a role for the Reviewer to delegate. Do not prescribe the verdict or treat implementation-derived criteria as authority.
+
+Define the review key as the original outcome, applicable constraints, scope, and exact revision under review. Dispatch one reviewer per key by default, with no concurrent duplicate review of the same key by default. Reuse a prior verdict only while the key is unchanged, and only when it is complete, unconditional, independent (the reviewer did not author the work), and includes the `Solution fit` section; a changed key requires a new review. A second reviewer on the same key is permitted only when a direct user instruction requests redundant review or repository policy requires it, with that origin recorded; never infer this from terms such as `adversarial` or `independent`. Otherwise, a second reviewer is permitted only on a disjoint key, never as a duplicate review of the same key, except the sequential same-key re-review below.
 
 Every review must include a `Solution fit` section answering:
 
@@ -52,7 +54,11 @@ Exception: The charter/assignment encouragement closing is the sole allowed non-
 
 A nontrivial mechanism without concrete justification is a Required finding. Reviews lacking the `Solution fit` section cannot return a PASS.
 
-Preserve original findings. Delegate corrections to Workers and repeat independent review. Stop and return outstanding findings to the Executive after two failed review rounds (unless the charter dictates a stricter limit).
+A verdict rejected under the Executive's self-confirming-PASS gate (SKILL.md's Close reconciliation) or missing the `Solution fit` section is not a valid verdict and does not consume a review round. Re-review at the same tier and effort with the specific validity defect named. If the same validity defect recurs, permit one deliberate tier step-up with the reason recorded; never escalate effort automatically, and never exceed the tier-specific effort ceiling in `shared-agent-execution/SKILL.md`. If no valid verdict results after that re-review, return the blocker to the Executive.
+
+Resume an incomplete reviewer only when its session is verifiably live and the review key is unchanged; unlike a Manager, a reviewer owns no write workspace or path claims, so this lighter test suffices. Otherwise, allow one sequential same-tier, same-effort replacement. The attempt plus its replacement counts as one review attempt and does not by itself consume a failed review round.
+
+Preserve original findings. Delegate corrections to Workers and repeat independent review. A failed review round is a valid verdict with unresolved Critical or Required findings. Stop and return outstanding findings to the Executive after two failed review rounds (unless the charter dictates a stricter limit).
 
 Provide the Executive only the facts required by the SKILL.md reporting and Close contracts. Notify the Executive promptly when surfaces move (integrated commits, pushed branches, draft PRs) and when review completes, ensuring the Executive can meet its reporting requirements without silence. Do not substitute a summary for unresolved findings or the Reviewer's original report.
 
