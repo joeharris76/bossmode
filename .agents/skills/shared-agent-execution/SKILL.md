@@ -51,7 +51,7 @@ Retries and replacements never auto-escalate tier or effort. If a task genuinely
 | **codex** | `-c model_reasoning_effort="<level>"` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | **prime-agent** | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 
-Across all tiers, use the highest harness-supported effort no greater than the selected or recommended level. For harnesses without an effort flag (`jcode`, `opencode`, `hermes`, `goose`, `aider`), constrain model-variant or provider selection instead (e.g., `gemini-3.7-flash-tiered`, `:thinking` suffix).
+Across all tiers, use the highest harness-supported effort no greater than the selected or recommended level, except when the selected level is a Tier 1 effort covered by the special-effort gate: if the chosen harness cannot represent that exact level, do not substitute a different gated effort. Use at most Tier 1 `high` and report the limitation, or require a new user request naming an effort level the harness supports. For harnesses without an effort flag (`jcode`, `opencode`, `hermes`, `goose`, `aider`), constrain model-variant or provider selection instead (e.g., `gemini-3.7-flash-tiered`, `:thinking` suffix).
 
 ## Dispatch Rules
 
