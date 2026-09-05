@@ -27,17 +27,19 @@ Tiers describe roles, not just quality. Match the model to the task's complexity
 
 ## Reasoning Effort
 
-Managers are persistent and span task types: launch Manager dispatches at Tier 2 `high` by default. For a Manager whose scope is genuinely strategic or high-risk, deliberately select Tier 1 `high` instead; all tier-specific effort ceilings still apply.
+The **tier-specific effort ceiling** is the highest effort permitted for a given tier and assignment: the level set or implied by the tier recommendations below, capped for Tier 1 `xhigh`/`max`/`ultra` by the special-effort gate stated there. No other clause restates that list or its conditions.
+
+Managers are persistent and span task types: select a Manager's own tier and effort at Tier 2 `high` by default. For a Manager whose scope is genuinely strategic or high-risk, deliberately select Tier 1 `high` instead, with the reason recorded; the tier-specific effort ceiling still applies.
 
 Single-shot Workers and Reviewers: recommend effort by tier and work type.
 
-- **Tier 1:** `medium` for strategic planning. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request as the sole authorization; a charter, agent prompt, retry, policy, or history alone does not qualify. The calling skill's authority and origin rules govern how that request is relayed to and verified by a delegated agent before it acts.
+- **Tier 1:** `medium` for strategic planning. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request for that specific effort level as the sole authorization; a charter, agent prompt, retry, policy, or history alone does not qualify. The calling skill's authority and origin rules govern how that request is relayed to and verified by a delegated agent before it acts.
 - **Tier 2:** `high` for bounded cognitive work, including bounded adversarial review. `medium` for routine mechanical work. `xhigh` for difficult bounded investigation, integration, decomposition, or adversarial review, where the harness supports it.
 - **Tier 3:** `high` for bounded implementation or research. `medium` for repetitive work. `xhigh` for difficult bounded work where the harness supports it. `low` only for deterministic, no-judgment work.
 
-For single-shot work not covered by a tier's recommendation above, default to `medium`; this fallback never overrides an explicit Tier 2 or Tier 3 `high` recommendation.
+For single-shot work not covered by a tier's recommendation above, default to `medium`; this fallback never overrides any explicit tier recommendation above.
 
-Retries and replacements never auto-escalate tier or effort. If a task genuinely needs higher capability, select the higher tier deliberately; tier-specific effort ceilings still apply.
+Retries and replacements never auto-escalate tier or effort. If a task genuinely needs higher capability, select the higher tier deliberately; the tier-specific effort ceiling still applies.
 
 | Harness | Flag | Supported Values (Lowest to Highest) |
 | :--- | :--- | :--- |
