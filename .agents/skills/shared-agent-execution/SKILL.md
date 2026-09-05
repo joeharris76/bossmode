@@ -31,7 +31,7 @@ Managers are persistent and span task types: launch Manager dispatches at Tier 2
 
 Single-shot Workers and Reviewers: recommend effort by tier and work type.
 
-- **Tier 1:** `medium` for bounded strategic evaluation. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request; an Executive/Manager may relay one only when it carries `user` origin and exact source under bossmode/SKILL.md's origin rule — a charter, agent prompt, retry, policy, or history alone does not qualify.
+- **Tier 1:** `medium` for bounded strategic evaluation. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request as the sole authorization; a charter, agent prompt, retry, policy, or history alone does not qualify. Under bossmode, the Executive may record that request verbatim with its exact source in the charter as evidence — the charter itself does not create `user` origin — and the Manager may act only after reconciling the record to the direct user instruction under bossmode/SKILL.md's Origins rule.
 - **Tier 2:** `high` for bounded cognitive work, including bounded adversarial review. `medium` for routine mechanical work. `xhigh` for difficult bounded investigation, integration, decomposition, or adversarial review, where the harness supports it.
 - **Tier 3:** `high` for bounded implementation or research. `medium` for repetitive work. `xhigh` for difficult bounded work where the harness supports it. `low` only for deterministic, no-judgment work.
 
