@@ -15,7 +15,7 @@ Tiers describe roles, not just quality. Match the model to the task's complexity
 
 - **Tier 1: Strategic**
   - Models: `gpt-5.6-sol`, `claude-fable-5`
-  - Usage: Strategic planning, architecture, high-risk tradeoffs, bounded strategic evaluation, and final high-risk cross-cutting review.
+  - Usage: Strategic planning, architecture, high-risk tradeoffs, and final high-risk cross-cutting review.
 - **Tier 2: Generalist**
   - Models: `gpt-5.6-terra`, `claude-opus-5`, `grok-4.6`, `gemini-3.7-flash-high`, `muse-spark-1.2`, `muse-spark-1.2-contributor`
   - Usage: Management, decomposition, integration, investigation, bounded adversarial review, and routine review.
@@ -27,15 +27,17 @@ Tiers describe roles, not just quality. Match the model to the task's complexity
 
 ## Reasoning Effort
 
-Managers are persistent and span task types: launch Manager dispatches at Tier 2 `high`.
+Managers are persistent and span task types: launch Manager dispatches at Tier 2 `high` by default. For a Manager whose scope is genuinely strategic or high-risk, deliberately select Tier 1 `high` instead; all tier-specific effort ceilings still apply.
 
 Single-shot Workers and Reviewers: recommend effort by tier and work type.
 
-- **Tier 1:** `medium` for bounded strategic evaluation. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request as the sole authorization; a charter, agent prompt, retry, policy, or history alone does not qualify. Under bossmode, the Executive may record that request verbatim with its exact source in the charter as evidence — the charter itself does not create `user` origin — and the Manager may act only after reconciling the record to the direct user instruction under bossmode/SKILL.md's Origins rule.
+- **Tier 1:** `medium` for strategic planning. `high` for architecture, high-risk tradeoffs, and final high-risk cross-cutting review. `xhigh`, `max`, and `ultra` require an explicit current-task user request as the sole authorization; a charter, agent prompt, retry, policy, or history alone does not qualify. The calling skill's authority and origin rules govern how that request is relayed to and verified by a delegated agent before it acts.
 - **Tier 2:** `high` for bounded cognitive work, including bounded adversarial review. `medium` for routine mechanical work. `xhigh` for difficult bounded investigation, integration, decomposition, or adversarial review, where the harness supports it.
 - **Tier 3:** `high` for bounded implementation or research. `medium` for repetitive work. `xhigh` for difficult bounded work where the harness supports it. `low` only for deterministic, no-judgment work.
 
-Retries and replacements never auto-escalate tier or effort. If a task genuinely needs higher capability, select the higher tier deliberately; the Tier 1 restriction on `xhigh` and above still applies.
+For single-shot work not covered by a tier's recommendation above, default to `medium`; this fallback never overrides an explicit Tier 2 or Tier 3 `high` recommendation.
+
+Retries and replacements never auto-escalate tier or effort. If a task genuinely needs higher capability, select the higher tier deliberately; tier-specific effort ceilings still apply.
 
 | Harness | Flag | Supported Values (Lowest to Highest) |
 | :--- | :--- | :--- |
