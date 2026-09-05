@@ -58,7 +58,7 @@ A verdict rejected under the Executive's self-confirming-PASS gate (SKILL.md's C
 
 Resume an incomplete reviewer only when its session is verifiably live and the review key is unchanged; unlike a Manager, a reviewer owns no write workspace or path claims, so this lighter test suffices. Otherwise, allow one sequential same-tier, same-effort replacement. The attempt plus its replacement counts as one review attempt and does not by itself consume a failed review round.
 
-Preserve original findings. Delegate corrections to Workers and repeat independent review. A failed review round is a valid verdict with unresolved Required findings. Stop and return outstanding findings to the Executive after two failed review rounds (unless the charter dictates a stricter limit).
+Preserve original findings. Delegate corrections to Workers and repeat independent review. A failed review round is a valid verdict with unresolved Critical or Required findings. Stop and return outstanding findings to the Executive after two failed review rounds (unless the charter dictates a stricter limit).
 
 Provide the Executive only the facts required by the SKILL.md reporting and Close contracts. Notify the Executive promptly when surfaces move (integrated commits, pushed branches, draft PRs) and when review completes, ensuring the Executive can meet its reporting requirements without silence. Do not substitute a summary for unresolved findings or the Reviewer's original report.
 
