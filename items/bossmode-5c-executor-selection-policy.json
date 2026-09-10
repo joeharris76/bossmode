@@ -1,0 +1,315 @@
+{
+  "context": "Diff the PR 6 ADR and skill changes against current main, retain only evidence-backed selection guidance, and avoid any runtime or schema changes. Decision gate: stop if the policy requires a capability not present in current Herdr or native agent runtimes, changes default execution behavior, or introduces untested user-facing CLI vocabulary.",
+  "description": "Publish the executor-selection ADR and matching documentation as a separate policy-only change because it is tangential to registry, team, cleanup, and review mechanics. Reconcile the proposed ADR 0005 text against current runtime capabilities and naming policy before carrying it forward from PR 6.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Bundle executor policy with team runtime implementation",
+        "instead": "Publish it as a documentation-only PR",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "why": "It is independently reviewable and does not share the runtime dependency chain"
+      },
+      {
+        "dont": "Copy PR 6 ADR text without revalidation",
+        "instead": "Recheck each capability claim against current authoritative state",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "why": "Runtime and model capabilities can drift"
+      },
+      {
+        "dont": "Introduce aspirational runtime behavior through normative documentation",
+        "instead": "Describe only current behavior and explicitly label deferred decisions",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "why": "Required behavior must exist in deterministic code or an approved roadmap"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T13:52:52Z",
+      "completed_pr": 11,
+      "created_at": "2026-08-25T22:44:08Z",
+      "worktree": "bossmode.wt-executor-selection-policy"
+    },
+    "preserves": [
+      {
+        "behavior": "Executor guidance remains capability-based rather than model-brand-based where possible.",
+        "item_id": "bossmode-5c-executor-selection-policy"
+      },
+      {
+        "behavior": "No current agent or external worker capability is asserted without live or repository evidence.",
+        "item_id": "bossmode-5c-executor-selection-policy"
+      },
+      {
+        "behavior": "One canonical vocabulary is used across ADR, workflow, README, and skill.",
+        "item_id": "bossmode-5c-executor-selection-policy"
+      },
+      {
+        "behavior": "This TODO changes no runtime behavior, schema, CLI command, or test contract.",
+        "item_id": "bossmode-5c-executor-selection-policy"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "current dispatch and model guidance",
+        "decision": "extend",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "path": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "concept": "external runtime authority boundary",
+        "decision": "extend",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "path": "docs/adr/0001-herdr-runtime-boundary.md"
+      },
+      {
+        "concept": "agent organization and selection context",
+        "decision": "extend",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "path": "docs/adr/0002-agent-organization-design.md"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0004-parallel-manager-teams.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0006-registry-worktree-ownership.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "scripts/**"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/*.py"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "tests/**"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": "README.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0001-herdr-runtime-boundary.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0002-agent-organization-design.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T13:51:29Z",
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Documentation does not break repository tests",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T13:52:43Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T13:52:43Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T13:52:44Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T13:52:44Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "if git diff --name-only origin/main...HEAD | rg -v '^(docs/|README.md$|\\.agents/skills/bossmode/SKILL.md$|src/bossmode/skills/bossmode/SKILL.md$)'; then exit 1; fi",
+        "description": "Diff is documentation and skill files only",
+        "expected": "exit 0",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "last_result": "fail",
+        "last_run": "2026-08-26T13:52:44Z",
+        "seq": 7,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "needs_wid": "w4",
+        "wid": "w5"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Inspected main ADR 0001, ADR 0002, README, docs/agent-workflow.md, both skill copies, PR6 ADR 0005, src/bossmode/cli.py:127-130, src/bossmode/registry.py:98-117, and live help for herdr 0.8.2, agy 1.1.20, claude 2.1.245, codex 0.149.1. Evidence: Bossmode records caller-supplied role/model plus agent_kind/session identity; supported launch CLIs accept model/kind choices, but Bossmode has no structured observed provider/model-family/model proof or selector.",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "notes": null,
+        "started_at": "2026-08-25T23:10:16Z",
+        "started_branch": "docs/executor-selection-policy",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-executor-selection-policy",
+        "status": "done",
+        "summary": "Re-read current ADR 0001, ADR 0002, workflow, skill, and PR 6 ADR 0005; list every current capability claim and its evidence",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Retained durable principles: explicit supervisor choice, capability/permission/role fit, reserve-before-launch, authoritative live identity, independence not inferred from provider/model labels, and evidence-graded future enforcement. Excluded runtime version/kind inventories, model-brand recommendations, capacity/pricing/quotas, automatic routing, provider adapters, and team-runtime claims from unmerged PR6.",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "notes": null,
+        "started_at": "2026-08-25T23:10:53Z",
+        "started_branch": "docs/executor-selection-policy",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-executor-selection-policy",
+        "status": "done",
+        "summary": "Separate durable selection principles from current model names, temporary availability, implementation details, and speculative future behavior",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Added docs/adr/0005-defer-executor-selection.md with current-MVP scope, explicit capability-based selection decision, rejected alternatives, compatibility statement, and six reconsideration gates; removed PR6 dependencies on unmerged team/runtime behavior.",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "notes": null,
+        "started_at": "2026-08-25T23:10:54Z",
+        "started_branch": "docs/executor-selection-policy",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-executor-selection-policy",
+        "status": "done",
+        "summary": "Write ADR 0005 with explicit scope, decision, rejected alternatives, compatibility, and no runtime side effects",
+        "wid": "w2"
+      },
+      {
+        "evidence": "Updated README.md, docs/agent-workflow.md, .agents/skills/bossmode/SKILL.md, and src/bossmode/skills/bossmode/SKILL.md with concise explicit-selection guidance; skill copies are byte-identical.",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "notes": null,
+        "started_at": "2026-08-25T23:12:22Z",
+        "started_branch": "docs/executor-selection-policy",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-executor-selection-policy",
+        "status": "done",
+        "summary": "Update workflow, README, and both skill copies with concise policy-consistent guidance",
+        "wid": "w3"
+      },
+      {
+        "evidence": "Passed tracker scope check for exactly five allowed docs/skill files; cmp skill parity; uv run pytest (191 passed, 91.26%); Ruff check/format; canonical UAT (28/28); git diff --check; docs/skill-only diff inspection; tracker lint (0 findings). No src/*.py, schema, CLI, tests, scripts, pyproject, lock, or PR6 commit changes.",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "notes": null,
+        "started_at": "2026-08-25T23:12:22Z",
+        "started_branch": "docs/executor-selection-policy",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-executor-selection-policy",
+        "status": "done",
+        "summary": "Verify source and packaged skill parity and inspect the diff for runtime, schema, CLI, or test behavior changes",
+        "wid": "w4"
+      },
+      {
+        "evidence": "Merged into main in PR 11 (9c907e4d66f50091b2be6e67a409fb8117ecb560). Verified docs-only diff, skill parity, and 28/28 UAT.",
+        "item_id": "bossmode-5c-executor-selection-policy",
+        "notes": null,
+        "started_at": "2026-08-26T13:51:27Z",
+        "started_branch": "fix/bossmode-dispatch-defects",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: approve independently only if every capability claim is current and the diff is documentation-only",
+        "wid": "w5"
+      }
+    ]
+  }
+}

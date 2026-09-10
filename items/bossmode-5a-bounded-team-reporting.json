@@ -1,0 +1,339 @@
+{
+  "context": "Add a read-only reporting query layer and canonical team status output in human and JSON forms. Select the latest accepted attempt deterministically, summarize cleanup by resource status, and separate outcomes from blockers and approvals. Decision gate: stop if report generation triggers reconciliation mutations, external cleanup, database migration, unbounded artifact inclusion, or secret-bearing subprocess output.",
+  "description": "Expose team outcomes, accepted heads, independent evaluations, outstanding claims, owned-resource cleanup state, waiting_user conditions, genuine blockers, and protected approvals without changing lifecycle state. Reports must be bounded, deterministic, redacted, and explicit about stale or unreconciled external evidence.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Collapse waiting_user, blocked, failed, and pending approval into one status",
+        "instead": "Expose separate typed sections and canonical state values",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "why": "Operators need different next actions"
+      },
+      {
+        "dont": "Dump full artifacts or prompts into status JSON",
+        "instead": "Return bounded metadata and redacted summaries",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "why": "Output becomes unbounded and may disclose sensitive data"
+      },
+      {
+        "dont": "Reconcile or clean resources as a side effect of status",
+        "instead": "Report stale evidence and require the explicit reconcile or closeout command",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "why": "A read command must not change lifecycle or external state"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_item": "bossmode-4-durable-team-closeout"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "created_at": "2026-08-25T22:44:08Z",
+      "worktree": "bossmode.wt-bounded-team-reporting"
+    },
+    "preserves": [
+      {
+        "behavior": "Output remains bounded and does not expose prompts, credentials, environment variables, or raw subprocess output.",
+        "item_id": "bossmode-5a-bounded-team-reporting"
+      },
+      {
+        "behavior": "Reporting is read-only and never substitutes stored identifiers for live authority.",
+        "item_id": "bossmode-5a-bounded-team-reporting"
+      },
+      {
+        "behavior": "Status and outcome keep their distinct meanings.",
+        "item_id": "bossmode-5a-bounded-team-reporting"
+      },
+      {
+        "behavior": "Waiting-user work, genuine blockers, cleanup residuals, and protected approvals are separate fields.",
+        "item_id": "bossmode-5a-bounded-team-reporting"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "executive-level outcome and blocker reporting",
+        "decision": "extend",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "current task and run show payloads and PR 6 team finalization selection",
+        "decision": "extend",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "README.md"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/reporting.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "kind": "only_modify",
+        "path_glob": "tests/test_reporting.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_reporting.py tests/test_registry.py tests/test_cli.py",
+        "description": "Reporting contract and redaction tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "last_result": null,
+        "last_run": null,
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case team-reporting",
+        "description": "Deterministic reporting UAT",
+        "expected": "exit 0 and repeated JSON output is byte-identical",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "last_result": null,
+        "last_run": null,
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "last_result": null,
+        "last_run": null,
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "last_result": null,
+        "last_run": null,
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "last_result": null,
+        "last_run": null,
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "last_result": null,
+        "last_run": null,
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "needs_wid": "w5",
+        "wid": "w6"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Inventory PR 6 reporting fields and classify each as authoritative registry data, live external evidence, derived summary, or unsafe detail",
+        "wid": "w0"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Define stable human and JSON contracts with size, item-count, string-length, ordering, truncation, and redaction limits",
+        "wid": "w1"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement deterministic latest-attempt, evaluator, accepted-head, blocker, approval, and owned-resource cleanup summaries",
+        "wid": "w2"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Add explicit stale and unreconciled markers without claiming live state from stored Herdr or Git identifiers",
+        "wid": "w3"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Test large teams, long strings, many artifacts, secret-like values, missing live evidence, mixed outcomes, and stable JSON ordering",
+        "wid": "w4"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Update CLI and workflow documentation with exact schemas and examples for waiting_user, blocker, cleanup, and approval sections",
+        "wid": "w5"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5a-bounded-team-reporting",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Decision gate: verify byte-identical repeated JSON output and zero registry or external-runtime mutations during report generation",
+        "wid": "w6"
+      }
+    ]
+  }
+}

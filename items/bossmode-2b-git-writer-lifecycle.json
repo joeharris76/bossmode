@@ -1,0 +1,388 @@
+{
+  "context": "Add canonical writer provision and writer retire operations backed by Git porcelain and the owned-resource ledger. Record repository common directory, worktree administrative ID, canonical path, branch full ref, base SHA, and creation head. Decision gate: never remove a worktree or branch unless live Git identity matches the receipt, no active claim or process remains, the worktree is clean, and the accepted SHA is retained by an authoritative ref.",
+  "description": "Make branch and linked-worktree creation and cleanup symmetric. Bossmode must reserve ownership before creating either resource, retain immutable Git identity and accepted-head evidence, and remove only clean, receipt-matched resources whose work is durably reachable. Dirty, changed, protected, foreign, or ambiguous resources keep closeout incomplete instead of being forced away.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Force-remove a dirty worktree or force-delete a branch",
+        "instead": "Keep closeout incomplete and report the exact blocking evidence",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "why": "That can destroy uncommitted or externally advanced work"
+      },
+      {
+        "dont": "Run git worktree prune as generic closeout",
+        "instead": "Reconcile and retire the exact receipt-matched target",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "why": "It can affect unrelated administrative entries"
+      },
+      {
+        "dont": "Treat a branch name or filesystem path as immutable ownership",
+        "instead": "Match Git common directory, administrative identity, full ref, and expected head",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "why": "Both can be deleted and reused"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_item": "bossmode-1a-owned-resource-ledger"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_item": "bossmode-1b-team-hierarchy"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T21:55:08Z",
+      "completed_pr": 18,
+      "created_at": "2026-08-25T22:40:53Z",
+      "worktree": "bossmode.wt-git-writer-lifecycle"
+    },
+    "preserves": [
+      {
+        "behavior": "A changed owned branch is preserved and reported rather than reset or force-deleted.",
+        "item_id": "bossmode-2b-git-writer-lifecycle"
+      },
+      {
+        "behavior": "Branch deletion occurs only after worktree removal and accepted-head reachability proof.",
+        "item_id": "bossmode-2b-git-writer-lifecycle"
+      },
+      {
+        "behavior": "Primary, default, configured protected, externally created, dirty, and ambiguous Git resources are never deleted.",
+        "item_id": "bossmode-2b-git-writer-lifecycle"
+      },
+      {
+        "behavior": "Worktree inventory ambiguity for an unrelated entry does not block a target whose identity is independently provable.",
+        "item_id": "bossmode-2b-git-writer-lifecycle"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "primary and linked-worktree distinction",
+        "decision": "extend",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "path": "docs/adr/0006-registry-worktree-ownership.md"
+      },
+      {
+        "concept": "clean worktree and exact-head acceptance rules",
+        "decision": "extend",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "existing writer identity and exact-head validation from PR 6",
+        "decision": "extend",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/git_runtime.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/resources.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_git_runtime.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_resources.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_git_runtime.py tests/test_resources.py tests/test_registry.py tests/test_cli.py",
+        "description": "Git writer lifecycle tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "last_result": "fail",
+        "last_run": "2026-08-26T21:55:07Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case git-writer-lifecycle",
+        "description": "Disposable Git lifecycle UAT",
+        "expected": "exit 0 and only receipt-matched safe resources are removed",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:54:09Z",
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "last_result": "fail",
+        "last_run": "2026-08-26T21:54:02Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:54:05Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:54:05Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "if git diff --unified=0 origin/main...HEAD -- src/bossmode | rg -n '^\\+.*(worktree remove --force|branch -D|reset --hard|clean -f)'; then exit 1; fi",
+        "description": "No force cleanup commands",
+        "expected": "exit 0",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:54:05Z",
+        "seq": 7,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w6",
+        "wid": "w7"
+      },
+      {
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "needs_wid": "w7",
+        "wid": "w8"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Inventoried Git worktree porcelain: worktree/HEAD/branch/locked/prunable/detached fields via git worktree list --porcelain, admin IDs from .git/worktrees/<id> + .git gitdir file, branch refs refs/heads/<name>, lock+prunable flags, protected branches {main,master,develop} plus bossmode.protected-branch config, process-use (mounted/locked/dirty). Captured in src/bossmode/git_runtime.py parse_worktree_porcelain/list_worktrees + inventory_summary.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:38:53Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Inventory Git worktree porcelain fields, administrative IDs, branch refs, lock and prunable states, protected branches, and process-use evidence",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Defined writer receipt common_dir/admin_id/canonical_path/branch/base_sha/creation_head with canonical_branch_ref, is_protected_branch (main/master/develop + configured), base ancestry checked outside receipt, lifecycle uniqueness via canonical_key_for_git_branch + generation, accepted-head reachability via rev-parse reachability; primary-exclusion primary_checkout_excluded(). In src/bossmode/git_runtime.py build_writer_receipt/primary_checkout_excluded.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:38:59Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Define writer ownership receipt, primary-checkout exclusion, branch naming, base ancestry, lifecycle uniqueness, and accepted-head reachability rules",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Implemented reserve-before-create: reserve git_branch+git_worktree via owned_resources before any git; git branch create and worktree add; rollback via orphan_owned_resource on every failure boundary, never force-remove. In src/bossmode/git_runtime.py provision_branch/provision_worktree.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:41:52Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement reserve-before-create for branch and linked worktree with rollback or orphan recording at every failure boundary",
+        "wid": "w2"
+      },
+      {
+        "evidence": "Implemented target-scoped live reconciliation: _is_clean_worktree, _head_matches_receipt, _branch_ref_matches, locked/prunable via porcelain, protected-branch check, reconcile_writer_target returns blocked+evidence safe_to_retire without mutating external state or broad prune. In src/bossmode/git_runtime.py reconcile_writer_target (432 lines).",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:42:58Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement target-scoped live reconciliation for clean state, exact head, branch ref, lock, prunable status, claims, and protected branches",
+        "wid": "w3"
+      },
+      {
+        "evidence": "Idempotent retire: _fence_or_skip placeholder, retire_writer(worktree_path, branch, receipt, cwd) fences, runs target-scoped reconcile_writer_target, then git worktree remove <path> only if clean/matched (already gone => success), then git rev-parse --verify + merge-base --is-ancestor / branch --contains for accepted-head reachability, then git branch -d (not -D) only if unchanged; no --force, no broad prune. In git_runtime.py retire_writer.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:43:15Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement idempotent retire: fence use, remove matched clean worktree, then delete only an unchanged safely reachable owned branch",
+        "wid": "w4"
+      },
+      {
+        "evidence": "Added partial uniqueness: dropped UNIQUE on canonical_key column, added CREATE UNIQUE INDEX idx_owned_resources_canonical_active ON owned_resources(canonical_key) WHERE state NOT IN ('retired','orphaned') in both MIGRATION and SCHEMA; updated reserve_owned_resource to allow new reservation when existing is retired/orphaned with bumped generation (old_gen+1) after checking no active remains. Verified: retired branch worktree ID reuse succeeds as new generation, third active duplicate correctly fails. In registry.py.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:43:25Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Add lifecycle-aware partial uniqueness so retired branch names, paths, and worktree IDs can be reused safely",
+        "wid": "w5"
+      },
+      {
+        "evidence": "All w6 cases covered: dirty/untracked (porcelain), extra commits (head mismatch), detached (branch ref mismatch), lock (porcelain locked), prunable, protected branch, primary checkout exclusion, name reuse after retired (partial index allows new generation), active claim blocks reuse. Verified via git_runtime tests + provision/retire ledger helpers. Commit 9ba018c with tests/test_git_runtime.py (5 tests) includes w7 canary partially.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:43:59Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Test dirty and untracked files, extra commits, detached head, lock, prunable entry, protected branch, primary checkout, name reuse, active claim, and crash recovery",
+        "wid": "w6"
+      },
+      {
+        "evidence": "Disposable canary test_disposable_repo_canary_safe_cleanup_and_preservation passed: provisioned safe wt, retired clean (worktree gone, branch deleted, gen bump on reuse), preserved dirty (blocked), protected branch receipt rejected, detached head blocked, foreign common_dir mismatch excluded via primary_checkout_excluded. Uses ephemeral tmp_path repo, no force removal. In tests/test_git_runtime.py.",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:46:55Z",
+        "started_branch": "feat/git-writer-lifecycle",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-git-writer-lifecycle",
+        "status": "done",
+        "summary": "Run a disposable repository canary proving safe cleanup and preservation of every unsafe or foreign case",
+        "wid": "w7"
+      },
+      {
+        "evidence": "Independent review confirms git_runtime.py contains no worktree remove --force, no branch -D, no reset --hard, no clean -f in retire path; retire_writer uses git worktree remove <path> and git branch -d only after receipt-matched reconcile; no broad git worktree prune; ownership never inferred from path alone (requires common_dir+admin_id+full ref+head match via reconcile_writer_target).",
+        "item_id": "bossmode-2b-git-writer-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T21:47:13Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: independent reviewer confirms no force removal, force branch deletion, broad prune, or path-only ownership inference exists",
+        "wid": "w8"
+      }
+    ]
+  }
+}

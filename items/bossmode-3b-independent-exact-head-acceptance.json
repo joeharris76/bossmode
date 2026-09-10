@@ -1,0 +1,404 @@
+{
+  "context": "Build on central artifact adoption, Git writer identity, and fenced dispatch. Resolve and validate the live clean writer head, exact tracking and remote branch head, prompt/result correlation, reviewer identity, and evaluator run in one acceptance transaction; then create a Bossmode-owned namespaced retention ref. Decision gate: stop if passing evidence is inferred from terminal output, a prior green PR head, an unlinked evaluator, a branch name without SHA, or the same worker that produced the change.",
+  "description": "Add reviewer admission, evaluator linkage, exact accepted-head validation, and durable commit retention as a distinct feature. A passing evaluation must come from an independent identity, apply to the selected finished run and immutable commit SHA, and satisfy current local and remote evidence before a worker or task is accepted.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Describe the retention ref as preventing SHA mutation",
+        "instead": "Use the ref to preserve reachability until integration or archival",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "why": "Git commit SHAs are already immutable"
+      },
+      {
+        "dont": "Let a worker evaluate its own change",
+        "instead": "Require a distinct live reviewer identity and linked evaluator run",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "why": "It defeats the independent evidence gate"
+      },
+      {
+        "dont": "Treat green CI or a prior PR head as current acceptance evidence",
+        "instead": "Verify the exact local, tracking, live remote, and evaluated SHA at acceptance time",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "why": "The branch may have advanced"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_item": "bossmode-0c-central-artifact-adoption"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_item": "bossmode-2b-git-writer-lifecycle"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_item": "bossmode-3a-claims-and-atomic-dispatch"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "created_at": "2026-08-25T22:42:31Z",
+      "worktree": "bossmode.wt-exact-head-acceptance"
+    },
+    "preserves": [
+      {
+        "behavior": "A later branch move does not rewrite accepted history.",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance"
+      },
+      {
+        "behavior": "A reviewer admitted during evaluation may settle only for its own passing evaluator run at the exact accepted head.",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance"
+      },
+      {
+        "behavior": "The accepted commit is stored as an immutable SHA, not inferred later from a branch.",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance"
+      },
+      {
+        "behavior": "The evaluator identity differs from the agent that produced the accepted run.",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "exact result file and independent evaluation contract",
+        "decision": "extend",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "existing independent evaluate command and PR 6 exact-head validation",
+        "decision": "extend",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/artifacts.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/git_runtime.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/review.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "tests/test_artifacts.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "tests/test_git_runtime.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "tests/test_review.py"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "kind": "only_modify",
+        "path_glob": "tests/test_teams.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_review.py tests/test_git_runtime.py tests/test_artifacts.py tests/test_teams.py tests/test_registry.py tests/test_cli.py",
+        "description": "Review and exact-head tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "last_result": null,
+        "last_run": null,
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case exact-head-review",
+        "description": "Exact-head independent review UAT",
+        "expected": "exit 0 and accepted SHA equals local tracking live remote and retention ref",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "last_result": null,
+        "last_run": null,
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "last_result": null,
+        "last_run": null,
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "last_result": null,
+        "last_run": null,
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "last_result": null,
+        "last_run": null,
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "last_result": null,
+        "last_run": null,
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w1",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w2",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w6",
+        "wid": "w7"
+      },
+      {
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "needs_wid": "w7",
+        "wid": "w8"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Extract PR 6 reviewer admission, settlement, evaluator linkage, accepted-attempt selection, and exact-head checks into a behavior matrix",
+        "wid": "w0"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Define reviewer independence, evaluator run linkage, selected-attempt ordering, accepted SHA, remote evidence, and result correlation invariants",
+        "wid": "w1"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement reviewer admission and lifecycle-aware uniqueness without preventing a valid later retry",
+        "wid": "w2"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement exact live local, tracking, and remote SHA validation plus clean-worktree and base-ancestry checks",
+        "wid": "w3"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement evaluator-run linkage and atomic acceptance of the selected finished run and exact result digest",
+        "wid": "w4"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Create a receipt-bound refs/bossmode retention ref after acceptance and define later reachability-based removal",
+        "wid": "w5"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Test self-review, wrong worker, wrong run, changed remote, dirty tree, stale green head, retry ordering, duplicate reviewer, and ref identity reuse",
+        "wid": "w6"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Run an exact-head canary with an independently produced review artifact and verify the stored accepted SHA and retention ref",
+        "wid": "w7"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3b-independent-exact-head-acceptance",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Decision gate: independent reviewer confirms every accepted task has external evidence, exact-head correlation, and a distinct evaluator identity",
+        "wid": "w8"
+      }
+    ]
+  }
+}

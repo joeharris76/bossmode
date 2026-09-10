@@ -1,0 +1,347 @@
+{
+  "context": "Add an owned-resource table and a small state machine with reserved, live, retiring, retired, and orphaned states. Persist intent before external creation, bind returned identity afterward, and make every transition idempotent and audited. Decision gate: do not add deletion for any resource type until its backing system exposes enough immutable identity to distinguish the created object from a reused name or path.",
+  "description": "Introduce the durable ownership substrate required for symmetric creation and cleanup. Record reservations, immutable external identities, expected generations, canonical keys, owner task/run/team, lifecycle transitions, and evidence for every resource Bossmode creates. This PR records and reconciles ownership but must not yet delete Herdr workers, worktrees, branches, refs, or scheduler jobs.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Delete resources in the ownership-ledger PR",
+        "instead": "Land record-only ownership and reconciliation first",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "why": "Each resource type needs separate live-system safety proofs"
+      },
+      {
+        "dont": "Infer ownership from the registry containing a resource name",
+        "instead": "Require a reservation plus live immutable identity and generation evidence",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "why": "Names and paths can be reused"
+      },
+      {
+        "dont": "Use force release as a recovery shortcut",
+        "instead": "Mark the resource orphaned and require an explicit evidence-backed resolution",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "why": "It bypasses evidence and can destroy foreign work"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_item": "bossmode-0b-single-registry-authority"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T21:08:03Z",
+      "completed_pr": 16,
+      "created_at": "2026-08-25T22:40:52Z",
+      "worktree": "bossmode.wt-owned-resource-ledger"
+    },
+    "preserves": [
+      {
+        "behavior": "A stored display name, pane ID, tab ID, path, or branch name is never sufficient deletion authority.",
+        "item_id": "bossmode-1a-owned-resource-ledger"
+      },
+      {
+        "behavior": "External resources not created by Bossmode remain attached or observed, never silently adopted as owned.",
+        "item_id": "bossmode-1a-owned-resource-ledger"
+      },
+      {
+        "behavior": "Lifecycle history remains durable after external resources disappear.",
+        "item_id": "bossmode-1a-owned-resource-ledger"
+      },
+      {
+        "behavior": "Reconciliation is read-only in this PR.",
+        "item_id": "bossmode-1a-owned-resource-ledger"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "live runtime reconciliation before worker action",
+        "decision": "extend",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "Herdr binding and run lifecycle audit records",
+        "decision": "extend",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": ".agents/skills/**"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/skills/**"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/resources.py"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "kind": "only_modify",
+        "path_glob": "tests/test_resources.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_resources.py tests/test_registry.py tests/test_cli.py",
+        "description": "Owned-resource state-machine tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:07:54Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:08:40Z",
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:08:40Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:08:41Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:08:41Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "if git diff --unified=0 origin/main...HEAD -- src/bossmode | rg -n '^\\+.*(worktree remove|branch -D|agent close|force)'; then exit 1; fi",
+        "description": "No external deletion verbs in this PR",
+        "expected": "exit 0",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:08:41Z",
+        "seq": 7,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "needs_wid": "w6",
+        "wid": "w7"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Inventoried resources: Herdr worker (worker_name+herdr_session+agent_kind+session tuple+pane/tab/workspace IDs), Git worktree (path+branch+HEAD SHA+git-common-dir), Git branch (ref+SHA), Herdr binding row lifecycle, run/turn artifacts, scheduler LaunchAgent/crontab entry; immutable evidence per backing system: Herdr live session reference (source/agent/kind/value) observed via herdr agent get, Git worktree commit SHA and common-dir device/inode via registry identity, scheduler entry owning registry_id+repository_url. Created worktree feat/owned-resource-ledger at 542772e.",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T20:47:59Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Inventory every resource Bossmode currently creates or plans to create and the immutable identity evidence each backing system exposes",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Defined resource kinds (herdr_worker, git_worktree, git_branch), canonical keys (herdr_worker:session/worker, git_worktree:/abs/path, git_branch:refs/heads/name) derived without following symlinks, owner fields (task/run/thread), creation receipts per kind with Herdr session tuple, generation evidence, and lifecycle states (reserved/live/retiring/retired/orphaned, retired/orphaned terminal) in src/bossmode/resources.py:8-148",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T20:48:33Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Define resource kinds, canonical keys, owner fields, creation receipts, generation evidence, lifecycle states, and terminal semantics",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Defined transition preconditions and idempotent outcomes for reserve, bind-live, begin-retirement, retire, and orphan in src/bossmode/registry.py owned-resource methods and src/bossmode/resources.py:128-148 ResourceTransitions graph; idempotent reserve (same canonical+owner returns existing) and bind-live same-receipt returns existing, retiring/retired/orphaned transitions enforce state and are idempotent, terminal states have no outgoing transitions, illegal transitions fail closed.",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T20:48:59Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Define transition preconditions and idempotent outcomes for reserve, bind-live, begin-retirement, retire, and orphan",
+        "wid": "w2"
+      },
+      {
+        "evidence": "Implemented owned_resources and owned_resource_events tables (MIGRATION_V9_TO_V10_SQL) with canonical_key unique, kind/state indices, audit events, query APIs (list_owned_resources/get_owned_resource), and migration without external creation/deletion; registry auto soft-creates tables if absent; added src/bossmode/resources.py helper module and 385-line registry delta with all state machine methods.",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T20:49:02Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement the ledger, audit events, query API, and migration without invoking external creation or deletion",
+        "wid": "w3"
+      },
+      {
+        "evidence": "Added reconciliation that reports missing, changed, ambiguous, foreign, and already-gone resources without mutating external state: reconcile_owned_resources() is read-only (lists owned_resources, reports observation per kind/state, does not transition or delete); RECONCILE_OBSERVATIONS = {missing, changed, ambiguous, foreign, already_gone, healthy} defined in resources.py:138-140.",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T21:03:13Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Add reconciliation that reports missing, changed, ambiguous, foreign, and already-gone resources without mutating external state",
+        "wid": "w4"
+      },
+      {
+        "evidence": "Tests cover duplicate reservations (reserve_is_idempotent_and_ownership_checked), retry/crash (retry_after_crash_reserved_stays_reserved), identity reuse after terminal (identity_reuse_after_terminal fails closed), wrong owner/canonical-key mismatch (canonical_key_mismatch_on_bind), illegal transitions (illegal_transitions, orphan_and_wrong_owner), migration compatibility (migration_creates_owned_resources_tables), and display-name not deletion authority (display_name_not_deletion_authority requires live receipt + state transition). All 338 tests pass, 90.01% coverage.",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T21:03:15Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Test duplicate reservations, retries, crash boundaries, identity reuse, wrong owner, illegal transitions, and migration compatibility",
+        "wid": "w5"
+      },
+      {
+        "evidence": "Documented ownership contract distinguishing owned vs externally attached resources in docs/agent-workflow.md:247-270 and docs/cli-reference.md; describes kinds, canonical keys without following symlinks, creation_receipt and generation disambiguation, lifecycle states (reserved/live/retiring/retired/orphaned, terminal), transition idempotence and audit (owned_resource_events), duplicate/different-owner/terminal-key/illegal-transition fails-closed, reconciliation read-only observations (missing/changed/ambiguous/foreign/already_gone/healthy), and deletion requiring live receipt match not name/pane/path alone.",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T21:03:19Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Document the ownership contract and distinguish owned resources from externally attached resources",
+        "wid": "w6"
+      },
+      {
+        "evidence": "Decision gate independently confirmed: herdr_worker/git_worktree/git_branch deletions require live receipt match + proper state transition (reserved->live->retiring->retired); direct retire on reserved rejected (is not retiring), display name/worker_name/pane ID/path/branch alone insufficient; terminal reuse of canonical key fails closed. Demonstrated via Reserve->BindLive->BeginRetirement->Retire lifecycle and rejected reuse after terminal (test_display_name_not_deletion_authority, live gate script).",
+        "item_id": "bossmode-1a-owned-resource-ledger",
+        "notes": null,
+        "started_at": "2026-08-26T21:03:22Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: independently confirm every future delete requires a live receipt match and cannot be authorized by name, pane ID, or path alone",
+        "wid": "w7"
+      }
+    ]
+  }
+}

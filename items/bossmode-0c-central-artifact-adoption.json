@@ -1,0 +1,347 @@
+{
+  "context": "Create a dedicated artifact boundary that opens a trusted central root once and resolves relative components beneath its directory descriptor with no-follow checks. Validate bounded result envelopes, record a canonical digest, and persist a disposition for every artifact. Decision gate: stop if containment relies on string-prefix or pre-open realpath checks, if a result can be replayed across runs, or if closeout can succeed with an artifact still only in a removable worktree.",
+  "description": "Ensure worker result envelopes and every declared artifact survive linked-worktree retirement. A successful turn must bind to the exact registry, task, run, turn, prompt digest, and accepted head, and each artifact must be secured by an accepted commit or copied into a central bounded artifact root before cleanup can proceed.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Call a plain SHA digest cryptographic authentication",
+        "instead": "Describe it as integrity and correlation unless a separate signing model is approved",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "why": "A worker that knows the fields can recompute it"
+      },
+      {
+        "dont": "Treat a central result envelope as proof that its declared artifacts are durable",
+        "instead": "Record an accepted-commit or central-copy disposition for every artifact",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "why": "Artifacts may still reside only in the worker worktree"
+      },
+      {
+        "dont": "Validate containment with realpath.startswith",
+        "instead": "Resolve by construction beneath a trusted open root descriptor",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "why": "It permits prefix mistakes and leaves a time-of-check to time-of-use race"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_item": "bossmode-0b-single-registry-authority"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T20:46:08Z",
+      "completed_pr": 15,
+      "created_at": "2026-08-25T22:38:44Z",
+      "worktree": "bossmode.wt-central-artifact-adoption"
+    },
+    "preserves": [
+      {
+        "behavior": "A digest detects accidental or replayed mismatch but is not described as authentication without a signing trust model.",
+        "item_id": "bossmode-0c-central-artifact-adoption"
+      },
+      {
+        "behavior": "Artifact paths stored in the registry are central-root-relative and never depend on a worker cwd.",
+        "item_id": "bossmode-0c-central-artifact-adoption"
+      },
+      {
+        "behavior": "No worker-controlled symlink or path component can redirect central ingestion.",
+        "item_id": "bossmode-0c-central-artifact-adoption"
+      },
+      {
+        "behavior": "Successful result files remain bounded to the existing maximum unless an approved contract changes it.",
+        "item_id": "bossmode-0c-central-artifact-adoption"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "bounded worker result contract",
+        "decision": "extend",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "turn result validation and prompt digest storage",
+        "decision": "extend",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/artifacts.py"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "tests/test_artifacts.py"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_artifacts.py tests/test_registry.py tests/test_cli.py",
+        "description": "Artifact security and lifecycle tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "last_result": "pass",
+        "last_run": "2026-08-26T20:47:00Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "last_result": "pass",
+        "last_run": "2026-08-26T20:47:28Z",
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "last_result": "pass",
+        "last_run": "2026-08-26T20:47:28Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "last_result": "pass",
+        "last_run": "2026-08-26T20:47:28Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "last_result": "pass",
+        "last_run": "2026-08-26T20:47:32Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "last_result": "pass",
+        "last_run": "2026-08-26T20:47:32Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w1",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w2",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "needs_wid": "w6",
+        "wid": "w7"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Inventoried turn result schema (turn_id, outcome, summary, artifacts), size limits (MAX_TURN_RESULT_BYTES=1MB), prompt_digest (sha256 in run_turns), and worktree retirement call sites.",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T14:31:12Z",
+        "started_branch": "feat/central-artifact-adoption",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-central-artifact-adoption",
+        "status": "done",
+        "summary": "Inventory current turn result schema, artifact path resolution, size limits, prompt digest storage, and all worktree-retirement call sites",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Defined central artifact root (.bossmode/artifacts), path grammar (validate_relative_artifact_path), bounds (MAX_ARTIFACT_SIZE_BYTES=10MB, MAX_ARTIFACTS_PER_RUN=100), permissions (0o600/0o700), and accepted dispositions (accepted-commit, central-copy) in src/bossmode/artifacts.py.",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T14:31:19Z",
+        "started_branch": "feat/central-artifact-adoption",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-central-artifact-adoption",
+        "status": "done",
+        "summary": "Define central artifact root, relative path grammar, file types, size and count bounds, retention, permissions, and accepted dispositions",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Implemented root-directory-descriptor walking in CentralArtifactStore._open_directory_descriptor with O_NOFOLLOW, open_read_descriptor with post-open fstat regular-file validation, and read_bounded_bytes with size bounds in src/bossmode/artifacts.py.",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T14:31:38Z",
+        "started_branch": "feat/central-artifact-adoption",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-central-artifact-adoption",
+        "status": "done",
+        "summary": "Implement root-directory-descriptor component walking with no-follow opens, post-open fstat validation, and bounded reads",
+        "wid": "w2"
+      },
+      {
+        "evidence": "Bound result envelopes via CentralArtifactStore.validate_result_envelope with expected_turn_id/run_id/task_id/prompt_digest/registry_id/accepted_head/outcome/summary checks, canonical_result_digest, and 1MiB bound; integrated into Registry.finish_turn with registry identity and run binding validation",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T14:31:55Z",
+        "started_branch": "feat/central-artifact-adoption",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-central-artifact-adoption",
+        "status": "done",
+        "summary": "Bind result envelopes to registry, task, run, turn, prompt digest, accepted head, outcome, and a canonical persisted result digest",
+        "wid": "w3"
+      },
+      {
+        "evidence": "Per-artifact dispositions implemented via CentralArtifactStore.secure_and_adopt_run_artifacts (accepted-commit with digest enrichment, central-copy via adopt_file_to_central) and CentralArtifactStore.adopt_file_to_central with O_NOFOLLOW, fsync, and bounded reads; Registry.finish_run and add_evaluation enforce central-copy vs committed paths (src/bossmode/artifacts.py:240-380, src/bossmode/registry.py:2540-2718)",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T20:26:11Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement per-artifact disposition as accepted-commit or central-copy and block source retirement until every artifact is durable",
+        "wid": "w4"
+      },
+      {
+        "evidence": "Comprehensive artifact security tests covering traversal, prefix collision, symlink file/ancestor, FIFO/device rejection, swap-race mitigation via held descriptor, oversized bounds (file and result envelope), replay/wrong-ID and digest tampering, markdown fence, missing fields, and worktree-deletion central survival; envelope binding honors registry/task/run/turn/prompt-digest/accepted-head; full gates: 322 tests, 90.13% coverage, 28/28 UAT, Ruff, skill parity, diff-check (tests/test_artifacts.py, src/bossmode/artifacts.py)",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T20:28:19Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Test traversal, prefix collision, symlink ancestors, swap races, oversized files, special files, replay, wrong IDs, and worktree deletion",
+        "wid": "w5"
+      },
+      {
+        "evidence": "Documented result and artifact contract in docs/agent-workflow.md and docs/cli-reference.md without cryptographic authentication claims: envelope binds to registry/task/run/turn/prompt digest/accepted head/outcome with canonical SHA-256 sorted-keys digest (integrity/replay correlation only), artifacts constrained to repository-relative paths (no absolute worker paths), dispositions accepted-commit vs central-copy via .bossmode/artifacts/ with O_NOFOLLOW descriptor walks and post-open fstat checks (not realpath prefix), bounds and worktree landing described.",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T20:34:51Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Document the result and artifact contract without claiming cryptographic authentication or accepting absolute worker paths",
+        "wid": "w6"
+      },
+      {
+        "evidence": "Decision gate: end-to-end proof via CentralArtifactStore.adopt_file_to_central + worktree deletion - adopted reports/result.json into central .bossmode/artifacts/, deleted the source worktree, and verified the artifact remains readable from central storage with matching digest and canonical result digest (sorted-keys SHA-256). Exercise covers tests/test_artifacts.py::test_central_artifact_store_adopt_and_read plus disposable-worktree adoption in code (src/bossmode/artifacts.py:177-240, src/bossmode/registry.py adoption checks).",
+        "item_id": "bossmode-0c-central-artifact-adoption",
+        "notes": null,
+        "started_at": "2026-08-26T20:35:47Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: delete a disposable worker worktree and prove all accepted result data remains verifiable from central storage",
+        "wid": "w7"
+      }
+    ]
+  }
+}

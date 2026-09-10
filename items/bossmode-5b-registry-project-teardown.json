@@ -1,0 +1,367 @@
+{
+  "context": "Add one canonical registry retire operation keyed by the immutable registry ID. It fences new work, removes the exact owned scheduler registration, validates zero active or unresolved team resources, creates and verifies a final archive, marks the registry retired, and rejects further operational writes. Decision gate: stop if retirement would unlink the only valid history copy, remove an externally managed scheduler, or proceed while any team closeout is incomplete.",
+  "description": "Provide the cleanup counterpart for project-level resources that do not belong to one team, especially scheduler jobs and maintenance registrations. Registry retirement must first prove that all teams, runs, claims, and owned resources are terminal, remove receipt-matched project resources, create a verified final archive, and leave durable history readable rather than deleting control.db in place.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Delete control.db as ordinary cleanup",
+        "instead": "Create a verified final archive and retire it read-only",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "why": "It is the durable audit authority, not an ephemeral worker resource"
+      },
+      {
+        "dont": "Remove a scheduler by label or service name alone",
+        "instead": "Match the recorded ownership receipt and live scheduler definition",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "why": "The name may identify an externally replaced job"
+      },
+      {
+        "dont": "Retire the registry while a team is waiting_user",
+        "instead": "Require all team closeouts and owned resources to reach terminal safe states",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "why": "That hides unresolved cleanup or data-preservation work"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_item": "bossmode-0a-migration-durability"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_item": "bossmode-0b-single-registry-authority"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_item": "bossmode-1a-owned-resource-ledger"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_item": "bossmode-4-durable-team-closeout"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "created_at": "2026-08-25T22:44:08Z",
+      "worktree": "bossmode.wt-registry-project-teardown"
+    },
+    "preserves": [
+      {
+        "behavior": "Durable task, run, evaluation, artifact, feedback, and cleanup history is archived rather than deleted.",
+        "item_id": "bossmode-5b-registry-project-teardown"
+      },
+      {
+        "behavior": "Only receipt-matched project-level resources are removed.",
+        "item_id": "bossmode-5b-registry-project-teardown"
+      },
+      {
+        "behavior": "Registry retirement cannot proceed while any team or owned resource remains active or unresolved.",
+        "item_id": "bossmode-5b-registry-project-teardown"
+      },
+      {
+        "behavior": "The retired registry rejects operational writes but remains readable for audit and restore.",
+        "item_id": "bossmode-5b-registry-project-teardown"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "registry ownership boundary",
+        "decision": "extend",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "path": "docs/adr/0006-registry-worktree-ownership.md"
+      },
+      {
+        "concept": "durable event history and migration lifecycle",
+        "decision": "extend",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "path": "src/bossmode/registry.py"
+      },
+      {
+        "concept": "current native scheduler installation and removal",
+        "decision": "extend",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "path": "src/bossmode/scheduler.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "docs/operations/registry-recovery.md"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/resources.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry_retirement.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "tests/test_resources.py"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "kind": "only_modify",
+        "path_glob": "tests/test_schedule.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_registry_retirement.py tests/test_schedule.py tests/test_resources.py tests/test_registry.py tests/test_cli.py",
+        "description": "Registry retirement and scheduler ownership tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "last_result": null,
+        "last_run": null,
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case registry-retirement",
+        "description": "Disposable project teardown UAT",
+        "expected": "exit 0 scheduler absent and final archive readable",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "last_result": null,
+        "last_run": null,
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "last_result": null,
+        "last_run": null,
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "last_result": null,
+        "last_run": null,
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "last_result": null,
+        "last_run": null,
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "last_result": null,
+        "last_run": null,
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "needs_wid": "w5",
+        "wid": "w6"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Inventory all project-level resources and define which are ephemeral cleanup targets versus durable records requiring archival",
+        "wid": "w0"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Define registry retirement preconditions, immutable ID confirmation, fencing, final backup, archive location, permissions, and post-retirement read behavior",
+        "wid": "w1"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement exact ownership reconciliation and idempotent removal for the project scheduler and any other registered project-level runtime resource",
+        "wid": "w2"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement final verified archive, retired registry status, write rejection, and resumable crash recovery",
+        "wid": "w3"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Test active team, unresolved cleanup, foreign scheduler, scheduler name reuse, missing scheduler, archive failure, crash boundaries, and repeated retirement",
+        "wid": "w4"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Document the distinction between cleanup of ephemeral resources and retention of durable audit history",
+        "wid": "w5"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-5b-registry-project-teardown",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Decision gate: independent reviewer proves the retired archive is readable and the live scheduler resource is absent before operational writes are disabled",
+        "wid": "w6"
+      }
+    ]
+  }
+}

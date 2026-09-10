@@ -1,0 +1,480 @@
+{
+  "context": "Add one canonical team closeout operation and persist the current step and evidence before and after each external action. Fence new work first; adopt artifacts and secure accepted commits; settle evaluation; release claims; close subordinate Herdr workers and manager last; remove worktrees; then remove branches and temporary refs when reachability rules allow. Decision gate: any dirty, changed, protected, foreign, ambiguous, or live-in-use resource moves the team to waiting_user with exact remediation evidence; it is never silently skipped or force-deleted.",
+  "description": "Implement one durable team closeout state machine that adopts artifacts, secures accepted code, settles review, releases claims, closes Bossmode-created Herdr workers, removes Bossmode-created worktrees, and deletes safe owned branches and retention refs. Closeout must be automatic, idempotent, resumable after a crash, and unable to report success while any owned resource is unresolved.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Delete first and record success afterward without durable intent",
+        "instead": "Persist retiring intent and evidence around every idempotent external call",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "why": "A crash loses whether the action occurred"
+      },
+      {
+        "dont": "Force cleanup to satisfy a zero-residual assertion",
+        "instead": "Block completion until the unsafe condition is resolved or an explicit preservation disposition is approved",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "why": "It can destroy valuable or foreign work"
+      },
+      {
+        "dont": "Make cleanup an optional auto-retire flag",
+        "instead": "Make safe owned-resource cleanup part of the canonical closeout operation",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "why": "That leaves normal successful runs with resource debt"
+      },
+      {
+        "dont": "Mark a team closed while an owned resource is orphaned or waiting for evidence",
+        "instead": "Keep closeout in waiting_user and report the exact blocker",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "why": "That hides unfinished cleanup"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_item": "bossmode-2a-herdr-owned-lifecycle"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_item": "bossmode-2b-git-writer-lifecycle"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_item": "bossmode-3a-claims-and-atomic-dispatch"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_item": "bossmode-3b-independent-exact-head-acceptance"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "created_at": "2026-08-25T22:42:31Z",
+      "worktree": "bossmode.wt-durable-team-closeout"
+    },
+    "preserves": [
+      {
+        "behavior": "Artifacts and accepted commits are durable before the corresponding worker or worktree is closed.",
+        "item_id": "bossmode-4-durable-team-closeout"
+      },
+      {
+        "behavior": "Bossmode cleans up every safely owned resource it creates and does not declare closeout complete while cleanup is unresolved.",
+        "item_id": "bossmode-4-durable-team-closeout"
+      },
+      {
+        "behavior": "Every closeout step is idempotent across process crash and retry.",
+        "item_id": "bossmode-4-durable-team-closeout"
+      },
+      {
+        "behavior": "Project-level scheduler jobs are outside team closeout and retire only during registry or project teardown.",
+        "item_id": "bossmode-4-durable-team-closeout"
+      },
+      {
+        "behavior": "Uncommitted, unpushed, externally changed, protected, or foreign work is never destroyed.",
+        "item_id": "bossmode-4-durable-team-closeout"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "team completion requirements",
+        "decision": "extend",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "path": "docs/adr/0004-parallel-manager-teams.md"
+      },
+      {
+        "concept": "current manual supervisor closeout responsibilities",
+        "decision": "supersede",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "run finish, stale Herdr bindings, task evaluation, and PR 6 team finalization",
+        "decision": "extend",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0004-parallel-manager-teams.md"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/artifacts.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/claims.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/closeout.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/git_runtime.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/herdr_runtime.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/resources.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_artifacts.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_claims.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_closeout.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_git_runtime.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_herdr_runtime.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_resources.py"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "kind": "only_modify",
+        "path_glob": "tests/test_teams.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_closeout.py tests/test_herdr_runtime.py tests/test_git_runtime.py tests/test_claims.py tests/test_artifacts.py tests/test_resources.py tests/test_teams.py",
+        "description": "Closeout crash and safety tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case durable-team-closeout",
+        "description": "Live full closeout UAT",
+        "expected": "exit 0 and zero unresolved Bossmode-owned resources",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 6,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 7,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "if git diff --unified=0 origin/main...HEAD -- src/bossmode | rg -n '^\\+.*(--force|branch -D|reset --hard|clean -f)'; then exit 1; fi",
+        "description": "No destructive force operations",
+        "expected": "exit 0",
+        "item_id": "bossmode-4-durable-team-closeout",
+        "last_result": null,
+        "last_run": null,
+        "seq": 8,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w6",
+        "wid": "w7"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w7",
+        "wid": "w8"
+      },
+      {
+        "item_id": "bossmode-4-durable-team-closeout",
+        "needs_wid": "w8",
+        "wid": "w9"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Define the complete closeout precondition matrix and reverse dependency order for artifacts, reviews, claims, workers, manager, worktrees, branches, and refs",
+        "wid": "w0"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Define durable closeout steps, before and after evidence, retry keys, already-gone semantics, waiting_user reasons, and completion invariant",
+        "wid": "w1"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement admission fencing and artifact, accepted-head, evaluator, run, task, and team finalization prechecks",
+        "wid": "w2"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement ordered claim release and receipt-matched closure of subordinate Herdr workers followed by the manager",
+        "wid": "w3"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement ordered worktree removal, safe branch deletion, and retention-ref removal with reachability proof",
+        "wid": "w4"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Implement startup and explicit reconciliation that resumes every closeout left in retiring state",
+        "wid": "w5"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Inject a crash before and after every external action and prove rerun reaches one correct terminal state without duplicate destructive calls",
+        "wid": "w6"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Test dirty, changed, protected, foreign, ambiguous, missing, already-retired, and name-reused resources; assert closeout never falsely succeeds",
+        "wid": "w7"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Run a live end-to-end team canary from provisioning through automatic cleanup and verify no owned worker, worktree, branch, claim, or temporary ref remains",
+        "wid": "w8"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-4-durable-team-closeout",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Decision gate: two independent reviews approve data preservation and deletion authority before this PR is eligible to merge",
+        "wid": "w9"
+      }
+    ]
+  }
+}

@@ -1,0 +1,384 @@
+{
+  "context": "Add a canonical registry create command and make every other command open-only. Preflight an existing database read-only, validate immutable identity and role, derive repository authority from the recorded owner rather than cwd, and only then reopen for writes or approved migrations. Decision gate: stop if a valid primary checkout cannot be identified unambiguously, if backward compatibility would silently select a local worktree database, or if any proposal introduces multiple operational writers.",
+  "description": "Make the primary checkout's .bossmode/control.db the sole operational task, run, evaluation, and resource authority. Split explicit database creation from opening, bind immutable registry identity to the Git common directory and primary checkout, and prevent linked worktrees or scheduler jobs from creating or migrating operational state. Temporary certification databases remain explicitly ephemeral and cannot be adopted into operational history.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Introduce init, rebind, or other aliases",
+        "instead": "Use one canonical spelling and test it",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "why": "Bossmode naming policy forbids additive aliases and repurposed tokens"
+      },
+      {
+        "dont": "Keep per-worktree operational registries and merge or copy them later",
+        "instead": "Write all operational bookkeeping through the central supervisor",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "why": ".bossmode is ignored and histories have no safe collision protocol"
+      },
+      {
+        "dont": "Use cwd as repository authority",
+        "instead": "Use the immutable validated registry owner and Git common directory",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "why": "The caller may be a linked worktree or unrelated directory"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_item": "bossmode-0a-migration-durability"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T13:39:12Z",
+      "completed_pr": 13,
+      "created_at": "2026-08-25T22:38:43Z",
+      "worktree": "bossmode.wt-single-registry-authority"
+    },
+    "preserves": [
+      {
+        "behavior": "Ephemeral test and certification databases can never become operational through path selection or import.",
+        "item_id": "bossmode-0b-single-registry-authority"
+      },
+      {
+        "behavior": "Every CLI spelling remains canonical, documented, and directly invoked by a test.",
+        "item_id": "bossmode-0b-single-registry-authority"
+      },
+      {
+        "behavior": "Registry ownership is checked before any filesystem or SQLite mutation.",
+        "item_id": "bossmode-0b-single-registry-authority"
+      },
+      {
+        "behavior": "There is exactly one operational registry per repository and it is owned by the primary checkout.",
+        "item_id": "bossmode-0b-single-registry-authority"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "worktree-safe registry ownership",
+        "decision": "supersede",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "path": "docs/adr/0006-registry-worktree-ownership.md"
+      },
+      {
+        "concept": "current database selection and scheduler commands",
+        "decision": "extend",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "path": "src/bossmode/cli.py"
+      },
+      {
+        "concept": "standard registry path ownership guard",
+        "decision": "extend",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "README.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0006-registry-worktree-ownership.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "tests/test_migrations.py"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry_authority.py"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "kind": "only_modify",
+        "path_glob": "tests/test_schedule.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_registry_authority.py tests/test_registry.py tests/test_cli.py",
+        "description": "Authority and open-only behavior tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "last_result": "fail",
+        "last_run": "2026-08-26T13:38:12Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "last_result": "pass",
+        "last_run": "2026-08-26T01:09:23Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "last_result": "pass",
+        "last_run": "2026-08-26T01:09:23Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "last_result": "pass",
+        "last_run": "2026-08-26T01:09:24Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "last_result": "pass",
+        "last_run": "2026-08-26T01:09:24Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run bossmode --help",
+        "description": "Canonical command help contains no aliases or untested spellings",
+        "expected": "exit 0 and only approved registry creation spelling is present",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "last_result": "pass",
+        "last_run": "2026-08-26T01:09:24Z",
+        "seq": 7,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w1",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w6",
+        "wid": "w7"
+      },
+      {
+        "item_id": "bossmode-0b-single-registry-authority",
+        "needs_wid": "w7",
+        "wid": "w8"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "ADR 0006 Prior art reconciliation explicitly supersedes per-worktree ownership and extends pre-I/O rejection, 0A migration durability, canonical naming, and scheduler adapter ownership",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:07:38Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Re-read ADR 0006, CLI naming rules, registry construction, scheduler entrypoints, and tests; record which claims are extended or superseded",
+        "wid": "w0"
+      },
+      {
+        "evidence": "schema v8 registry_identity singleton records registry_id, registry_role, repository_url, git_common_dir, primary_checkout, created_at, and creation_metadata_json; immutable-trigger tests pass",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:23:01Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Define immutable registry identity fields: registry ID, role, repository URL, Git common directory, primary checkout, and creation metadata",
+        "wid": "w1"
+      },
+      {
+        "evidence": "tests/test_registry_authority.py invokes canonical ; parametrized open-only matrix rejects absent operational authority without creating .bossmode",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:25:17Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Add the single canonical registry create spelling and make all other commands fail when the database is absent",
+        "wid": "w2"
+      },
+      {
+        "evidence": "read-only identity URI and Git/path preflight run before _ensure_schema; absent, symlink, copied-path byte/mtime assertions pass",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:25:17Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Implement read-only identity preflight before directory creation, SQLite write-open, initialization, or migration",
+        "wid": "w3"
+      },
+      {
+        "evidence": "real Git linked-worktree, direct-object recheck, copied DB, wrong repository, noncanonical path, and ephemeral-adoption rejection tests pass",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:25:18Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Derive repository authority from validated registry identity and reject linked-worktree operational mutation regardless of cwd or nonstandard path",
+        "wid": "w4"
+      },
+      {
+        "evidence": "scheduler install/status/uninstall adapter tests require validated operational identity, use recorded primary checkout, reject mismatched repo-dir, and report registry_id/repository_url",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:25:18Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Restrict scheduler install, status, and uninstall to the operational authority and record project-level ownership",
+        "wid": "w5"
+      },
+      {
+        "evidence": "uv run pytest --no-cov tests/test_registry_authority.py tests/test_registry.py tests/test_cli.py tests/test_migrations.py: 178 passed; scoped Ruff check and format pass",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:25:18Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Add CLI, path, symlink, copied-database, wrong-repository, ephemeral-role, and scheduler authority tests",
+        "wid": "w6"
+      },
+      {
+        "evidence": "ADR 0006, README, agent workflow, CLI reference, and both skill copies document primary authority and canonical registry create; three help invocations pass; registry init/open are rejection-tested; skill parity passes",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T00:25:18Z",
+        "started_branch": "feat/single-registry-authority",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-single-registry-authority",
+        "status": "done",
+        "summary": "Supersede ADR 0006 operational ownership language and update every user-facing command spelling with invocation tests",
+        "wid": "w7"
+      },
+      {
+        "evidence": "Independent exact-head review passed. eval_3efe7baa733a (reviewer-0b-w8-r2, score 0.88) at head 6bd58501e538f1a9821a9697813ed1784122144f confirmed all four prior defects closed by reading the implementation, and empirically reproduced the path-swap attack via a non-symlink hardlink swap which was correctly rejected with the database byte-unchanged. No actionable Critical, High, or Medium finding. Delta review eval_aa232590b472 then failed the main-merge resolution on one HIGH muse regression at docs/agent-workflow.md:109; that was fixed and deterministically verified. Merged to main as 0f066aec82e02c0debbe4f57037ea12e5bd887b8 via PR 13, content byte-identical to reviewed head fa87d052098a580125a3880389305751ea834dda, with 14/14 exact-head CI passing.",
+        "item_id": "bossmode-0b-single-registry-authority",
+        "notes": null,
+        "started_at": "2026-08-26T13:37:25Z",
+        "started_branch": "fix/bossmode-dispatch-defects",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: independently verify no linked worktree can create, open for write, or migrate the operational registry",
+        "wid": "w8"
+      }
+    ]
+  }
+}

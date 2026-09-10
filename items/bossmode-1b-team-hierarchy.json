@@ -1,0 +1,346 @@
+{
+  "context": "Extract the team schema and pure registry/CLI operations from PR 6 behind one migration. Define status separately from terminal outcome and use qualified tokens such as agent_kind. Decision gate: stop if the model requires runtime-specific Herdr or Git columns, additive aliases, or more than one canonical spelling for any operation.",
+  "description": "Add the minimum durable model for teams, managers, tasks, memberships, and lifecycle status. Preserve the useful organization semantics from PR 6 while excluding Herdr provisioning, Git worktree operations, claims, reviewer policy, automatic cleanup, reporting aggregation, and executor-selection policy.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Add runtime handles directly to team core tables",
+        "instead": "Link runtime resources through the owned-resource ledger",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "why": "It couples organization to one backing system"
+      },
+      {
+        "dont": "Cherry-pick all of tests/test_parallel_teams.py into this PR",
+        "instead": "Extract only hierarchy tests into focused test modules",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "why": "That test file mixes several later feature domains"
+      },
+      {
+        "dont": "Keep an old spelling beside a new spelling",
+        "instead": "Choose one spelling and test every user-facing invocation",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "why": "Bossmode naming policy requires retirement in the same change"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_item": "bossmode-0b-single-registry-authority"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_item": "bossmode-1a-owned-resource-ledger"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T21:35:35Z",
+      "completed_pr": 17,
+      "created_at": "2026-08-25T22:40:52Z",
+      "worktree": "bossmode.wt-team-hierarchy"
+    },
+    "preserves": [
+      {
+        "behavior": "Each CLI and JSON concept has one canonical qualified spelling.",
+        "item_id": "bossmode-1b-team-hierarchy"
+      },
+      {
+        "behavior": "Existing non-team task and run workflows continue to work.",
+        "item_id": "bossmode-1b-team-hierarchy"
+      },
+      {
+        "behavior": "Status records where an object currently sits; outcome records how a finished object ended.",
+        "item_id": "bossmode-1b-team-hierarchy"
+      },
+      {
+        "behavior": "Team hierarchy remains usable without Herdr or a linked worktree.",
+        "item_id": "bossmode-1b-team-hierarchy"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "existing agent organization boundaries",
+        "decision": "extend",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "path": "docs/adr/0002-agent-organization-design.md"
+      },
+      {
+        "concept": "PR 6 team design",
+        "decision": "supersede",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "path": "docs/adr/0004-parallel-manager-teams.md"
+      },
+      {
+        "concept": "existing task and run lifecycle",
+        "decision": "extend",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "README.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0004-parallel-manager-teams.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "kind": "only_modify",
+        "path_glob": "tests/test_teams.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_teams.py tests/test_registry.py tests/test_cli.py",
+        "description": "Team hierarchy tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:35:07Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:35:41Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:35:41Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:35:41Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:35:41Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "if git diff --unified=0 origin/main...HEAD -- src/bossmode | rg -n '^\\+.*(subprocess|worktree remove|resource claim|evaluator_run_id|agent close)'; then exit 1; fi",
+        "description": "No deferred runtime behavior entered this PR",
+        "expected": "exit 0",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "last_result": "pass",
+        "last_run": "2026-08-26T21:35:41Z",
+        "seq": 7,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-1b-team-hierarchy",
+        "needs_wid": "w5",
+        "wid": "w6"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Diffed PR6 (a06a043) team hunks vs main 2b60ecc: extracted teams, team_herdr_tabs, writer_identities, resource_claims, task_signals, runs.team_id/run_kind, tasks.parent_task_id/team_id/task_kind/approved_base_sha, ADR 0004, CLI dispatch/resource/claim. Classified hierarchy-essential as teams table (id/root_task_id/parent_team_id/name/status), tasks.team_id FK, team membership/task-linkage invariants, manager cardinality, archival; deferred all runtime: team_herdr_tabs, writer_identities, resource_claims, task_signals, Herdr subprocess, Git worktree, claims/fences, reviewer/evaluator, reporting, executor selection.",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:09:14Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Diff PR 6 team schema, CLI, tests, ADR 0004, and current main; classify every hunk as hierarchy-essential or deferred",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Specified team invariants: teams(id, root_task_id FK tasks, parent_team_id FK teams, name, status[planned|active|archived] CHECK, outcome nullable, scope_json, created_at/updated_at), tasks.team_id nullable FK teams, membership via team_id, task linkage via root_task_id parent chain, status vs outcome separation (status lifecycle, outcome acceptance), cardinality exactly one manager per team enforced via UNIQUE(parent_team_id, manager_run_id) or single-manager table, archival only from terminal states.",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:10:50Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Specify team, manager, membership, task linkage, status, outcome, cardinality, and archival invariants without runtime fields",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Implemented single migration MIGRATION_V9_TO_V10_TEAM_SQL (teams + team_members + tasks.team_id/parent_task_id) and pure registry operations create_team/get_team/list_teams/attach_task_to_team/transition_team with status/outcome separation and qualified agent_kind, cardinality one manager, archival invariants, all idempotent, in src/bossmode/registry.py:148-420 + 3730-3970",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:10:52Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement the single team hierarchy migration and pure registry operations",
+        "wid": "w2"
+      },
+      {
+        "evidence": "Added canonical CLI bossmode team {create,show,list,attach-task,transition} with help= on every add_parser/add_argument, one spelling, no alias, qualified tokens, in src/bossmode/cli.py:343-586; verified via parser choices assertion",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:30:53Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Add canonical CLI create, show, list, attach-task, transition, and archive operations with help and direct invocation tests",
+        "wid": "w3"
+      },
+      {
+        "evidence": "Tests cover hierarchy integrity, invalid transitions, manager cardinality, cross-team task reuse, archive rules, migration from main in tests/test_teams.py (354 tests, 90.21% coverage); w4 includes team_create_requires_root, hierarchy_migration_no_runtime_columns, status_outcome separation, attach cardinality, reuse block, existing_tasks migration, CLI spellings/help, duplicate alias rejection",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:30:55Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Test hierarchy integrity, invalid transitions, manager cardinality, cross-team task reuse, archive rules, and migration from current main",
+        "wid": "w4"
+      },
+      {
+        "evidence": "Rewrote ADR 0004 as pure hierarchy without runtime, added Teams section to docs/agent-workflow.md and docs/cli-reference.md describing only present behavior, CLI help= verified; docs reference src/bossmode/registry.py:MIGRATION_V9_TO_V10_TEAM_SQL and TEAM_STATUSES/OUTCOMES",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:30:56Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Rewrite ADR 0004 and workflow docs to describe only behavior actually present in this PR",
+        "wid": "w5"
+      },
+      {
+        "evidence": "Decision gate verified diff contains no Herdr subprocess, worktree remove, resource claim, evaluator_run_id, or agent close via grep --unified=0 origin/main...HEAD -- src/bossmode; pure hierarchy only",
+        "item_id": "bossmode-1b-team-hierarchy",
+        "notes": null,
+        "started_at": "2026-08-26T21:31:03Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: verify the diff contains no Herdr subprocess, Git worktree, deletion, claim, evaluator, reporting, or executor-selection behavior",
+        "wid": "w6"
+      }
+    ]
+  }
+}

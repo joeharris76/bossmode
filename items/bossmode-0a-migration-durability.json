@@ -1,0 +1,325 @@
+{
+  "context": "Extend the current SQLite registry with a preflight that opens existing state without mutation, creates a verified backup, records stable migration IDs and checksums, and applies one transactionally bounded migration at a time. Decision gate: stop and obtain architecture approval if a migration cannot be restored into a usable pre-migration registry, if stacked branches can reuse an ID with different SQL, or if implementation requires an additional operational database.",
+  "description": "Create the storage safety floor before any PR 6 schema is reconsidered. The operational registry must be backed up and proven restorable before schema mutation, and every applied migration must have a stable ID and checksum. This item must not add teams, workers, cleanup, artifact adoption, or reporting behavior.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Add JSON history import as part of migration safety",
+        "instead": "Use SQLite backup and an explicit restore procedure",
+        "item_id": "bossmode-0a-migration-durability",
+        "why": "Whole-history import introduces identity and collision semantics outside this scope"
+      },
+      {
+        "dont": "Proceed after backup creation without restoring and validating it in tests",
+        "instead": "Open the restored copy and validate schema, data, and audit history",
+        "item_id": "bossmode-0a-migration-durability",
+        "why": "File existence is not recovery evidence"
+      },
+      {
+        "dont": "Treat PR branch order or an integer user_version as a unique migration identity",
+        "instead": "Use stable migration IDs with stored checksums and serialized merge order",
+        "item_id": "bossmode-0a-migration-durability",
+        "why": "Stacked branches can reuse or reorder schema numbers"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T00:00:31Z",
+      "completed_pr": 12,
+      "created_at": "2026-08-25T22:38:43Z",
+      "worktree": "bossmode.wt-registry-migration-durability"
+    },
+    "preserves": [
+      {
+        "behavior": "Backups and tracker state remain outside Git and are never staged or committed.",
+        "item_id": "bossmode-0a-migration-durability"
+      },
+      {
+        "behavior": "Existing schema-5 registries remain readable until an explicit approved migration runs.",
+        "item_id": "bossmode-0a-migration-durability"
+      },
+      {
+        "behavior": "No command creates or mutates a registry before ownership and version preflight succeeds.",
+        "item_id": "bossmode-0a-migration-durability"
+      },
+      {
+        "behavior": "Runtime dependencies remain standard-library-only.",
+        "item_id": "bossmode-0a-migration-durability"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "pre-open ownership and migration safety",
+        "decision": "extend",
+        "item_id": "bossmode-0a-migration-durability",
+        "path": "docs/adr/0006-registry-worktree-ownership.md"
+      },
+      {
+        "concept": "existing schema initialization and version checks",
+        "decision": "extend",
+        "item_id": "bossmode-0a-migration-durability",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": ".agents/skills/**"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0004-parallel-manager-teams.md"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/skills/**"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "docs/operations/registry-recovery.md"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "tests/test_migrations.py"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_migrations.py tests/test_registry.py -k 'migration or backup or restore'",
+        "description": "Focused migration and restore tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-0a-migration-durability",
+        "last_result": "pass",
+        "last_run": "2026-08-26T00:00:26Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest --no-cov tests/test_registry.py tests/test_cli.py",
+        "description": "Registry and CLI regression tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-0a-migration-durability",
+        "last_result": "pass",
+        "last_run": "2026-08-26T00:00:28Z",
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-0a-migration-durability",
+        "last_result": "pass",
+        "last_run": "2026-08-26T00:00:31Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-0a-migration-durability",
+        "last_result": "pass",
+        "last_run": "2026-08-26T00:00:31Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py",
+        "description": "Canonical UAT",
+        "expected": "exit 0",
+        "item_id": "bossmode-0a-migration-durability",
+        "last_result": "pass",
+        "last_run": "2026-08-26T00:00:31Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-0a-migration-durability",
+        "last_result": "pass",
+        "last_run": "2026-08-26T00:00:31Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w0",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w1",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-0a-migration-durability",
+        "needs_wid": "w5",
+        "wid": "w6"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Inspected main 2709dab schema 6 initialization in src/bossmode/registry.py, PR6 a06a043 schema 7-10 migrations, CLI construction paths, migration fixtures/tests, and docs; baseline 191 tests and 28/28 UAT pass.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:09:57Z",
+        "started_branch": "feat/registry-migration-durability",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-registry-migration-durability",
+        "status": "done",
+        "summary": "Inventory main schema state, PR 6 schema 6 through 10 changes, existing initialization paths, and all commands that can trigger migration",
+        "wid": "w0"
+      },
+      {
+        "evidence": "docs/operations/registry-recovery.md specifies .bossmode/backups naming, 0700/0600 permissions, file+directory fsync, no automatic pruning, and an operator restore procedure; tests/test_migrations.py covers permissions, digest-bound names, retention, restore, and symlink refusal.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:11:28Z",
+        "started_branch": "feat/registry-migration-durability",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-registry-migration-durability",
+        "status": "done",
+        "summary": "Specify backup location, naming, retention, permissions, fsync behavior, and restore procedure without placing backups in Git",
+        "wid": "w1"
+      },
+      {
+        "evidence": "src/bossmode/registry.py defines permanent migration ID 20260825_01_migration_durability, canonical SQL checksum, exact ordered lineage validation, duplicate/unknown/missing/checksum rejection, and schema-7 compatibility; focused migration suite passed 24 tests.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:11:28Z",
+        "started_branch": "feat/registry-migration-durability",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-registry-migration-durability",
+        "status": "done",
+        "summary": "Specify stable migration IDs, checksum validation, ordering, duplicate-ID failure, and compatibility with the current schema version",
+        "wid": "w2"
+      },
+      {
+        "evidence": "src/bossmode/registry.py implements read-only version/lineage preflight, BEGIN IMMEDIATE serialization, SQLite online backup with integrity verification and durable publication, stable ledger insertion/checksum enforcement, rollback, and restore-path diagnostics; focused migration suite passed 24 tests.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:29:33Z",
+        "started_branch": "feat/registry-migration-durability",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-registry-migration-durability",
+        "status": "done",
+        "summary": "Implement verified pre-migration backup, applied-migration ledger, checksum enforcement, and fail-closed recovery diagnostics",
+        "wid": "w3"
+      },
+      {
+        "evidence": "24 focused tests passed, covering SQL and non-SQL interruption rollback, actual corrupt-backup rejection, checksum/missing/unknown/duplicate lineage, newer schema, restore/remigration, concurrent initialization, committed WAL content, symlink refusal, and retained backups.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:30:34Z",
+        "started_branch": "feat/registry-migration-durability",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-registry-migration-durability",
+        "status": "done",
+        "summary": "Add tests for interrupted migration, corrupt backup, checksum mismatch, duplicate IDs, newer schema, and successful restore",
+        "wid": "w4"
+      },
+      {
+        "evidence": "docs/operations/registry-recovery.md documents checksum/integrity verification, writer shutdown, failed-file preservation, durable replacement, record inspection, and retry behavior; restore plus lineage tests passed 2/2 and prove schema-6 state restores, retains task/turn/feedback history, and remigrates to schema 7.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:30:34Z",
+        "started_branch": "feat/registry-migration-durability",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-registry-migration-durability",
+        "status": "done",
+        "summary": "Document operator restore steps and prove an untouched main-schema registry round-trips through backup and recovery",
+        "wid": "w5"
+      },
+      {
+        "evidence": "Independent exact-head evaluation eval_e5887e9febde passed against 6472f21f4df118842546d84e0c2f7e2ae3fff757. The evaluator reran all five accepted failure reproductions, focused tests (31 passed), registry/CLI tests (129 passed), full pytest (216 passed; 90.49% coverage), canonical UAT (28/28), Ruff check, Ruff format check, skill parity, git diff check, scope check, and tracker lint; all 14 PR #12 exact-head CI jobs were successful.",
+        "item_id": "bossmode-0a-migration-durability",
+        "notes": null,
+        "started_at": "2026-08-25T23:59:33Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: obtain independent data-integrity review before allowing any later TODO to migrate the operational registry",
+        "wid": "w6"
+      }
+    ]
+  }
+}

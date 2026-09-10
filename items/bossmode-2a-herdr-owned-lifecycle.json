@@ -1,0 +1,372 @@
+{
+  "context": "Add a Herdr adapter with explicit capability probing and canonical Bossmode herdr create and herdr close operations. Persist reservation intent before the external call, persist the exact returned worker and native-session identity afterward, and make close idempotent. Decision gate: if the installed Herdr CLI cannot expose a stable identity that survives pane movement and name reuse, creation may land but automatic deletion must remain blocked pending an approved runtime contract.",
+  "description": "Make Herdr worker creation and cleanup symmetric. Bossmode must reserve ownership before invoking Herdr, bind the returned immutable live identity, reconcile that identity before every prompt or close, and close only workers it can prove it created. Existing externally created workers remain attachable but non-owned.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Close a worker using only a stored worker name or pane ID",
+        "instead": "Reconcile the immutable live worker and native-session identity against the creation receipt",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "why": "Names and panes can be reused or moved"
+      },
+      {
+        "dont": "Create a worker before reserving the owned-resource record",
+        "instead": "Persist intent first and reconcile incomplete reservations at startup",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "why": "A crash would leave an untracked resource"
+      },
+      {
+        "dont": "Hide unsupported Herdr capability behind best-effort cleanup",
+        "instead": "Fail the decision gate and keep closeout incomplete",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "why": "Best effort can delete the wrong worker or leak one silently"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_item": "bossmode-1a-owned-resource-ledger"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_item": "bossmode-1b-team-hierarchy"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "completed_at": "2026-08-26T22:50:53Z",
+      "completed_pr": 19,
+      "created_at": "2026-08-25T22:40:52Z",
+      "worktree": "bossmode.wt-herdr-owned-lifecycle"
+    },
+    "preserves": [
+      {
+        "behavior": "A missing already-owned worker makes retirement idempotently complete only after identity evidence excludes name reuse.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle"
+      },
+      {
+        "behavior": "Bossmode never approves trust or permission dialogs.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle"
+      },
+      {
+        "behavior": "Externally attached workers are never closed unless a later explicit ownership-adoption protocol is approved.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle"
+      },
+      {
+        "behavior": "Live Herdr state remains authoritative for external worker identity and ownership.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "Herdr as authoritative external runtime",
+        "decision": "extend",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "path": "docs/adr/0001-herdr-runtime-boundary.md"
+      },
+      {
+        "concept": "reconcile before prompt or lifecycle action",
+        "decision": "extend",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "existing Herdr binding lifecycle",
+        "decision": "extend",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "docs/adr/0001-herdr-runtime-boundary.md"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/herdr_runtime.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/resources.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_herdr_runtime.py"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "kind": "only_modify",
+        "path_glob": "tests/test_resources.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_herdr_runtime.py tests/test_resources.py tests/test_cli.py",
+        "description": "Herdr adapter and ownership tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T22:52:23Z",
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case herdr-owned-lifecycle",
+        "description": "Live disposable Herdr lifecycle canary",
+        "expected": "exit 0 and created worker is absent afterward",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T22:50:22Z",
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T22:50:53Z",
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T22:50:53Z",
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T22:50:53Z",
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "last_result": "pass",
+        "last_run": "2026-08-26T22:50:53Z",
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "needs_wid": "w6",
+        "wid": "w7"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Probed Herdr 0.8.2: verified herdr --version, agent list/get/prompt/wait, pane list, server status; documented outputs for create/inspect/prompt/wait/close and immutable identity fields pane_id/tab_id/workspace_id/terminal_id/agent_session{source,kind,value}. Implemented probe_supported_version in src/bossmode/herdr_runtime.py.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:21:31Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Probe the supported Herdr CLI version and document exact create, inspect, prompt, wait, and close outputs and immutable identity fields",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Defined owned=reserved gl+ receipts+pane id vs attached=observed external; capability failures missing herdr/timeout/malformed JSON; identity matching via pane_id+workspace/tab+agent_session, name reuse requires generation bump via partial-unique index, missing-worker success only if no active with same canonical. Documented in docs/adr/0001-herdr-runtime-boundary.md Worker lifecycle (2a) and src/bossmode/herdr_runtime.py probe.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:25:42Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Define owned versus attached worker contracts, capability failures, identity matching, missing-worker success, and name-reuse rejection",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Herdr adapter implemented: run_herdr with 15s timeout + FileNotFound/timeout mapping (127/124), parse_version/parse_agent_list/parse_agent_get/parse_pane_list with JSON guard, _redact homedir, herdr_capability_diagnostic. In src/bossmode/herdr_runtime.py 145 lines.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:26:07Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement the Herdr adapter with bounded subprocess execution, structured parsing, timeouts, and redacted diagnostics",
+        "wid": "w2"
+      },
+      {
+        "evidence": "Implemented reserve_herdr_worker (reserve owned herdr_worker via canonical_key_for_herdr_worker), bind_herdr_worker_live (pane/tab/ws + native session), reconcile_after_crash (agent get -> orphan stray reserved). In src/bossmode/herdr_runtime.py w3.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:27:23Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement reserve-before-create and bind-after-create, including crash reconciliation between the external call and registry commit",
+        "wid": "w3"
+      },
+      {
+        "evidence": "Implemented _receipt_matches_live (pane/tab/ws + agent_session), close_owned_worker (receipt-matched pane close, missing=success if terminal, mismatch blocks), detach_external_worker read-only. In src/bossmode/herdr_runtime.py w4.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:28:47Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement receipt-matched idempotent close for owned workers and read-only detach for externally attached workers",
+        "wid": "w4"
+      },
+      {
+        "evidence": "Tested name reuse after retired with generation bump, pane movement mismatch, server restart session clear, wrong native session blocked, timeout/partial output/malformed handling, duplicate close idempotent, crash recovery orphan. In tests/test_herdr_runtime.py w5.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:32:57Z",
+        "started_branch": "feat/herdr-owned-lifecycle",
+        "started_worktree": "/Users/joe/Developer/bossmode.wt-herdr-owned-lifecycle",
+        "status": "done",
+        "summary": "Test name reuse, pane movement, server restart, missing worker, wrong native session, timeout, partial output, duplicate close, and crash recovery",
+        "wid": "w5"
+      },
+      {
+        "evidence": "Live canary: herdr pane split w8:p29 -> agent start canary-2a pi idle -> agent get reconciles pane_id w8:p29 -> prompt CANARY-OK -> pane close w8:p29 ok -> agent get canary-2a agent_not_found proves exact worker no longer exists, w8:p1 unrelated still running. Captured via bounded herdr Runtime; close used receipt-matched pane_id not stored name.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:33:00Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Run a disposable live canary that creates, prompts, reconciles, closes, and proves the exact worker no longer exists",
+        "wid": "w6"
+      },
+      {
+        "evidence": "Independent review: src/bossmode/herdr_runtime.py close_owned_worker gates pane close behind _receipt_matches_live checking pane_id/tab_id/workspace_id and agent_session source/kind/value; no bare worker_name/pane_id close path. Live canary w6 proves w8:p29 close succeeded and w8:p1 unrelated untouched. No direct herdr close on stored name.",
+        "item_id": "bossmode-2a-herdr-owned-lifecycle",
+        "notes": null,
+        "started_at": "2026-08-26T22:46:04Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Decision gate: independent reviewer confirms no stored name or pane ID alone can cause Herdr closure",
+        "wid": "w7"
+      }
+    ]
+  }
+}

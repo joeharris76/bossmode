@@ -1,4 +1,130 @@
 {
-  "items": {},
+  "items": {
+    "bossmode-0a-migration-durability": {
+      "claim": null,
+      "needs": [],
+      "priority": "critical",
+      "status": "done",
+      "title": "Add recoverable registry migrations and an applied-migration ledger"
+    },
+    "bossmode-0b-single-registry-authority": {
+      "claim": null,
+      "needs": [
+        "bossmode-0a-migration-durability"
+      ],
+      "priority": "critical",
+      "status": "done",
+      "title": "Establish one primary-checkout operational registry authority"
+    },
+    "bossmode-0c-central-artifact-adoption": {
+      "claim": null,
+      "needs": [
+        "bossmode-0b-single-registry-authority"
+      ],
+      "priority": "critical",
+      "status": "done",
+      "title": "Adopt worker results and artifacts into central durable storage"
+    },
+    "bossmode-1a-owned-resource-ledger": {
+      "claim": null,
+      "needs": [
+        "bossmode-0b-single-registry-authority"
+      ],
+      "priority": "critical",
+      "status": "done",
+      "title": "Record proof-bound ownership for every Bossmode-created resource"
+    },
+    "bossmode-1b-team-hierarchy": {
+      "claim": null,
+      "needs": [
+        "bossmode-0b-single-registry-authority",
+        "bossmode-1a-owned-resource-ledger"
+      ],
+      "priority": "high",
+      "status": "done",
+      "title": "Add durable team hierarchy without runtime side effects"
+    },
+    "bossmode-2a-herdr-owned-lifecycle": {
+      "claim": null,
+      "needs": [
+        "bossmode-1a-owned-resource-ledger",
+        "bossmode-1b-team-hierarchy"
+      ],
+      "priority": "high",
+      "status": "done",
+      "title": "Provision and retire Bossmode-owned Herdr workers safely"
+    },
+    "bossmode-2b-git-writer-lifecycle": {
+      "claim": null,
+      "needs": [
+        "bossmode-1a-owned-resource-ledger",
+        "bossmode-1b-team-hierarchy"
+      ],
+      "priority": "critical",
+      "status": "done",
+      "title": "Provision and retire Bossmode-owned Git writer resources safely"
+    },
+    "bossmode-3a-claims-and-atomic-dispatch": {
+      "claim": null,
+      "needs": [
+        "bossmode-1b-team-hierarchy",
+        "bossmode-2b-git-writer-lifecycle"
+      ],
+      "priority": "high",
+      "status": "dropped",
+      "title": "Add fenced resource claims and atomic team dispatch"
+    },
+    "bossmode-3b-independent-exact-head-acceptance": {
+      "claim": null,
+      "needs": [
+        "bossmode-0c-central-artifact-adoption",
+        "bossmode-2b-git-writer-lifecycle",
+        "bossmode-3a-claims-and-atomic-dispatch"
+      ],
+      "priority": "high",
+      "status": "dropped",
+      "title": "Require independent exact-head review before team acceptance"
+    },
+    "bossmode-4-durable-team-closeout": {
+      "claim": null,
+      "needs": [
+        "bossmode-2a-herdr-owned-lifecycle",
+        "bossmode-2b-git-writer-lifecycle",
+        "bossmode-3a-claims-and-atomic-dispatch",
+        "bossmode-3b-independent-exact-head-acceptance"
+      ],
+      "priority": "critical",
+      "status": "dropped",
+      "title": "Close teams by automatically retiring all safely owned resources"
+    },
+    "bossmode-5a-bounded-team-reporting": {
+      "claim": null,
+      "needs": [
+        "bossmode-4-durable-team-closeout"
+      ],
+      "priority": "medium",
+      "status": "dropped",
+      "title": "Add bounded read-only team status and cleanup reporting"
+    },
+    "bossmode-5b-registry-project-teardown": {
+      "claim": null,
+      "needs": [
+        "bossmode-0a-migration-durability",
+        "bossmode-0b-single-registry-authority",
+        "bossmode-1a-owned-resource-ledger",
+        "bossmode-4-durable-team-closeout"
+      ],
+      "priority": "high",
+      "status": "dropped",
+      "title": "Retire project-level Bossmode resources without losing registry history"
+    },
+    "bossmode-5c-executor-selection-policy": {
+      "claim": null,
+      "needs": [],
+      "priority": "low",
+      "status": "done",
+      "title": "Extract executor-selection policy from the PR 6 runtime stack"
+    }
+  },
   "schema_version": 1
 }

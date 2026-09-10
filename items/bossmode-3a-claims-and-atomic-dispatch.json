@@ -1,0 +1,359 @@
+{
+  "context": "Extract the resource-claim and dispatch transaction from PR 6 after the team and Git writer contracts have landed. Validate all candidates and claims before mutating any team member, then commit the complete dispatch in one registry transaction. Decision gate: stop if dispatch can partially admit workers, if an expired holder can write after a successor acquires a new fence, or if release can succeed without matching owner, token, and evidence.",
+  "description": "Prevent simultaneous or stale writers from using the same logical resource and make team dispatch all-or-nothing. Claims must carry an owner and monotonically changing fence token, expire into reconcile-required state, and release only with matching ownership and live evidence. This item does not add reviewer acceptance or cleanup orchestration.",
+  "legacy": {
+    "anti_patterns": [
+      {
+        "dont": "Check claim availability and insert membership in separate transactions",
+        "instead": "Prevalidate and commit the complete dispatch atomically",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "why": "A competing supervisor can interleave and create duplicate writers"
+      },
+      {
+        "dont": "Release an expired claim based only on wall-clock time",
+        "instead": "Require matching owner, fence, and non-empty reconciliation evidence",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "why": "The holder or external resource may still be live"
+      },
+      {
+        "dont": "Use a global writer lock",
+        "instead": "Fence the smallest canonical resource key",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "why": "It defeats legitimate parallel work on non-overlapping resources"
+      }
+    ],
+    "item_deps": [
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_item": "bossmode-1b-team-hierarchy"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_item": "bossmode-2b-git-writer-lifecycle"
+      }
+    ],
+    "item_meta": {
+      "category": "pr6-decomposition",
+      "created_at": "2026-08-25T22:42:31Z",
+      "worktree": "bossmode.wt-claims-atomic-dispatch"
+    },
+    "preserves": [
+      {
+        "behavior": "Concurrent duplicates remain rejected, while a later non-overlapping failed-review retry can be admitted after evidence-backed release.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch"
+      },
+      {
+        "behavior": "Expired claims become reconcile-required rather than silently available.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch"
+      },
+      {
+        "behavior": "Non-overlapping writers may run concurrently.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch"
+      },
+      {
+        "behavior": "Only the current owner and fence can renew, write, or release a claim.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch"
+      }
+    ],
+    "prior_art": [
+      {
+        "concept": "current external lifecycle reconciliation",
+        "decision": "extend",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "path": "docs/agent-workflow.md"
+      },
+      {
+        "concept": "PR 6 resource claims, writer admission, and atomic dispatch",
+        "decision": "extend",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "path": "src/bossmode/registry.py"
+      }
+    ],
+    "scope_rules": [
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": ".bossmode/**"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": ".todo-db/**"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": "_project/**"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": "docs/adr/0005-defer-executor-selection.md"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": "pyproject.toml"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": "src/bossmode/scheduler.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "do_not_modify",
+        "path_glob": "uv.lock"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": ".agents/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "docs/agent-workflow.md"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "docs/cli-reference.md"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "scripts/run_uat.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/claims.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/cli.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/registry.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "src/bossmode/skills/bossmode/SKILL.md"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "tests/test_claims.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "tests/test_cli.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "tests/test_registry.py"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "kind": "only_modify",
+        "path_glob": "tests/test_teams.py"
+      }
+    ],
+    "verifications": [
+      {
+        "command": "uv run pytest --no-cov tests/test_claims.py tests/test_teams.py tests/test_registry.py tests/test_cli.py",
+        "description": "Claim and dispatch tests",
+        "expected": "exit 0",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "last_result": null,
+        "last_run": null,
+        "seq": 1,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run python scripts/run_uat.py --case parallel-dispatch",
+        "description": "Parallel dispatch UAT",
+        "expected": "exit 0 and duplicate resources admit exactly one writer",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "last_result": null,
+        "last_run": null,
+        "seq": 2,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run pytest",
+        "description": "Full repository test and coverage gate",
+        "expected": "exit 0 and repository coverage threshold met",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "last_result": null,
+        "last_run": null,
+        "seq": 3,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "uv run ruff check . && uv run ruff format --check .",
+        "description": "Ruff checks",
+        "expected": "exit 0",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "last_result": null,
+        "last_run": null,
+        "seq": 4,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "cmp -s .agents/skills/bossmode/SKILL.md src/bossmode/skills/bossmode/SKILL.md",
+        "description": "Packaged and source skill parity",
+        "expected": "exit 0",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "last_result": null,
+        "last_run": null,
+        "seq": 5,
+        "workspace_fingerprint": null
+      },
+      {
+        "command": "git diff --check",
+        "description": "No whitespace errors",
+        "expected": "exit 0",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "last_result": null,
+        "last_run": null,
+        "seq": 6,
+        "workspace_fingerprint": null
+      }
+    ],
+    "work_needs": [
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w0",
+        "wid": "w1"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w1",
+        "wid": "w2"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w2",
+        "wid": "w3"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w3",
+        "wid": "w4"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w4",
+        "wid": "w5"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w5",
+        "wid": "w6"
+      },
+      {
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "needs_wid": "w6",
+        "wid": "w7"
+      }
+    ],
+    "work_units": [
+      {
+        "evidence": "Extracted PR6 claim/writer-admission/dispatch: resource_claims with fence_token UNIQUE + status active/expired/released + lease_expires_at, CAS via canonical_key, duplicate/expired checks, lease renew/reconcile/release with fence compare-and-set, atomic dispatch prevalidates team capacity/identities/worktrees/branches/bases/claims with transaction rollback. Mapped race windows: simultaneous acquire, duplicate writer identity, partial candidate failure, lease expiry, stale renew/release. Evidence doc /tmp/3a_w0_inventory.md.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": "2026-08-26T22:42:21Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Extract PR 6 claim, writer-admission, and dispatch behavior; map every race window and rejected duplicate scenario",
+        "wid": "w0"
+      },
+      {
+        "evidence": "Defined claim key (kind+canonical_key), owner task_id/run_id, fence_token UNIQUE, lease_expires_at, status active/expired/released, reconcile-required (expired must be released with evidence), release_evidence, audit events (claimed/renewed/expired/released). In src/bossmode/claims.py with ClaimKey/ClaimRecord/AUDIT_EVENTS.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": "2026-08-26T22:42:56Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Define claim key, owner, fence token, lease, status, reconcile-required transition, release evidence, and audit events",
+        "wid": "w1"
+      },
+      {
+        "evidence": "Implemented acquire/renew/reconcile/release with compare-and-set semantics and lifecycle-aware uniqueness via partial index on resource_claims(canonical_key) WHERE status IN (active,expired); fence_token UNIQUE + CAS guard + expired->reconcile-required->released flow; claims.py already defined claim key/status. In src/bossmode/registry.py 4030-4230 and src/bossmode/claims.py.",
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": "2026-08-26T22:53:25Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "done",
+        "summary": "Implement acquire, renew, reconcile, and release with compare-and-set semantics and lifecycle-aware uniqueness",
+        "wid": "w2"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": "2026-08-26T23:11:24Z",
+        "started_branch": "main",
+        "started_worktree": "/Users/joe/Developer/bossmode",
+        "status": "in_progress",
+        "summary": "Implement atomic multi-worker dispatch that prevalidates team capacity, identities, worktrees, branches, bases, and claims",
+        "wid": "w3"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Bind every write-capable operation to the current fence and reject stale holders after lease expiry or reassignment",
+        "wid": "w4"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Test simultaneous acquire, duplicate writer identity, partial candidate failure, lease expiry, stale renew, stale release, and transaction rollback",
+        "wid": "w5"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Run concurrent canaries proving non-overlapping resources proceed while duplicate resources admit exactly one writer",
+        "wid": "w6"
+      },
+      {
+        "evidence": null,
+        "item_id": "bossmode-3a-claims-and-atomic-dispatch",
+        "notes": null,
+        "started_at": null,
+        "started_branch": null,
+        "started_worktree": null,
+        "status": "pending",
+        "summary": "Decision gate: independent concurrency review verifies no stale fence can mutate accepted state and no failed dispatch leaves partial membership",
+        "wid": "w7"
+      }
+    ]
+  }
+}
