@@ -12,7 +12,7 @@
 - This repository contains the canonical Bossmode skill and sibling `shared-agent-execution` skill with minimal supporting documentation.
 - Runtime, package, database, CLI, scheduler, and Python code do not belong here.
 - Keep the README and repository instructions minimal.
-- Preserve local `.bossmode/`, `.todo-db/`, and `_project/` state. Do not delete or commit it.
+- Preserve local `.bossmode/`, `.tractable/`, and `_project/` state. Do not delete or commit it.
 
 ## Change safety
 
