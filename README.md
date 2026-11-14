@@ -78,7 +78,7 @@ investigation.
 
 ## Repository purpose
 
-This repository is the canonical source of the Bossmode skill and sibling `shared-agent-execution` skill.
+This repository is the canonical source of the Bossmode skill. The sibling `shared-agent-execution` skill is owned by the `skill-sync-skills` repository; the copy here is a snapshot.
 
 ## Python prototype retirement
 
